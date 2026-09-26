@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timezone
 from dataclasses import replace
-
+from app.repositories import session_repository
 from flask import current_app
 from flask_jwt_extended import decode_token
 
@@ -84,3 +84,62 @@ def validate_login_session(
 
     if current_time >= session.idle_expires_at:
         raise SessionValidationError("SESSION_EXPIRED")
+        
+def _get_valid_stored_session(
+    session_id: str,
+    user_id: str,
+    refresh_jti: str,
+    now: datetime,
+) -> LoginSession:
+    session = session_repository.get_session_by_id(session_id)
+
+    if session is None or session.user_id != user_id:
+        raise SessionValidationError("SESSION_INVALID")
+
+    if session.refresh_jti != refresh_jti:
+        raise SessionValidationError("REFRESH_TOKEN_INVALID")
+
+    validate_login_session(session, now=now)
+
+    return session
+
+
+def renew_stored_session(
+    session_id: str,
+    user_id: str,
+    refresh_jti: str,
+    now: datetime | None = None,
+) -> LoginSession:
+    """Các thông tin định danh phải lấy từ refresh JWT đã được xác minh."""
+
+    current_time = now if now is not None else datetime.now(timezone.utc)
+
+    original_session = _get_valid_stored_session(
+        session_id,
+        user_id,
+        refresh_jti,
+        current_time,
+    )
+
+    renewed_session = renew_login_session(
+        original_session,
+        now=current_time,
+    )
+
+    updated = session_repository.update_session_activity(
+        original_session,
+        renewed_session,
+    )
+
+    if not updated:
+        # Đọc lại để biết phiên vừa bị thu hồi/hết hạn hay chỉ bị cập nhật.
+        _get_valid_stored_session(
+            session_id,
+            user_id,
+            refresh_jti,
+            current_time,
+        )
+
+        raise SessionValidationError("SESSION_UPDATE_CONFLICT")
+
+    return renewed_session
