@@ -11,6 +11,7 @@ from mysql.connector import Error as MySQLError
 
 from app.services.session_service import (
     SessionValidationError,
+    logout_stored_session,
     renew_stored_session,
 )
 
@@ -88,3 +89,21 @@ def refresh_session():
     response.headers["Cache-Control"] = "no-store"
 
     return response, 200
+
+@session_bp.post("/logout")
+@jwt_required(locations=["headers"])
+def logout_session():
+    session_id = get_jwt().get("sid")
+    user_id = get_jwt_identity()
+
+    try:
+        logout_stored_session(
+            session_id=session_id,
+            user_id=user_id,
+        )
+    except SessionValidationError as error:
+        return jsonify({"code": error.code}), 401
+    except MySQLError:
+        return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503
+
+    return "", 204
