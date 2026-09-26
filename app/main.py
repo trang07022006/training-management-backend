@@ -1,6 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
-
+from app.config.jwt_handlers import register_jwt_handlers
 from app.config.jwt_config import configure_jwt
 from app.database.connection import get_db_connection
 from app.extensions import jwt
@@ -11,6 +11,7 @@ app = Flask(__name__)
 
 configure_jwt(app)
 jwt.init_app(app)
+register_jwt_handlers(jwt)
 
 CORS(app)
 
