@@ -84,7 +84,7 @@ def validate_login_session(
 
     if current_time >= session.idle_expires_at:
         raise SessionValidationError("SESSION_EXPIRED")
-        
+
 def _get_valid_stored_session(
     session_id: str,
     user_id: str,
@@ -143,3 +143,13 @@ def renew_stored_session(
         raise SessionValidationError("SESSION_UPDATE_CONFLICT")
 
     return renewed_session
+
+def create_stored_login_session(user_id: str):
+    """Chỉ gọi sau khi đã xác minh tài khoản và mật khẩu."""
+    session, tokens = create_login_session(user_id)
+
+    # Nếu lưu thất bại, lỗi được đưa lên bên gọi.
+    # Hàm sẽ không chạy đến dòng return.
+    session_repository.insert_session(session)
+
+    return session, tokens
