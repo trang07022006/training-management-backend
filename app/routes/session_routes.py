@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
-
-from flask import Blueprint, current_app, jsonify
+from flask import Blueprint, current_app, g, jsonify
+from app.utils.session_auth import session_required
 from flask_jwt_extended import (
     create_access_token,
     get_jwt,
@@ -107,3 +107,17 @@ def logout_session():
         return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503
 
     return "", 204
+
+@session_bp.get("/session")
+@session_required
+def current_session():
+    session = g.login_session
+
+    response = jsonify({
+        "user_id": session.user_id,
+        "idle_expires_at": session.idle_expires_at.isoformat(),
+        "absolute_expires_at": session.absolute_expires_at.isoformat(),
+    })
+    response.headers["Cache-Control"] = "no-store"
+
+    return response, 200
