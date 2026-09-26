@@ -153,3 +153,25 @@ def create_stored_login_session(user_id: str):
     session_repository.insert_session(session)
 
     return session, tokens
+
+def logout_stored_session(session_id: str, user_id: str) -> None:
+    """Thông tin định danh phải lấy từ JWT đã được xác minh."""
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in (session_id, user_id)
+    ):
+        raise SessionValidationError("SESSION_INVALID")
+
+    session = session_repository.get_session_by_id(session_id)
+
+    if session is None or session.user_id != user_id:
+        raise SessionValidationError("SESSION_INVALID")
+
+    # Gọi đăng xuất lại vẫn được xem là thành công.
+    if session.revoked_at is not None:
+        return
+
+    session_repository.revoke_session(
+        session_id=session_id,
+        user_id=user_id,
+    )

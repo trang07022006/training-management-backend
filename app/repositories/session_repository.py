@@ -108,7 +108,7 @@ def get_session_by_id(session_id: str) -> LoginSession | None:
             row[field] = row[field].replace(tzinfo=timezone.utc)
 
     return LoginSession(**row)
-    
+
 def update_session_activity(
     original_session: LoginSession,
     renewed_session: LoginSession,
@@ -156,3 +156,21 @@ def update_session_activity(
         updated = cursor.rowcount == 1
 
     return updated
+
+def revoke_session(session_id: str, user_id: str) -> None:
+    """Thu hồi đúng phiên của người dùng, giữ nguyên lần thu hồi đầu."""
+    revoked_at = _to_mysql_datetime(datetime.now(timezone.utc))
+
+    sql = """
+        UPDATE auth_sessions
+        SET revoked_at = %s
+        WHERE session_id = %s
+          AND user_id = %s
+          AND revoked_at IS NULL
+    """
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(
+            sql,
+            (revoked_at, session_id, user_id),
+        )
