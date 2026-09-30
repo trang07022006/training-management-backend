@@ -36,6 +36,10 @@ class Scrum57ChangePasswordResponsesTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.mock_get_session.return_value = self.session
 
+        revoke_patcher = patch("app.services.change_password_service.session_repository.revoke_other_user_sessions")
+        self.mock_revoke_other = revoke_patcher.start()
+        self.addCleanup(revoke_patcher.stop)
+
         self.current_password = "CurrentPassword123!"
         self.new_password = "BrandNewPassword2026!"
         self.user = User(

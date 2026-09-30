@@ -174,3 +174,34 @@ def revoke_session(session_id: str, user_id: str) -> None:
             sql,
             (revoked_at, session_id, user_id),
         )
+
+
+def revoke_other_user_sessions(user_id: str, current_session_id: str | None = None) -> int:
+    """
+    Thu hồi tất cả các phiên KHÁC của người dùng sau khi đổi mật khẩu (SCRUM-58).
+    - Phiên hiện tại (current_session_id) được giữ nguyên, không bị thu hồi.
+    - Không làm ảnh hưởng tới phiên của người dùng khác.
+    """
+    revoked_at = _to_mysql_datetime(datetime.now(timezone.utc))
+
+    if current_session_id:
+        sql = """
+            UPDATE auth_sessions
+            SET revoked_at = %s
+            WHERE user_id = %s
+              AND session_id != %s
+              AND revoked_at IS NULL
+        """
+        values = (revoked_at, user_id, current_session_id)
+    else:
+        sql = """
+            UPDATE auth_sessions
+            SET revoked_at = %s
+            WHERE user_id = %s
+              AND revoked_at IS NULL
+        """
+        values = (revoked_at, user_id)
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        return cursor.rowcount

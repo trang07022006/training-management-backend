@@ -42,6 +42,10 @@ class Scrum54VerifyCurrentPasswordTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.mock_get_session.return_value = self.session
 
+        revoke_patcher = patch("app.services.change_password_service.session_repository.revoke_other_user_sessions")
+        self.mock_revoke_other = revoke_patcher.start()
+        self.addCleanup(revoke_patcher.stop)
+
         self.raw_current_password = "CorrectPassword123!"
         self.hashed_password = generate_password_hash(self.raw_current_password)
         self.user = User(
