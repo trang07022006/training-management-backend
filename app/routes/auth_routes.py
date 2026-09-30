@@ -2,7 +2,11 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import decode_token
 from mysql.connector import Error as MySQLError
 
-from app.services.auth_service import AuthValidationError, authenticate_and_login
+from app.services.auth_service import (
+    AuthValidationError,
+    authenticate_and_login,
+    process_forgot_password_request,
+)
 
 auth_bp = Blueprint(
     "auth",
@@ -68,3 +72,39 @@ def login():
     response.headers["Cache-Control"] = "no-store"
 
     return response, 200
+
+
+@auth_bp.post("/forgot-password")
+def forgot_password():
+    if not request.is_json:
+        return jsonify({"code": "INVALID_REQUEST", "message": "Yêu cầu không hợp lệ"}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"code": "INVALID_REQUEST", "message": "Yêu cầu không hợp lệ"}), 400
+
+    if "email" not in data:
+        return jsonify({"code": "EMAIL_REQUIRED", "message": "Email là bắt buộc"}), 400
+
+    email = data.get("email")
+
+    try:
+        result = process_forgot_password_request(email)
+        return jsonify(result), 200
+    except AuthValidationError as error:
+        return jsonify({
+            "code": error.code,
+            "message": error.message,
+        }), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi kết nối cơ sở dữ liệu",
+        }), 500
+    except Exception:
+        # Không dùng mock database khi MySQL có lỗi
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi kết nối cơ sở dữ liệu",
+        }), 500
+

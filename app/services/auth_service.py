@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 from werkzeug.security import check_password_hash
 
@@ -11,6 +12,11 @@ LOCKOUT_DURATION_MINUTES = 15
 LOCKOUT_DURATION = timedelta(minutes=LOCKOUT_DURATION_MINUTES)
 INVALID_CREDENTIALS_MESSAGE = "Email hoặc mật khẩu không đúng"
 ACCOUNT_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa 15 phút do nhập sai mật khẩu quá 5 lần. Vui lòng thử lại sau."
+PUBLIC_FORGOT_PASSWORD_MESSAGE = (
+    "Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi tới email của bạn."
+)
+
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
 
 
 class AuthValidationError(Exception):
@@ -145,5 +151,37 @@ def authenticate_and_login(
     user = validate_credentials(email=email, password=password, current_time=current_time)
     session, tokens = create_stored_login_session(user_id=str(user.id))
     return user, session, tokens
+
+
+def process_forgot_password_request(email: str) -> dict:
+    """
+    Xử lý yêu cầu đặt lại mật khẩu (SCRUM-45).
+    - Validate & normalize email.
+    - Kiểm tra user theo email trong MySQL database.
+    - Không tiết lộ email có tồn tại hay không (anti-enumeration).
+    - Email tồn tại và không tồn tại đều trả về cùng một thông báo công khai.
+    - Không dùng mock database khi MySQL lỗi.
+    """
+    if not isinstance(email, str) or not email.strip():
+        raise AuthValidationError("EMAIL_REQUIRED", "Email là bắt buộc")
+
+    normalized_email = email.strip().lower()
+
+    if not EMAIL_REGEX.match(normalized_email):
+        raise AuthValidationError("INVALID_EMAIL", "Định dạng email không hợp lệ")
+
+    # Kiểm tra người dùng theo email trong MySQL database (không fallback mock)
+    user = user_repository.get_user_by_email(normalized_email)
+
+    # Chưa triển khai đầy đủ token 30 phút của SCRUM-46
+    # Chưa làm single-use token SCRUM-47
+    # Chưa gửi SMTP thật SCRUM-48
+    if user is not None:
+        pass
+
+    return {
+        "message": PUBLIC_FORGOT_PASSWORD_MESSAGE,
+    }
+
 
 
