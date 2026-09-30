@@ -144,8 +144,16 @@ def validate_credentials(
         user_repository.reset_user_lockout(user_id=user.id)
 
     # 5. Kiểm tra trạng thái tài khoản
-    if user.status != "active":
-        raise AuthValidationError("ACCOUNT_DISABLED")
+    if user.status == "locked":
+        raise AuthValidationError(
+            code="ACCOUNT_LOCKED",
+            message="Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên để được hỗ trợ.",
+        )
+    elif user.status != "active":
+        raise AuthValidationError(
+            code="ACCOUNT_DISABLED",
+            message="Tài khoản của bạn đã bị vô hiệu hóa.",
+        )
 
     return user
 
