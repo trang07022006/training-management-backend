@@ -42,13 +42,76 @@ def _row_to_user(row: dict) -> User:
 
     return User(
         id=str(row["id"]),
-        email=row["email"],
-        password_hash=row["password_hash"],
+        email=row.get("email"),
+        password_hash=row.get("password_hash", ""),
         role=row.get("role", "user"),
         status=row.get("status", "active"),
         failed_login_attempts=row.get("failed_login_attempts") or 0,
         locked_until=locked_until,
+        name=row.get("name"),
+        phone=row.get("phone"),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
     )
+
+
+SAFE_SORT_COLUMNS = {
+    "created_at": "created_at",
+    "email": "email",
+    "id": "id",
+    "status": "status",
+    "role": "role",
+}
+
+
+def list_users(
+    page: int = 1,
+    page_size: int = 20,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+) -> tuple[list[User], int]:
+    """
+    Truy xuất danh sách người dùng có phân trang và sắp xếp xác định (SCRUM-82).
+    - Mặc định 20 bản ghi/trang nếu không quy định khác.
+    - Sắp xếp xác định (deterministic sort) kết hợp tie-breaker id.
+    - SQL sử dụng parameterized query tuyệt đối chống SQL injection.
+    """
+    safe_page = page if isinstance(page, int) and page >= 1 else 1
+    safe_page_size = page_size if isinstance(page_size, int) and 1 <= page_size <= 100 else 20
+    offset = (safe_page - 1) * safe_page_size
+
+    sort_col = SAFE_SORT_COLUMNS.get(sort_by, "created_at")
+    sort_dir = "ASC" if str(sort_order).upper() == "ASC" else "DESC"
+
+    count_sql = "SELECT COUNT(*) AS total FROM users"
+    data_sql = f"""
+        SELECT
+            id,
+            email,
+            password_hash,
+            role,
+            status,
+            failed_login_attempts,
+            locked_until,
+            created_at,
+            updated_at
+        FROM users
+        ORDER BY {sort_col} {sort_dir}, id {sort_dir}
+        LIMIT %s OFFSET %s
+    """
+
+    with _database_cursor() as cursor:
+        cursor.execute(count_sql)
+        count_row = cursor.fetchone()
+        total = count_row["total"] if count_row and "total" in count_row else 0
+
+        if total == 0 or offset >= total:
+            return [], total
+
+        cursor.execute(data_sql, (safe_page_size, offset))
+        rows = cursor.fetchall() or []
+
+    return [_row_to_user(r) for r in rows], total
 
 
 def get_user_by_email(email: str) -> User | None:

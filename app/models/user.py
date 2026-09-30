@@ -12,6 +12,23 @@ class User:
     status: str = "active"
     failed_login_attempts: int = 0
     locked_until: datetime | None = None
+    name: str | None = None
+    phone: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def to_public_dict(self) -> dict:
+        """Chuyển đổi thông tin người dùng an toàn ra dictionary (KHÔNG bao giờ chứa password_hash)."""
+        return {
+            "id": self.id,
+            "email": self.email,
+            "name": self.name,
+            "phone": self.phone,
+            "role": self.role,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
 
     def check_password(self, password: str) -> bool:
         """Xác thực mật khẩu với password_hash của người dùng (không chấp nhận plaintext)."""
