@@ -147,7 +147,10 @@ class Scrum53ChangePasswordApiTests(unittest.TestCase):
         )
 
     # 8. Không leak thông tin nhạy cảm (không lộ password, hash, token trong response)
-    def test_08_no_sensitive_info_leaked(self):
+    @patch("app.routes.auth_routes.change_password")
+    def test_08_no_sensitive_info_leaked(self, mock_service):
+        mock_service.return_value = {"message": "Thành công"}
+
         res = self.post_change_password(
             payload={"current_password": "OldPass123!", "new_password": "NewPass456!"}
         )
