@@ -41,3 +41,18 @@ def get_user_by_id(user_id: str) -> User | None:
         role=row.get("role"),
         status=row.get("status", "active"),
     )
+
+
+def update_user_password(user_id: str, new_password_hash: str) -> bool:
+    """
+    Cập nhật mật khẩu băm của người dùng vào MySQL (SCRUM-56).
+    Sử dụng parameterized query để chống SQL Injection và đảm bảo an toàn.
+    """
+    sql = """
+        UPDATE users
+        SET password_hash = %s
+        WHERE id = %s
+    """
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, (new_password_hash, user_id))
+        return cursor.rowcount == 1

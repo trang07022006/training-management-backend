@@ -125,9 +125,11 @@ class Scrum55NewPasswordPolicyTests(unittest.TestCase):
         self.assertEqual(res.get_json()["code"], "PASSWORD_INVALID")
 
     # 6. chữ + số >= 8 ký tự -> PASS
+    @patch("app.services.change_password_service.user_repository.update_user_password")
     @patch("app.services.change_password_service.user_repository.get_user_by_id")
-    def test_06_alphanumeric_8_or_more_chars_passes(self, mock_get_user):
+    def test_06_alphanumeric_8_or_more_chars_passes(self, mock_get_user, mock_update_pw):
         mock_get_user.return_value = self.user
+        mock_update_pw.return_value = True
 
         for valid_pw in ["ValidPass1", "SecurePassword2026", "A1b2C3d4E5!@#"]:
             validate_new_password_policy(valid_pw, current_password=self.current_password)

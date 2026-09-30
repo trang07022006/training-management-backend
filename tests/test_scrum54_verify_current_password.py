@@ -60,9 +60,11 @@ class Scrum54VerifyCurrentPasswordTests(unittest.TestCase):
         )
 
     # 1. current password đúng -> PASS validation
+    @patch("app.services.change_password_service.user_repository.update_user_password")
     @patch("app.services.change_password_service.user_repository.get_user_by_id")
-    def test_01_correct_current_password_passes_validation(self, mock_get_user):
+    def test_01_correct_current_password_passes_validation(self, mock_get_user, mock_update_pw):
         mock_get_user.return_value = self.user
+        mock_update_pw.return_value = True
 
         res = self.post_change_password({
             "current_password": self.raw_current_password,

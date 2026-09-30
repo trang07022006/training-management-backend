@@ -1,5 +1,5 @@
 import re
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.repositories import user_repository
 
@@ -52,11 +52,12 @@ def change_password(
     current_session_id: str | None = None,
 ) -> dict:
     """
-    Xử lý đổi mật khẩu:
-    1. Kiểm tra mật khẩu hiện tại có hợp lệ không
-    2. Kiểm tra chính sách mật khẩu mới
-    3. Lấy user từ database theo user_id (từ JWT/session)
-    4. Xác thực mật khẩu hiện tại
+    Xử lý đổi mật khẩu (SCRUM-56):
+    1. Validate dữ liệu đầu vào & chính sách mật khẩu mới
+    2. Lấy user từ MySQL
+    3. Xác thực mật khẩu hiện tại bằng check_password_hash
+    4. Băm mật khẩu mới bằng generate_password_hash
+    5. Cập nhật password_hash vào MySQL
     """
     if not isinstance(current_password, str) or not current_password:
         raise ChangePasswordError("CURRENT_PASSWORD_REQUIRED", "Mật khẩu hiện tại là bắt buộc")
@@ -74,6 +75,13 @@ def change_password(
             "Mật khẩu hiện tại không chính xác",
         )
 
+    # SCRUM-56: Băm mật khẩu mới và lưu vào cơ sở dữ liệu
+    new_password_hash = generate_password_hash(new_password)
+    user_repository.update_user_password(
+        user_id=user.id,
+        new_password_hash=new_password_hash,
+    )
+
     return {
-        "message": "Xác thực mật khẩu hiện tại và điều kiện mật khẩu mới thành công",
+        "message": "Đổi mật khẩu thành công.",
     }
