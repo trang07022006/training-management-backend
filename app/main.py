@@ -1,9 +1,21 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
-from database.connection import get_db_connection
+from app.config.jwt_handlers import register_jwt_handlers
+from app.config.jwt_config import configure_jwt
+from app.database.connection import get_db_connection
+from app.extensions import jwt
+from app.routes.session_routes import session_bp
+
 
 app = Flask(__name__)
+
+configure_jwt(app)
+jwt.init_app(app)
+register_jwt_handlers(jwt)
+
 CORS(app)
+
+app.register_blueprint(session_bp)
 
 
 @app.route("/api/health", methods=["GET"])
