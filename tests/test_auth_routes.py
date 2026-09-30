@@ -156,6 +156,36 @@ class AuthRoutesTests(unittest.TestCase):
         self.assertEqual(response.get_json()["code"], "SESSION_STORAGE_UNAVAILABLE")
         self.assertNotIn("sensitive db connection info", response.get_data(as_text=True))
 
+    @patch("app.services.auth_service.create_stored_login_session")
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_credentials_success(self, mock_get_user, mock_create_session):
+        mock_get_user.return_value = self.user
+        with self.app.app_context():
+            from app.services.token_service import create_login_tokens
+            tokens = create_login_tokens(self.user.id, self.session.session_id)
+        mock_create_session.return_value = (self.session, tokens)
+
+        response = self.post_login(data={"email": "trainee@example.com", "password": "SecretPassword123!"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["user"]["email"], "trainee@example.com")
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_email_not_found(self, mock_get_user):
+        mock_get_user.return_value = None
+
+        response = self.post_login(data={"email": "notfound@example.com", "password": "SecretPassword123!"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()["code"], "INVALID_CREDENTIALS")
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_wrong_password(self, mock_get_user):
+        mock_get_user.return_value = self.user
+
+        response = self.post_login(data={"email": "trainee@example.com", "password": "IncorrectPassword123!"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()["code"], "INVALID_CREDENTIALS")
+
 
 if __name__ == "__main__":
     unittest.main()
+
