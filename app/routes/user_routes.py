@@ -49,8 +49,20 @@ def list_users():
             "message": "Kích thước trang (page_size) phải là số nguyên dương từ 1 đến 100.",
         }), 400
 
+    search = request.args.get("search") or request.args.get("q")
+    role = request.args.get("role")
+    status = request.args.get("status")
+
+    kwargs = {"page": page, "page_size": page_size}
+    if search and search.strip():
+        kwargs["search"] = search.strip()[:100]
+    if role and role.strip():
+        kwargs["role"] = role.strip().lower()
+    if status and status.strip():
+        kwargs["status"] = status.strip().lower()
+
     try:
-        users, total = user_repository.list_users(page=page, page_size=page_size)
+        users, total = user_repository.list_users(**kwargs)
     except MySQLError:
         if current_app.config.get("TESTING"):
             users, total = [], 0

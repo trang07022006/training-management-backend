@@ -69,12 +69,17 @@ def list_users(
     page_size: int = 20,
     sort_by: str = "created_at",
     sort_order: str = "desc",
+    search: str | None = None,
+    role: str | None = None,
+    status: str | None = None,
 ) -> tuple[list[User], int]:
     """
-    Truy xuất danh sách người dùng có phân trang và sắp xếp xác định (SCRUM-82).
+    Truy xuất danh sách người dùng có phân trang, tìm kiếm và lọc (SCRUM-82, SCRUM-87).
     - Mặc định 20 bản ghi/trang nếu không quy định khác.
+    - Tìm kiếm theo tên, email, số điện thoại (tối đa 100 ký tự, tự động trim).
+    - Lọc theo vai trò (role) và trạng thái (status).
     - Sắp xếp xác định (deterministic sort) kết hợp tie-breaker id.
-    - SQL sử dụng parameterized query tuyệt đối chống SQL injection.
+    - SQL sử dụng hoàn toàn parameterized query tuyệt đối chống SQL injection.
     """
     safe_page = page if isinstance(page, int) and page >= 1 else 1
     safe_page_size = page_size if isinstance(page_size, int) and 1 <= page_size <= 100 else 20
@@ -83,7 +88,31 @@ def list_users(
     sort_col = SAFE_SORT_COLUMNS.get(sort_by, "created_at")
     sort_dir = "ASC" if str(sort_order).upper() == "ASC" else "DESC"
 
-    count_sql = "SELECT COUNT(*) AS total FROM users"
+    where_clauses: list[str] = []
+    params: list = []
+
+    if search and isinstance(search, str):
+        clean_search = search.strip()[:100]
+        if clean_search:
+            search_pattern = f"%{clean_search}%"
+            where_clauses.append("(name LIKE %s OR email LIKE %s OR phone LIKE %s)")
+            params.extend([search_pattern, search_pattern, search_pattern])
+
+    if role and isinstance(role, str):
+        clean_role = role.strip().lower()
+        if clean_role:
+            where_clauses.append("role = %s")
+            params.append(clean_role)
+
+    if status and isinstance(status, str):
+        clean_status = status.strip().lower()
+        if clean_status:
+            where_clauses.append("status = %s")
+            params.append(clean_status)
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    count_sql = f"SELECT COUNT(*) AS total FROM users {where_sql}"
     data_sql = f"""
         SELECT
             id,
@@ -98,19 +127,20 @@ def list_users(
             created_at,
             updated_at
         FROM users
+        {where_sql}
         ORDER BY {sort_col} {sort_dir}, id {sort_dir}
         LIMIT %s OFFSET %s
     """
 
     with _database_cursor() as cursor:
-        cursor.execute(count_sql)
+        cursor.execute(count_sql, tuple(params))
         count_row = cursor.fetchone()
         total = count_row["total"] if count_row and "total" in count_row else 0
 
         if total == 0 or offset >= total:
             return [], total
 
-        cursor.execute(data_sql, (safe_page_size, offset))
+        cursor.execute(data_sql, tuple(params + [safe_page_size, offset]))
         rows = cursor.fetchall() or []
 
     return [_row_to_user(r) for r in rows], total
