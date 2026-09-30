@@ -51,6 +51,14 @@ class AuthServiceTests(unittest.TestCase):
             "refresh_token": "ref-token",
         }
 
+        # Mock các hàm thao tác database để không kết nối MySQL trong unit test
+        self.patch_update_lockout = patch("app.services.auth_service.user_repository.update_user_lockout")
+        self.patch_reset_lockout = patch("app.services.auth_service.user_repository.reset_user_lockout")
+        self.mock_update_lockout = self.patch_update_lockout.start()
+        self.mock_reset_lockout = self.patch_reset_lockout.start()
+        self.addCleanup(self.patch_update_lockout.stop)
+        self.addCleanup(self.patch_reset_lockout.stop)
+
     def test_verify_password(self):
         hashed = generate_password_hash("MySecret123")
         self.assertTrue(verify_password(hashed, "MySecret123"))
@@ -72,6 +80,33 @@ class AuthServiceTests(unittest.TestCase):
             password_hash="PlainPassword123!",
         )
         self.assertFalse(plaintext_user.check_password("PlainPassword123!"))
+
+    def test_user_is_locked(self):
+        now = datetime.now(timezone.utc)
+        user_unlocked = User(
+            id="u1",
+            email="u1@example.com",
+            password_hash="hash",
+            locked_until=None,
+        )
+        self.assertFalse(user_unlocked.is_locked(current_time=now))
+
+        user_locked_future = User(
+            id="u2",
+            email="u2@example.com",
+            password_hash="hash",
+            locked_until=now + timedelta(minutes=10),
+        )
+        self.assertTrue(user_locked_future.is_locked(current_time=now))
+
+        user_lockout_expired = User(
+            id="u3",
+            email="u3@example.com",
+            password_hash="hash",
+            locked_until=now - timedelta(minutes=1),
+        )
+        self.assertFalse(user_lockout_expired.is_locked(current_time=now))
+
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_validate_credentials_success(self, mock_get_user):
@@ -243,7 +278,160 @@ class AuthServiceTests(unittest.TestCase):
             authenticate_and_login("trainer@example.com", "")
         self.assertEqual(ctx.exception.code, "PASSWORD_REQUIRED")
 
+    # =========================================================================
+    # SCRUM-34 Tests: Khóa tạm 15 phút sau 5 lần đăng nhập sai
+    # =========================================================================
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_failed_attempts_1_to_4_increment_counter(self, mock_get_user):
+        """Sai lần 1-4: tăng bộ đếm và trả lỗi INVALID_CREDENTIALS."""
+        # Trường hợp 1: Chưa sai lần nào (0) -> sai lần 1
+        self.user.failed_login_attempts = 0
+        self.user.locked_until = None
+        mock_get_user.return_value = self.user
+
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_credentials("trainer@example.com", "WrongPass1")
+
+        self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(self.user.failed_login_attempts, 1)
+        self.assertIsNone(self.user.locked_until)
+        self.mock_update_lockout.assert_called_with(
+            user_id="user-456",
+            failed_login_attempts=1,
+            locked_until=None,
+        )
+
+        # Trường hợp 2: Đã sai 3 lần -> sai lần 4
+        self.user.failed_login_attempts = 3
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_credentials("trainer@example.com", "WrongPass4")
+
+        self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(self.user.failed_login_attempts, 4)
+        self.assertIsNone(self.user.locked_until)
+        self.mock_update_lockout.assert_called_with(
+            user_id="user-456",
+            failed_login_attempts=4,
+            locked_until=None,
+        )
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_fifth_failed_attempt_locks_account_for_15_minutes(self, mock_get_user):
+        """Sai lần 5: khóa tạm 15 phút và trả lỗi ACCOUNT_LOCKED."""
+        now = datetime(2026, 9, 30, 10, 0, 0, tzinfo=timezone.utc)
+        self.user.failed_login_attempts = 4
+        self.user.locked_until = None
+        mock_get_user.return_value = self.user
+
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_credentials(
+                "trainer@example.com",
+                "WrongPass5",
+                current_time=now,
+            )
+
+        self.assertEqual(ctx.exception.code, "ACCOUNT_LOCKED")
+        self.assertEqual(self.user.failed_login_attempts, 5)
+        self.assertIsNotNone(self.user.locked_until)
+        expected_lock_until = now + timedelta(minutes=15)
+        self.assertEqual(self.user.locked_until, expected_lock_until)
+        self.assertEqual(ctx.exception.locked_until, expected_lock_until)
+
+        self.mock_update_lockout.assert_called_with(
+            user_id="user-456",
+            failed_login_attempts=5,
+            locked_until=expected_lock_until,
+        )
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_rejected_during_lockout_period(self, mock_get_user):
+        """Trong thời gian khóa: từ chối đăng nhập (cả với mật khẩu đúng và sai)."""
+        now = datetime(2026, 9, 30, 10, 5, 0, tzinfo=timezone.utc)
+        # Khóa tới 10:15 (còn 10 phút nữa)
+        self.user.failed_login_attempts = 5
+        self.user.locked_until = datetime(2026, 9, 30, 10, 15, 0, tzinfo=timezone.utc)
+        mock_get_user.return_value = self.user
+
+        # Thử với mật khẩu đúng -> vẫn bị từ chối
+        with self.assertRaises(AuthValidationError) as ctx_correct:
+            validate_credentials(
+                "trainer@example.com",
+                "ValidPass123!",
+                current_time=now,
+            )
+        self.assertEqual(ctx_correct.exception.code, "ACCOUNT_LOCKED")
+
+        # Thử với mật khẩu sai -> vẫn bị từ chối
+        with self.assertRaises(AuthValidationError) as ctx_wrong:
+            validate_credentials(
+                "trainer@example.com",
+                "AnyWrongPassword",
+                current_time=now,
+            )
+        self.assertEqual(ctx_wrong.exception.code, "ACCOUNT_LOCKED")
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_allowed_after_15_minutes_expired_success(self, mock_get_user):
+        """Hết 15 phút: cho phép đăng nhập lại thành công khi nhập đúng mật khẩu."""
+        now = datetime(2026, 9, 30, 10, 20, 0, tzinfo=timezone.utc)
+        # Khóa đã hết hạn lúc 10:15
+        self.user.failed_login_attempts = 5
+        self.user.locked_until = datetime(2026, 9, 30, 10, 15, 0, tzinfo=timezone.utc)
+        mock_get_user.return_value = self.user
+
+        user = validate_credentials(
+            "trainer@example.com",
+            "ValidPass123!",
+            current_time=now,
+        )
+
+        self.assertEqual(user.id, "user-456")
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+        self.mock_reset_lockout.assert_called_once_with(user_id="user-456")
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_allowed_after_15_minutes_expired_wrong_password_starts_new_count(self, mock_get_user):
+        """Hết 15 phút: đăng nhập lại nhưng sai mật khẩu thì bắt đầu chu kỳ đếm mới (1 lần sai)."""
+        now = datetime(2026, 9, 30, 10, 20, 0, tzinfo=timezone.utc)
+        # Khóa đã hết hạn lúc 10:15
+        self.user.failed_login_attempts = 5
+        self.user.locked_until = datetime(2026, 9, 30, 10, 15, 0, tzinfo=timezone.utc)
+        mock_get_user.return_value = self.user
+
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_credentials(
+                "trainer@example.com",
+                "WrongPasswordAgain!",
+                current_time=now,
+            )
+
+        self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(self.user.failed_login_attempts, 1)
+        self.assertIsNone(self.user.locked_until)
+        self.mock_update_lockout.assert_called_with(
+            user_id="user-456",
+            failed_login_attempts=1,
+            locked_until=None,
+        )
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_successful_login_resets_failed_attempts(self, mock_get_user):
+        """Đăng nhập thành công: reset số lần sai."""
+        self.user.failed_login_attempts = 3
+        self.user.locked_until = None
+        mock_get_user.return_value = self.user
+
+        user = validate_credentials("trainer@example.com", "ValidPass123!")
+
+        self.assertEqual(user.id, "user-456")
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+        self.mock_reset_lockout.assert_called_once_with(user_id="user-456")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

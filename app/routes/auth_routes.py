@@ -35,12 +35,16 @@ def login():
             password=password,
         )
     except AuthValidationError as error:
-        status = 403 if error.code == "ACCOUNT_DISABLED" else 401
+        status = 403 if error.code in ("ACCOUNT_DISABLED", "ACCOUNT_LOCKED") else 401
         payload = {"code": error.code}
         if error.message:
             payload["message"] = error.message
         elif error.code == "INVALID_CREDENTIALS":
             payload["message"] = "Email hoặc mật khẩu không đúng"
+        elif error.code == "ACCOUNT_LOCKED":
+            payload["message"] = "Tài khoản tạm thời bị khóa 15 phút do nhập sai mật khẩu quá 5 lần. Vui lòng thử lại sau."
+        if getattr(error, "locked_until", None):
+            payload["locked_until"] = error.locked_until.isoformat()
         return jsonify(payload), status
     except MySQLError:
         return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503

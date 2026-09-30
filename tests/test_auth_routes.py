@@ -47,6 +47,15 @@ class AuthRoutesTests(unittest.TestCase):
             absolute_expires_at=now + timedelta(hours=8),
         )
 
+        # Mock database update/reset lockout để không kết nối MySQL thật trong route tests
+        self.patch_update_lockout = patch("app.services.auth_service.user_repository.update_user_lockout")
+        self.patch_reset_lockout = patch("app.services.auth_service.user_repository.reset_user_lockout")
+        self.mock_update_lockout = self.patch_update_lockout.start()
+        self.mock_reset_lockout = self.patch_reset_lockout.start()
+        self.addCleanup(self.patch_update_lockout.stop)
+        self.addCleanup(self.patch_reset_lockout.stop)
+
+
     def post_login(self, data=None, content_type="application/json"):
         if data is None:
             data = {
@@ -225,8 +234,81 @@ class AuthRoutesTests(unittest.TestCase):
             self.assertNotIn("email does not exist", msg)
             self.assertNotIn("password incorrect", msg)
 
+    # =========================================================================
+    # SCRUM-34 Route Tests: Khóa tạm 15 phút sau 5 lần đăng nhập sai
+    # =========================================================================
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_locked_account_rejected_with_403(self, mock_get_user):
+        """Tài khoản đang bị khóa -> route trả về 403 ACCOUNT_LOCKED."""
+        now = datetime.now(timezone.utc)
+        self.user.locked_until = now + timedelta(minutes=10)
+        self.user.failed_login_attempts = 5
+        mock_get_user.return_value = self.user
+
+        response = self.post_login(data={"email": "trainee@example.com", "password": "SecretPassword123!"})
+        self.assertEqual(response.status_code, 403)
+        data = response.get_json()
+        self.assertEqual(data["code"], "ACCOUNT_LOCKED")
+        self.assertIn("khóa", data["message"].lower())
+        self.assertIn("locked_until", data)
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_locks_account_on_fifth_failed_attempt(self, mock_get_user):
+        """Sai lần thứ 5 -> route trả về 403 ACCOUNT_LOCKED và có thời gian khóa."""
+        self.user.failed_login_attempts = 4
+        self.user.locked_until = None
+        mock_get_user.return_value = self.user
+
+        response = self.post_login(data={"email": "trainee@example.com", "password": "WrongPassword!"})
+        self.assertEqual(response.status_code, 403)
+        data = response.get_json()
+        self.assertEqual(data["code"], "ACCOUNT_LOCKED")
+        self.assertIn("locked_until", data)
+        self.assertEqual(self.user.failed_login_attempts, 5)
+        self.assertIsNotNone(self.user.locked_until)
+
+    @patch("app.services.auth_service.create_stored_login_session")
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_allows_login_after_lockout_expires(self, mock_get_user, mock_create_session):
+        """Hết 15 phút khóa -> route cho phép đăng nhập thành công khi nhập đúng mật khẩu."""
+        now = datetime.now(timezone.utc)
+        self.user.failed_login_attempts = 5
+        self.user.locked_until = now - timedelta(minutes=1)
+        mock_get_user.return_value = self.user
+
+        with self.app.app_context():
+            from app.services.token_service import create_login_tokens
+            tokens = create_login_tokens(self.user.id, self.session.session_id)
+        mock_create_session.return_value = (self.session, tokens)
+
+        response = self.post_login(data={"email": "trainee@example.com", "password": "SecretPassword123!"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.user.failed_login_attempts, 0)
+        self.assertIsNone(self.user.locked_until)
+        self.mock_reset_lockout.assert_called_once_with(user_id="user-123")
+
+    @patch("app.services.auth_service.create_stored_login_session")
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_resets_failed_attempts_on_success(self, mock_get_user, mock_create_session):
+        """Đăng nhập thành công -> reset failed_login_attempts."""
+        self.user.failed_login_attempts = 3
+        self.user.locked_until = None
+        mock_get_user.return_value = self.user
+
+        with self.app.app_context():
+            from app.services.token_service import create_login_tokens
+            tokens = create_login_tokens(self.user.id, self.session.session_id)
+        mock_create_session.return_value = (self.session, tokens)
+
+        response = self.post_login(data={"email": "trainee@example.com", "password": "SecretPassword123!"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.user.failed_login_attempts, 0)
+        self.mock_reset_lockout.assert_called_once_with(user_id="user-123")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
