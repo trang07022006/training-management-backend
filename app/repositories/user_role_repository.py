@@ -145,3 +145,19 @@ def remove_role_from_user(user_id: str, role_id: str) -> bool:
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (user_id, role_id))
         return cursor.rowcount > 0
+
+
+def check_user_role_exists(user_id: str, role_id: str) -> bool:
+    """
+    Kiểm tra xem người dùng đã được gán vai trò này hay chưa (SCRUM-96).
+    """
+    sql = """
+        SELECT 1
+        FROM user_roles
+        WHERE user_id = %s AND role_id = %s
+        LIMIT 1
+    """
+    with _database_cursor() as cursor:
+        cursor.execute(sql, (user_id, role_id))
+        return cursor.fetchone() is not None
+
