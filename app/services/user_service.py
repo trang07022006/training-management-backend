@@ -287,3 +287,36 @@ def lock_user_account(user_id: str) -> dict:
         "status": ACCOUNT_STATUS_LOCKED,
     }
 
+
+class AccountAlreadyActiveError(Exception):
+    def __init__(self, message: str = "Tài khoản này đang ở trạng thái hoạt động."):
+        self.code = "ALREADY_ACTIVE"
+        self.message = message
+        self.status_code = 409
+        super().__init__(message)
+
+
+def unlock_user_account(user_id: str) -> dict:
+    """
+    Mở khóa tài khoản người dùng (SCRUM-107).
+    - Kiểm tra user tồn tại (404 USER_NOT_FOUND nếu không tìm thấy).
+    - Kiểm tra nếu account đang không bị khóa (409 ALREADY_ACTIVE nếu đang active và không bị lockout).
+    - Cập nhật status='active' trong database.
+    - Reset bộ đếm đăng nhập sai và thời gian khóa tạm thời: reset_user_lockout(user_id).
+    - Trả về thông tin an toàn: user_id, status.
+    """
+    user = user_repository.get_user_by_id(user_id)
+    if user is None:
+        raise UserNotFoundError()
+
+    if user.status == ACCOUNT_STATUS_ACTIVE and not user.is_locked():
+        raise AccountAlreadyActiveError()
+
+    user_repository.update_user_status(user_id=str(user.id), status=ACCOUNT_STATUS_ACTIVE)
+    user_repository.reset_user_lockout(user_id=str(user.id))
+
+    return {
+        "user_id": str(user.id),
+        "status": ACCOUNT_STATUS_ACTIVE,
+    }
+

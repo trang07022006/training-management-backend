@@ -239,6 +239,41 @@ def lock_user(user_id: str):
         }), 500
 
 
+@user_bp.post("/users/<user_id>/unlock")
+@permission_required("user.manage")
+def unlock_user(user_id: str):
+    """
+    Mở khóa tài khoản người dùng - Yêu cầu quyền user.manage (SCRUM-107).
+    """
+    try:
+        data = user_service.unlock_user_account(user_id)
+        return jsonify({
+            "status": "success",
+            "message": "Mở khóa tài khoản thành công",
+            "data": data,
+        }), 200
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except user_service.AccountAlreadyActiveError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 409
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi mở khóa tài khoản.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Lỗi hệ thống khi mở khóa tài khoản.",
+        }), 500
+
+
 @user_bp.get("/courses")
 @permission_required("course.view")
 def list_courses():
