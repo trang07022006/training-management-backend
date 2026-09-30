@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 import secrets
 import uuid
@@ -8,7 +9,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.repositories import password_reset_repository, user_repository
+from app.services import email_service
 from app.services.session_service import create_stored_login_session
+
+logger = logging.getLogger(__name__)
 
 
 MAX_FAILED_LOGIN_ATTEMPTS = 5
@@ -222,13 +226,25 @@ def process_forgot_password_request(
     # Kiểm tra người dùng theo email trong MySQL database (không fallback mock)
     user = user_repository.get_user_by_email(normalized_email)
 
-    # SCRUM-46: Nếu user tồn tại, tạo token 30 phút và lưu vào MySQL
+    # SCRUM-46 & SCRUM-48: Nếu user tồn tại, tạo token 30 phút và gửi email
     if user is not None:
-        create_password_reset_token(
+        raw_token, token_record = create_password_reset_token(
             user_id=user.id,
             current_time=current_time,
         )
-        # SCRUM-48 sẽ gửi email SMTP thật chứa raw_token tới người dùng
+        try:
+            email_service.send_password_reset_email(
+                to_email=user.email,
+                raw_token=raw_token,
+            )
+        except Exception as error:
+            # Ghi log an toàn phía server (không log token raw, không log password)
+            logger.error(
+                "Lỗi khi gửi email đặt lại mật khẩu tới %s: %s",
+                user.email,
+                type(error).__name__,
+            )
+            # Không throw lỗi ra ngoài để bảo vệ nguyên tắc anti-enumeration
 
     return {
         "message": PUBLIC_FORGOT_PASSWORD_MESSAGE,

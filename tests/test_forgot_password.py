@@ -34,6 +34,12 @@ class ForgotPasswordApiTests(unittest.TestCase):
         self.mock_insert_token = self.patch_insert_token.start()
         self.addCleanup(self.patch_insert_token.stop)
 
+        self.patch_send_email = patch(
+            "app.services.auth_service.email_service.send_password_reset_email"
+        )
+        self.mock_send_email = self.patch_send_email.start()
+        self.addCleanup(self.patch_send_email.stop)
+
     def post_forgot_password(self, data=None, content_type="application/json"):
         if data is None:
             data = {"email": "admin@ictu.edu.vn"}

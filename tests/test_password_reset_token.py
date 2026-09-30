@@ -38,6 +38,12 @@ class Scrum46PasswordResetTokenTests(unittest.TestCase):
             status="active",
         )
 
+        self.patch_send_email = patch(
+            "app.services.auth_service.email_service.send_password_reset_email"
+        )
+        self.mock_send_email = self.patch_send_email.start()
+        self.addCleanup(self.patch_send_email.stop)
+
     # =========================================================================
     # 1. Email tồn tại tạo token
     # =========================================================================
