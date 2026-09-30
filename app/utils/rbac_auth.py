@@ -35,6 +35,13 @@ def permission_required(permission_code: str):
     def decorator(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
+            # 0. Nguyên tắc Default Deny (SCRUM-71): Nếu permission_code không được cấu hình rõ ràng -> DENY
+            if not isinstance(permission_code, str) or not permission_code.strip():
+                return jsonify({
+                    "code": "FORBIDDEN",
+                    "message": "Bạn không có quyền thực hiện thao tác này.",
+                }), 403
+
             # 1. Xác thực JWT authentication
             try:
                 verify_jwt_in_request(refresh=False, locations=["headers"])
