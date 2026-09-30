@@ -58,7 +58,10 @@ def permission_required(permission_code: str):
                 not isinstance(value, str) or not value.strip()
                 for value in (session_id, user_id)
             ):
-                return jsonify({"code": "SESSION_INVALID"}), 401
+                return jsonify({
+                    "code": "SESSION_INVALID",
+                    "message": "Phiên làm việc không hợp lệ hoặc thiếu thông tin định danh",
+                }), 401
 
             # 2. Xác thực Session trong database nếu chưa có trong g
             session = getattr(g, "login_session", None)
@@ -66,13 +69,22 @@ def permission_required(permission_code: str):
                 try:
                     session = get_session_by_id(session_id)
                     if session is None or session.user_id != user_id:
-                        return jsonify({"code": "SESSION_INVALID"}), 401
+                        return jsonify({
+                            "code": "SESSION_INVALID",
+                            "message": "Phiên làm việc không tồn tại hoặc không khớp với người dùng",
+                        }), 401
                     validate_login_session(session)
                     g.login_session = session
                 except SessionValidationError as error:
-                    return jsonify({"code": error.code}), 401
+                    return jsonify({
+                        "code": error.code,
+                        "message": "Phiên làm việc đã hết hạn hoặc đã bị thu hồi",
+                    }), 401
                 except MySQLError:
-                    return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503
+                    return jsonify({
+                        "code": "SESSION_STORAGE_UNAVAILABLE",
+                        "message": "Hệ thống lưu trữ phiên tạm thời không khả dụng",
+                    }), 503
 
             # 3. Kiểm tra Authorization từ database (Default Deny)
             # Tuyệt đối không lấy user_id hoặc permission từ request body/headers/params
