@@ -28,6 +28,12 @@ class ForgotPasswordApiTests(unittest.TestCase):
             status="active",
         )
 
+        self.patch_insert_token = patch(
+            "app.services.auth_service.password_reset_repository.insert_reset_token"
+        )
+        self.mock_insert_token = self.patch_insert_token.start()
+        self.addCleanup(self.patch_insert_token.stop)
+
     def post_forgot_password(self, data=None, content_type="application/json"):
         if data is None:
             data = {"email": "admin@ictu.edu.vn"}
@@ -239,8 +245,9 @@ class ForgotPasswordApiTests(unittest.TestCase):
 
 
 class ForgotPasswordServiceUnitTests(unittest.TestCase):
+    @patch("app.services.auth_service.password_reset_repository.insert_reset_token")
     @patch("app.services.auth_service.user_repository.get_user_by_email")
-    def test_service_valid_email(self, mock_get_user):
+    def test_service_valid_email(self, mock_get_user, mock_insert_token):
         mock_get_user.return_value = User(
             id="u1",
             email="user@example.com",
@@ -249,6 +256,7 @@ class ForgotPasswordServiceUnitTests(unittest.TestCase):
         result = process_forgot_password_request("User@Example.com  ")
         self.assertEqual(result["message"], PUBLIC_FORGOT_PASSWORD_MESSAGE)
         mock_get_user.assert_called_once_with("user@example.com")
+        mock_insert_token.assert_called_once()
 
     def test_service_empty_email_raises_validation_error(self):
         with self.assertRaises(AuthValidationError) as ctx:
