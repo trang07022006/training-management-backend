@@ -204,6 +204,41 @@ def update_user(user_id: str):
     }), 200
 
 
+@user_bp.post("/users/<user_id>/lock")
+@permission_required("user.manage")
+def lock_user(user_id: str):
+    """
+    Khóa tài khoản người dùng - Yêu cầu quyền user.manage (SCRUM-106).
+    """
+    try:
+        data = user_service.lock_user_account(user_id)
+        return jsonify({
+            "status": "success",
+            "message": "Khóa tài khoản thành công",
+            "data": data,
+        }), 200
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except user_service.AccountAlreadyLockedError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 409
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi khóa tài khoản.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Lỗi hệ thống khi khóa tài khoản.",
+        }), 500
+
+
 @user_bp.get("/courses")
 @permission_required("course.view")
 def list_courses():

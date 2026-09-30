@@ -14,7 +14,7 @@ from mysql.connector.errors import IntegrityError
 from werkzeug.security import generate_password_hash
 
 from app.models.user import User
-from app.repositories import role_repository, user_repository, user_role_repository
+from app.repositories import role_repository, session_repository, user_repository, user_role_repository
 
 logger = logging.getLogger(__name__)
 
@@ -247,5 +247,43 @@ def get_user_account_status(user_id: str) -> dict:
         "status": normalized_status,
         "is_locked": is_locked,
         "is_active": normalized_status == ACCOUNT_STATUS_ACTIVE and not is_locked,
+    }
+
+
+class AccountAlreadyLockedError(Exception):
+    def __init__(self, message: str = "Tài khoản này đã bị khóa từ trước."):
+        self.code = "ALREADY_LOCKED"
+        self.message = message
+        self.status_code = 409
+        super().__init__(message)
+
+
+def lock_user_account(user_id: str) -> dict:
+    """
+    Khóa tài khoản người dùng (SCRUM-106).
+    - Kiểm tra user tồn tại (404 USER_NOT_FOUND nếu không tìm thấy).
+    - Kiểm tra nếu account đã ở trạng thái locked (409 ALREADY_LOCKED nếu đã khóa).
+    - Cập nhật status='locked' trong database.
+    - Thu hồi toàn bộ phiên hoạt động của người dùng (SCRUM-109).
+    - Trả về thông tin an toàn: user_id, status.
+    """
+    user = user_repository.get_user_by_id(user_id)
+    if user is None:
+        raise UserNotFoundError()
+
+    if user.status == ACCOUNT_STATUS_LOCKED:
+        raise AccountAlreadyLockedError()
+
+    user_repository.update_user_status(user_id=str(user.id), status=ACCOUNT_STATUS_LOCKED)
+
+    # Thu hồi toàn bộ phiên làm việc của tài khoản này
+    try:
+        session_repository.revoke_other_user_sessions(user_id=str(user.id), current_session_id=None)
+    except Exception as e:
+        logger.warning(f"Could not revoke sessions for locked user {user_id}: {e}")
+
+    return {
+        "user_id": str(user.id),
+        "status": ACCOUNT_STATUS_LOCKED,
     }
 
