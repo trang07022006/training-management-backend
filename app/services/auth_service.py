@@ -5,11 +5,16 @@ from app.repositories import user_repository
 from app.services.session_service import create_stored_login_session
 
 
-class AuthValidationError(Exception):
-    def __init__(self, code: str):
-        self.code = code
-        super().__init__(code)
+INVALID_CREDENTIALS_MESSAGE = "Email hoặc mật khẩu không đúng"
 
+
+class AuthValidationError(Exception):
+    def __init__(self, code: str, message: str | None = None):
+        self.code = code
+        if message is None and code == "INVALID_CREDENTIALS":
+            message = INVALID_CREDENTIALS_MESSAGE
+        self.message = message
+        super().__init__(message or code)
 
 
 def verify_password(stored_password_hash: str, plain_password: str) -> bool:
@@ -34,6 +39,7 @@ def validate_credentials(email: str, password: str) -> User:
     - Tìm kiếm người dùng theo email.
     - Kiểm tra mật khẩu khớp với password_hash bảo mật.
     - Không lưu hoặc so sánh mật khẩu dạng plaintext.
+    - Trả cùng thông báo lỗi chung khi email không tồn tại hoặc mật khẩu sai.
     - Kiểm tra tài khoản đang hoạt động (active).
     """
     if not isinstance(email, str) or not email.strip():
@@ -44,15 +50,16 @@ def validate_credentials(email: str, password: str) -> User:
 
     user = user_repository.get_user_by_email(email.strip())
     if user is None:
-        raise AuthValidationError("INVALID_CREDENTIALS")
+        raise AuthValidationError("INVALID_CREDENTIALS", INVALID_CREDENTIALS_MESSAGE)
 
     if not verify_password(user.password_hash, password):
-        raise AuthValidationError("INVALID_CREDENTIALS")
+        raise AuthValidationError("INVALID_CREDENTIALS", INVALID_CREDENTIALS_MESSAGE)
 
     if user.status != "active":
         raise AuthValidationError("ACCOUNT_DISABLED")
 
     return user
+
 
 
 def authenticate_and_login(email: str, password: str):

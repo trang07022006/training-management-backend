@@ -138,6 +138,7 @@ class AuthRoutesTests(unittest.TestCase):
         response = self.post_login()
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.get_json()["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(response.get_json()["message"], "Email hoặc mật khẩu không đúng")
 
     @patch("app.routes.auth_routes.authenticate_and_login")
     def test_reject_disabled_account(self, mock_auth):
@@ -176,6 +177,7 @@ class AuthRoutesTests(unittest.TestCase):
         response = self.post_login(data={"email": "notfound@example.com", "password": "SecretPassword123!"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.get_json()["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(response.get_json()["message"], "Email hoặc mật khẩu không đúng")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_login_route_wrong_password(self, mock_get_user):
@@ -184,8 +186,47 @@ class AuthRoutesTests(unittest.TestCase):
         response = self.post_login(data={"email": "trainee@example.com", "password": "IncorrectPassword123!"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.get_json()["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(response.get_json()["message"], "Email hoặc mật khẩu không đúng")
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_login_route_invalid_credentials_returns_same_status_and_message(self, mock_get_user):
+        """Xác nhận cả 2 trường hợp (email không tồn tại và password sai) trả cùng status và message."""
+        # 1. Email không tồn tại
+        mock_get_user.return_value = None
+        res_email_not_found = self.post_login(
+            data={"email": "notfound@example.com", "password": "SecretPassword123!"}
+        )
+
+        # 2. Password sai
+        mock_get_user.return_value = self.user
+        res_wrong_password = self.post_login(
+            data={"email": "trainee@example.com", "password": "WrongPassword123!"}
+        )
+
+        # Cùng status HTTP 401
+        self.assertEqual(res_email_not_found.status_code, 401)
+        self.assertEqual(res_wrong_password.status_code, 401)
+        self.assertEqual(res_email_not_found.status_code, res_wrong_password.status_code)
+
+        data_email_not_found = res_email_not_found.get_json()
+        data_wrong_password = res_wrong_password.get_json()
+
+        # Cùng body và cùng thông báo "Email hoặc mật khẩu không đúng"
+        self.assertEqual(data_email_not_found["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(data_wrong_password["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(data_email_not_found["message"], "Email hoặc mật khẩu không đúng")
+        self.assertEqual(data_wrong_password["message"], "Email hoặc mật khẩu không đúng")
+        self.assertEqual(data_email_not_found, data_wrong_password)
+
+        # Không chứa các thông điệp làm lộ thông tin tài khoản
+        for body in (data_email_not_found, data_wrong_password):
+            msg = body["message"].lower()
+            self.assertNotIn("user not found", msg)
+            self.assertNotIn("email does not exist", msg)
+            self.assertNotIn("password incorrect", msg)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

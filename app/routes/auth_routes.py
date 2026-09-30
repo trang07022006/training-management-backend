@@ -36,7 +36,12 @@ def login():
         )
     except AuthValidationError as error:
         status = 403 if error.code == "ACCOUNT_DISABLED" else 401
-        return jsonify({"code": error.code}), status
+        payload = {"code": error.code}
+        if error.message:
+            payload["message"] = error.message
+        elif error.code == "INVALID_CREDENTIALS":
+            payload["message"] = "Email hoặc mật khẩu không đúng"
+        return jsonify(payload), status
     except MySQLError:
         return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503
 

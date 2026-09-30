@@ -86,24 +86,50 @@ class AuthServiceTests(unittest.TestCase):
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_validate_credentials_email_not_found(self, mock_get_user):
-        """Kiểm tra: email không tồn tại -> báo lỗi INVALID_CREDENTIALS."""
+        """Kiểm tra: email không tồn tại -> báo lỗi INVALID_CREDENTIALS cùng thông báo chung."""
         mock_get_user.return_value = None
 
         with self.assertRaises(AuthValidationError) as ctx:
             validate_credentials("nonexistent@example.com", "ValidPass123!")
 
         self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(ctx.exception.message, "Email hoặc mật khẩu không đúng")
         mock_get_user.assert_called_once_with("nonexistent@example.com")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_validate_credentials_wrong_password(self, mock_get_user):
-        """Kiểm tra: password sai -> báo lỗi INVALID_CREDENTIALS."""
+        """Kiểm tra: password sai -> báo lỗi INVALID_CREDENTIALS cùng thông báo chung."""
         mock_get_user.return_value = self.user
 
         with self.assertRaises(AuthValidationError) as ctx:
             validate_credentials("trainer@example.com", "IncorrectPass!")
 
         self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(ctx.exception.message, "Email hoặc mật khẩu không đúng")
+
+    @patch("app.services.auth_service.user_repository.get_user_by_email")
+    def test_invalid_credentials_returns_same_generic_message_and_code(self, mock_get_user):
+        """Xác nhận hai trường hợp (email không tồn tại & password sai) trả cùng code và message chung."""
+        # 1. Email không tồn tại
+        mock_get_user.return_value = None
+        with self.assertRaises(AuthValidationError) as ctx_email:
+            validate_credentials("nonexistent@example.com", "ValidPass123!")
+
+        # 2. Password sai
+        mock_get_user.return_value = self.user
+        with self.assertRaises(AuthValidationError) as ctx_pass:
+            validate_credentials("trainer@example.com", "WrongPassword123!")
+
+        self.assertEqual(ctx_email.exception.code, ctx_pass.exception.code)
+        self.assertEqual(ctx_email.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(ctx_email.exception.message, ctx_pass.exception.message)
+        self.assertEqual(ctx_email.exception.message, "Email hoặc mật khẩu không đúng")
+
+        for msg in (ctx_email.exception.message.lower(), ctx_pass.exception.message.lower()):
+            self.assertNotIn("user not found", msg)
+            self.assertNotIn("email does not exist", msg)
+            self.assertNotIn("password incorrect", msg)
+
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_validate_credentials_rejects_plaintext_password(self, mock_get_user):
@@ -180,6 +206,7 @@ class AuthServiceTests(unittest.TestCase):
             authenticate_and_login("notfound@example.com", "ValidPass123!")
 
         self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(ctx.exception.message, "Email hoặc mật khẩu không đúng")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_authenticate_wrong_password(self, mock_get_user):
@@ -189,6 +216,7 @@ class AuthServiceTests(unittest.TestCase):
             authenticate_and_login("trainer@example.com", "IncorrectPass!")
 
         self.assertEqual(ctx.exception.code, "INVALID_CREDENTIALS")
+        self.assertEqual(ctx.exception.message, "Email hoặc mật khẩu không đúng")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_authenticate_disabled_account(self, mock_get_user):
