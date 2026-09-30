@@ -146,6 +146,23 @@ def get_user_by_email(email: str) -> User | None:
     return _row_to_user(row)
 
 
+def check_email_exists(email: str, exclude_user_id: str | None = None) -> bool:
+    """
+    Kiểm tra email đã tồn tại hay chưa, có thể loại trừ user_id cụ thể (SCRUM-85).
+    Chống trùng lặp email không phân biệt chữ hoa/thường (case-insensitive).
+    """
+    norm_email = email.strip().lower() if isinstance(email, str) else ""
+    if not norm_email:
+        return False
+
+    existing = get_user_by_email(norm_email)
+    if existing is None:
+        return False
+    if exclude_user_id and str(existing.id) == str(exclude_user_id):
+        return False
+    return True
+
+
 def get_user_by_id(user_id: str) -> User | None:
     """Đọc người dùng theo ID; trả về None nếu không tìm thấy."""
 

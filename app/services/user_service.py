@@ -123,8 +123,7 @@ def create_user_service(
         raise UserValidationError("INVALID_STATUS", f"Trạng thái không hợp lệ: {selected_status}.")
 
     # Check duplicate email
-    existing = user_repository.get_user_by_email(normalized_email)
-    if existing is not None:
+    if user_repository.check_email_exists(normalized_email):
         raise DuplicateEmailError()
 
     password_hash = generate_password_hash(password)
@@ -147,9 +146,10 @@ def create_user_service(
 
     try:
         created_user = user_repository.create_user(user)
-    except IntegrityError as e:
-        # MySQL errno 1062 = Duplicate entry
-        if getattr(e, "errno", None) == 1062 or "duplicate" in str(e).lower() or "unique" in str(e).lower():
+    except Exception as e:
+        err_msg = str(e).lower()
+        err_no = getattr(e, "errno", None)
+        if err_no == 1062 or "duplicate" in err_msg or "unique" in err_msg:
             raise DuplicateEmailError()
         raise
 
