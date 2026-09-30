@@ -142,6 +142,56 @@ def create_user():
     }), 201
 
 
+@user_bp.route("/users/<user_id>", methods=["PUT", "PATCH"])
+@permission_required("user.manage")
+def update_user(user_id: str):
+    """
+    Cập nhật thông tin người dùng - Yêu cầu quyền user.manage (SCRUM-86).
+    Chỉ cho phép cập nhật các trường: name, phone, email, status.
+    Ngăn chặn mass assignment và sửa các trường nhạy cảm (password, role, id, v.v.).
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_user = user_service.update_user_service(user_id=user_id, updates=data)
+    except user_service.UserNotFoundError as e:
+        return jsonify({
+            "code": e.code,
+            "message": e.message,
+        }), 404
+    except user_service.UserValidationError as e:
+        return jsonify({
+            "code": e.code,
+            "message": e.message,
+        }), 400
+    except user_service.DuplicateEmailError as e:
+        return jsonify({
+            "code": e.code,
+            "message": e.message,
+        }), 409
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật người dùng.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi trong quá trình cập nhật người dùng.",
+        }), 500
+
+    return jsonify({
+        "status": "success",
+        "message": "Cập nhật người dùng thành công",
+        "data": updated_user.to_public_dict(),
+    }), 200
+
+
 @user_bp.get("/courses")
 @permission_required("course.view")
 def list_courses():

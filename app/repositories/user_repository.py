@@ -285,3 +285,38 @@ def update_user_password(user_id: str, new_password_hash: str) -> bool:
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (new_password_hash, user_id))
         return cursor.rowcount == 1
+
+
+def update_user(user: User) -> bool:
+    """
+    Cập nhật thông tin người dùng vào MySQL (SCRUM-86).
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    Chỉ cho phép cập nhật các trường được phê duyệt: name, phone, email, status.
+    """
+    now = datetime.now(timezone.utc)
+    updated_at = user.updated_at or now
+
+    sql = """
+        UPDATE users
+        SET
+            name = %s,
+            phone = %s,
+            email = %s,
+            status = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        user.name,
+        user.phone,
+        user.email,
+        user.status,
+        _to_mysql_datetime(updated_at),
+        user.id,
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        user.updated_at = updated_at
+        return cursor.rowcount > 0
+

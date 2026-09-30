@@ -162,3 +162,64 @@ def create_user_service(
         logger.warning(f"Could not assign initial role {selected_role} to user {user_id}: {e}")
 
     return created_user
+
+
+def update_user_service(user_id: str, updates: dict) -> User:
+    """
+    Cập nhật thông tin người dùng (SCRUM-86):
+    - Không cho mass-assignment
+    - Chỉ cho phép cập nhật: name, phone, email, status
+    - Ngăn chặn chỉnh sửa password, role, id, permissions
+    - Kiểm tra email duy nhất nếu thay đổi
+    """
+    if not isinstance(updates, dict):
+        raise UserValidationError("INVALID_DATA", "Dữ liệu cập nhật không hợp lệ.")
+
+    # Check for forbidden sensitive fields
+    for forbidden in ["password", "password_hash", "role", "permissions", "id", "failed_login_attempts", "locked_until"]:
+        if forbidden in updates and updates[forbidden] is not None:
+            raise UserValidationError("FORBIDDEN_FIELD", f"Không được phép chỉnh sửa trường nhạy cảm: {forbidden}.")
+
+    user = user_repository.get_user_by_id(user_id)
+    if user is None:
+        raise UserNotFoundError()
+
+    # Update name
+    if "name" in updates:
+        name_val = updates["name"]
+        if not isinstance(name_val, str) or not name_val.strip():
+            raise UserValidationError("NAME_REQUIRED", "Họ và tên không được để trống.")
+        user.name = name_val.strip()
+
+    # Update phone
+    if "phone" in updates:
+        user.phone = validate_phone_number(updates["phone"])
+
+    # Update status
+    if "status" in updates:
+        st_val = updates["status"]
+        if not isinstance(st_val, str) or st_val.strip().lower() not in VALID_STATUSES:
+            raise UserValidationError("INVALID_STATUS", f"Trạng thái không hợp lệ: {st_val}.")
+        user.status = st_val.strip().lower()
+
+    # Update email
+    if "email" in updates:
+        new_email = validate_email_format(updates["email"])
+        if new_email != user.email:
+            if user_repository.check_email_exists(new_email, exclude_user_id=user.id):
+                raise DuplicateEmailError()
+            user.email = new_email
+
+    user.updated_at = datetime.now(timezone.utc)
+
+    try:
+        user_repository.update_user(user)
+    except Exception as e:
+        err_msg = str(e).lower()
+        err_no = getattr(e, "errno", None)
+        if err_no == 1062 or "duplicate" in err_msg or "unique" in err_msg:
+            raise DuplicateEmailError()
+        raise
+
+    return user
+
