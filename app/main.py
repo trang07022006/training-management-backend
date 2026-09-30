@@ -6,6 +6,7 @@ from app.database.connection import get_db_connection
 from app.extensions import jwt
 from app.routes.auth_routes import auth_bp
 from app.routes.session_routes import session_bp
+from app.routes.user_routes import user_bp
 
 
 app = Flask(__name__)
@@ -18,7 +19,7 @@ CORS(app)
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(session_bp)
-app.register_blueprint(auth_bp)
+app.register_blueprint(user_bp)
 
 
 @app.route("/api/health", methods=["GET"])
