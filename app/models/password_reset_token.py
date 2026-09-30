@@ -9,6 +9,12 @@ class PasswordResetToken:
     token_hash: str
     created_at: datetime
     expires_at: datetime
+    used_at: datetime | None = None
+
+    @property
+    def is_used(self) -> bool:
+        """Kiểm tra token đã được sử dụng hay chưa (SCRUM-47 single-use)."""
+        return self.used_at is not None
 
     def is_expired(self, current_time: datetime | None = None) -> bool:
         """Kiểm tra token đã hết hạn 30 phút hay chưa."""
@@ -17,3 +23,4 @@ class PasswordResetToken:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         return now >= expires_at
+

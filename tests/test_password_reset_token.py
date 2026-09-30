@@ -11,12 +11,15 @@ from app.models.user import User
 from app.repositories import password_reset_repository
 from app.routes.auth_routes import auth_bp
 from app.services.auth_service import (
+    AuthValidationError,
     PUBLIC_FORGOT_PASSWORD_MESSAGE,
     RESET_TOKEN_DURATION,
     create_password_reset_token,
     generate_reset_token,
     hash_reset_token,
     process_forgot_password_request,
+    reset_password_with_token,
+    validate_reset_token,
 )
 
 
@@ -236,6 +239,390 @@ class Scrum46PasswordResetTokenTests(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["code"], "DATABASE_ERROR")
         self.assertNotIn(PUBLIC_FORGOT_PASSWORD_MESSAGE, str(data))
+
+
+class Scrum47SingleUsePasswordResetTokenTests(unittest.TestCase):
+    def setUp(self):
+        self.app = Flask(__name__)
+        self.app.config.update(TESTING=True)
+        self.app.register_blueprint(auth_bp)
+        self.client = self.app.test_client()
+
+        self.fixed_now = datetime(2026, 9, 30, 16, 0, 0, tzinfo=timezone.utc)
+        self.raw_token = "secure-random-token-xyz-1234567890"
+        self.token_hash = hash_reset_token(self.raw_token)
+        self.user_id = "user-ictu-12345"
+
+        self.valid_token = PasswordResetToken(
+            id="token-uuid-001",
+            user_id=self.user_id,
+            token_hash=self.token_hash,
+            created_at=self.fixed_now - timedelta(minutes=10),
+            expires_at=self.fixed_now + timedelta(minutes=20),
+            used_at=None,
+        )
+
+    # =========================================================================
+    # 1. token hợp lệ được chấp nhận
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_reset_token_by_hash")
+    def test_valid_token_is_accepted(self, mock_get_token):
+        mock_get_token.return_value = self.valid_token
+
+        # Test service: validate_reset_token
+        result = validate_reset_token(self.raw_token, current_time=self.fixed_now)
+        self.assertEqual(result.id, self.valid_token.id)
+        self.assertFalse(result.is_used)
+
+        # Test endpoint verify-reset-token
+        response = self.client.post(
+            "/api/auth/verify-reset-token",
+            json={"token": self.raw_token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["valid"])
+
+    # =========================================================================
+    # 2. token dùng lần đầu PASS
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.execute_reset_password_transaction")
+    def test_first_use_of_token_succeeds(self, mock_execute_tx):
+        mock_execute_tx.return_value = self.valid_token
+
+        response = self.client.post(
+            "/api/auth/reset-password",
+            json={
+                "token": self.raw_token,
+                "new_password": "NewSecretPassword123!",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("thành công", response.get_json()["message"])
+        mock_execute_tx.assert_called_once()
+        # Đảm bảo không làm lộ token ra response
+        self.assertNotIn(self.raw_token, response.get_data(as_text=True))
+        self.assertNotIn(self.token_hash, response.get_data(as_text=True))
+
+    # =========================================================================
+    # 3. token dùng lần hai FAIL
+    # =========================================================================
+    def test_second_use_of_token_fails(self):
+        """Mô phỏng chu trình thực tế: lần đầu dùng thành công, lần thứ hai dùng lại cùng token bị từ chối."""
+        tokens_db = {
+            self.token_hash: {
+                "id": "token-uuid-001",
+                "user_id": self.user_id,
+                "token_hash": self.token_hash,
+                "created_at": self.fixed_now - timedelta(minutes=5),
+                "expires_at": self.fixed_now + timedelta(minutes=25),
+                "used_at": None,
+            }
+        }
+        users_db = {
+            self.user_id: {
+                "id": self.user_id,
+                "password_hash": "old-hash",
+            }
+        }
+
+        with patch("app.repositories.password_reset_repository.get_db_connection") as mock_conn:
+            fake_conn = MagicMock()
+            fake_cursor = MagicMock()
+            fake_conn.cursor.return_value.__enter__.return_value = fake_cursor
+            mock_conn.return_value = fake_conn
+
+            def fake_execute(query, params):
+                if "SELECT" in query and "FROM password_reset_tokens" in query:
+                    t_hash = params[0]
+                    fake_cursor.fetchone.return_value = tokens_db.get(t_hash)
+                elif "UPDATE users" in query:
+                    new_pw, uid = params
+                    users_db[uid]["password_hash"] = new_pw
+                    fake_cursor.rowcount = 1
+                elif "UPDATE password_reset_tokens" in query:
+                    used_at_val, tid = params
+                    for t in tokens_db.values():
+                        if t["id"] == tid:
+                            t["used_at"] = used_at_val
+
+            fake_cursor.execute.side_effect = fake_execute
+
+            # Lần 1: Dùng token lần đầu -> PASS
+            res1 = self.client.post(
+                "/api/auth/reset-password",
+                json={"token": self.raw_token, "new_password": "NewPassword123!"},
+            )
+            self.assertEqual(res1.status_code, 200)
+            self.assertIsNotNone(tokens_db[self.token_hash]["used_at"])
+
+            # Lần 2: Dùng lại đúng token đó -> FAIL (bị từ chối vì đã used)
+            res2 = self.client.post(
+                "/api/auth/reset-password",
+                json={"token": self.raw_token, "new_password": "AnotherPassword456!"},
+            )
+            self.assertEqual(res2.status_code, 400)
+            self.assertEqual(res2.get_json()["code"], "TOKEN_ALREADY_USED")
+
+    # =========================================================================
+    # 4. token đã đánh dấu used bị từ chối
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_reset_token_by_hash")
+    def test_already_used_token_is_rejected(self, mock_get_token):
+        used_token = PasswordResetToken(
+            id="token-used-001",
+            user_id=self.user_id,
+            token_hash=self.token_hash,
+            created_at=self.fixed_now - timedelta(minutes=15),
+            expires_at=self.fixed_now + timedelta(minutes=15),
+            used_at=self.fixed_now - timedelta(minutes=5),
+        )
+        mock_get_token.return_value = used_token
+
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_reset_token(self.raw_token, current_time=self.fixed_now)
+        self.assertEqual(ctx.exception.code, "TOKEN_ALREADY_USED")
+
+        response = self.client.post(
+            "/api/auth/verify-reset-token",
+            json={"token": self.raw_token},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["code"], "TOKEN_ALREADY_USED")
+
+    # =========================================================================
+    # 5. token hết hạn bị từ chối
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_reset_token_by_hash")
+    def test_expired_token_is_rejected(self, mock_get_token):
+        expired_token = PasswordResetToken(
+            id="token-exp-001",
+            user_id=self.user_id,
+            token_hash=self.token_hash,
+            created_at=self.fixed_now - timedelta(minutes=35),
+            expires_at=self.fixed_now - timedelta(minutes=5),
+            used_at=None,
+        )
+        mock_get_token.return_value = expired_token
+
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_reset_token(self.raw_token, current_time=self.fixed_now)
+        self.assertEqual(ctx.exception.code, "TOKEN_EXPIRED")
+
+        response = self.client.post(
+            "/api/auth/verify-reset-token",
+            json={"token": self.raw_token},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["code"], "TOKEN_EXPIRED")
+
+    # =========================================================================
+    # 6. token không tồn tại bị từ chối
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_reset_token_by_hash")
+    def test_non_existent_token_is_rejected(self, mock_get_token):
+        mock_get_token.return_value = None
+
+        with self.assertRaises(AuthValidationError) as ctx:
+            validate_reset_token("non-existent-token", current_time=self.fixed_now)
+        self.assertEqual(ctx.exception.code, "INVALID_TOKEN")
+
+        response = self.client.post(
+            "/api/auth/verify-reset-token",
+            json={"token": "non-existent-token"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["code"], "INVALID_TOKEN")
+
+    # =========================================================================
+    # 7. token hash lookup đúng
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_reset_token_by_hash")
+    def test_token_hash_lookup_uses_sha256(self, mock_get_token):
+        mock_get_token.return_value = self.valid_token
+
+        raw_test_token = "special_secret_token_12345"
+        expected_hash = hashlib.sha256(raw_test_token.encode("utf-8")).hexdigest()
+
+        validate_reset_token(raw_test_token, current_time=self.fixed_now)
+
+        # Đảm bảo lookup bằng hash SHA-256 64 ký tự, không bao giờ dùng raw token
+        mock_get_token.assert_called_once_with(expected_hash)
+        self.assertNotEqual(mock_get_token.call_args[0][0], raw_test_token)
+
+    # =========================================================================
+    # 8. update password lỗi thì token chưa bị consume
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_db_connection")
+    def test_failed_password_update_does_not_consume_token(self, mock_get_conn):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_get_conn.return_value = mock_conn
+
+        mock_cursor.fetchone.return_value = {
+            "id": "token-1",
+            "user_id": "user-1",
+            "token_hash": self.token_hash,
+            "created_at": self.fixed_now - timedelta(minutes=5),
+            "expires_at": self.fixed_now + timedelta(minutes=25),
+            "used_at": None,
+        }
+
+        # Giả lập lỗi ở bước update users
+        def cursor_execute(sql, params):
+            if "UPDATE users" in sql:
+                raise MySQLError("Database disk write error during password update")
+
+        mock_cursor.execute.side_effect = cursor_execute
+
+        with self.assertRaises(MySQLError):
+            password_reset_repository.execute_reset_password_transaction(
+                token_hash=self.token_hash,
+                new_password_hash="new-hash",
+                current_time=self.fixed_now,
+            )
+
+        # Kiểm tra bước UPDATE password_reset_tokens KHÔNG BAO GIỜ được gọi
+        called_sqls = [call[0][0] for call in mock_cursor.execute.call_args_list]
+        update_token_sqls = [s for s in called_sqls if "UPDATE password_reset_tokens" in s]
+        self.assertEqual(len(update_token_sqls), 0)
+
+        # Kiểm tra rollback được gọi
+        mock_conn.rollback.assert_called_once()
+        mock_conn.commit.assert_not_called()
+
+    # =========================================================================
+    # 9. transaction rollback đúng khi có lỗi
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_db_connection")
+    def test_transaction_rollback_on_any_error(self, mock_get_conn):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_get_conn.return_value = mock_conn
+
+        mock_cursor.fetchone.return_value = {
+            "id": "token-1",
+            "user_id": "user-1",
+            "token_hash": self.token_hash,
+            "created_at": self.fixed_now - timedelta(minutes=5),
+            "expires_at": self.fixed_now + timedelta(minutes=25),
+            "used_at": None,
+        }
+
+        # Giả lập lỗi ở bước update token used_at
+        def cursor_execute(sql, params):
+            if "UPDATE password_reset_tokens" in sql:
+                raise MySQLError("Deadlock or constraint error during token update")
+
+        mock_cursor.execute.side_effect = cursor_execute
+
+        with self.assertRaises(MySQLError):
+            password_reset_repository.execute_reset_password_transaction(
+                token_hash=self.token_hash,
+                new_password_hash="new-hash",
+                current_time=self.fixed_now,
+            )
+
+        mock_conn.rollback.assert_called_once()
+        mock_conn.commit.assert_not_called()
+        mock_conn.close.assert_called_once()
+
+    # =========================================================================
+    # 10. lỗi database không fallback mock
+    # =========================================================================
+    @patch("app.services.auth_service.password_reset_repository.execute_reset_password_transaction")
+    def test_database_error_on_reset_password_returns_500_without_mock_fallback(
+        self, mock_execute_tx
+    ):
+        mock_execute_tx.side_effect = MySQLError("MySQL connection lost")
+
+        response = self.client.post(
+            "/api/auth/reset-password",
+            json={
+                "token": self.raw_token,
+                "new_password": "ValidPassword123!",
+            },
+        )
+
+        self.assertEqual(response.status_code, 500)
+        data = response.get_json()
+        self.assertEqual(data["code"], "DATABASE_ERROR")
+        self.assertNotIn("thành công", str(data))
+
+    # =========================================================================
+    # 11. Transaction ordering: validate -> update password -> mark used -> commit
+    # =========================================================================
+    @patch("app.repositories.password_reset_repository.get_db_connection")
+    def test_transaction_execution_strict_order(self, mock_get_conn):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_get_conn.return_value = mock_conn
+
+        mock_cursor.fetchone.return_value = {
+            "id": "token-1",
+            "user_id": "user-1",
+            "token_hash": self.token_hash,
+            "created_at": self.fixed_now - timedelta(minutes=5),
+            "expires_at": self.fixed_now + timedelta(minutes=25),
+            "used_at": None,
+        }
+
+        call_order = []
+
+        def tracked_execute(sql, params):
+            if "SELECT" in sql:
+                call_order.append("validate_token")
+            elif "UPDATE users" in sql:
+                call_order.append("update_password")
+            elif "UPDATE password_reset_tokens" in sql:
+                call_order.append("mark_token_used")
+
+        mock_cursor.execute.side_effect = tracked_execute
+        mock_conn.commit.side_effect = lambda: call_order.append("commit")
+
+        password_reset_repository.execute_reset_password_transaction(
+            token_hash=self.token_hash,
+            new_password_hash="hashed-pw",
+            current_time=self.fixed_now,
+        )
+
+        expected_order = [
+            "validate_token",
+            "update_password",
+            "mark_token_used",
+            "commit",
+        ]
+        self.assertEqual(call_order, expected_order)
+
+    # =========================================================================
+    # 12. Payload validation: thiếu token hoặc mật khẩu bị từ chối 400
+    # =========================================================================
+    def test_missing_token_or_password_returns_400(self):
+        # Thiếu token
+        res1 = self.client.post(
+            "/api/auth/reset-password",
+            json={"new_password": "ValidPassword123!"},
+        )
+        self.assertEqual(res1.status_code, 400)
+        self.assertEqual(res1.get_json()["code"], "TOKEN_REQUIRED")
+
+        # Thiếu password
+        res2 = self.client.post(
+            "/api/auth/reset-password",
+            json={"token": self.raw_token},
+        )
+        self.assertEqual(res2.status_code, 400)
+        self.assertEqual(res2.get_json()["code"], "PASSWORD_REQUIRED")
+
+        # Non-JSON
+        res3 = self.client.post(
+            "/api/auth/reset-password",
+            data="not json",
+        )
+        self.assertEqual(res3.status_code, 400)
 
 
 if __name__ == "__main__":

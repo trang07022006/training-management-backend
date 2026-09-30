@@ -3,7 +3,7 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
@@ -232,6 +232,88 @@ def process_forgot_password_request(
 
     return {
         "message": PUBLIC_FORGOT_PASSWORD_MESSAGE,
+    }
+
+
+def validate_reset_token(
+    raw_token: str,
+    current_time: datetime | None = None,
+) -> PasswordResetToken:
+    """
+    Kiểm tra token đặt lại mật khẩu (SCRUM-47):
+    - Token không được rỗng.
+    - Hash token theo SHA-256.
+    - Tìm token trong database.
+    - Kiểm tra:
+      + Tồn tại (nếu không -> INVALID_TOKEN)
+      + Chưa bị sử dụng (nếu đã dùng -> TOKEN_ALREADY_USED)
+      + Chưa hết hạn 30 phút (nếu hết hạn -> TOKEN_EXPIRED)
+    - Không làm rò rỉ dữ liệu nhạy cảm.
+    """
+    if not isinstance(raw_token, str) or not raw_token.strip():
+        raise AuthValidationError("TOKEN_REQUIRED", "Token là bắt buộc")
+
+    clean_token = raw_token.strip()
+    token_hash = hash_reset_token(clean_token)
+    token_record = password_reset_repository.get_reset_token_by_hash(token_hash)
+
+    if token_record is None:
+        raise AuthValidationError("INVALID_TOKEN", "Token đặt lại mật khẩu không hợp lệ")
+
+    now = current_time or datetime.now(timezone.utc)
+
+    if token_record.is_used:
+        raise AuthValidationError("TOKEN_ALREADY_USED", "Token đặt lại mật khẩu đã được sử dụng")
+
+    if token_record.is_expired(current_time=now):
+        raise AuthValidationError("TOKEN_EXPIRED", "Token đặt lại mật khẩu đã hết hạn")
+
+    return token_record
+
+
+def reset_password_with_token(
+    raw_token: str,
+    new_password: str,
+    current_time: datetime | None = None,
+) -> dict:
+    """
+    Đặt lại mật khẩu với token một lần duy nhất (SCRUM-47):
+    - Nhận raw reset token & new_password.
+    - Validate format token & password.
+    - Hash token theo SHA-256 (SCRUM-46).
+    - Tạo hash mật khẩu mới an toàn bằng generate_password_hash.
+    - Thực thi transaction:
+        validate token -> update password -> mark token used -> commit.
+    - Nếu có lỗi -> rollback, token chưa bị consume.
+    - Không lưu plaintext token vào database.
+    - Không làm lộ token hoặc thông tin nhạy cảm trong response.
+    """
+    if not isinstance(raw_token, str) or not raw_token.strip():
+        raise AuthValidationError("TOKEN_REQUIRED", "Token là bắt buộc")
+
+    if not isinstance(new_password, str) or not new_password:
+        raise AuthValidationError("PASSWORD_REQUIRED", "Mật khẩu mới là bắt buộc")
+
+    clean_token = raw_token.strip()
+    now = current_time or datetime.now(timezone.utc)
+    token_hash = hash_reset_token(clean_token)
+    new_password_hash = generate_password_hash(new_password)
+
+    try:
+        password_reset_repository.execute_reset_password_transaction(
+            token_hash=token_hash,
+            new_password_hash=new_password_hash,
+            current_time=now,
+        )
+    except password_reset_repository.ResetTokenNotFoundError:
+        raise AuthValidationError("INVALID_TOKEN", "Token đặt lại mật khẩu không hợp lệ")
+    except password_reset_repository.ResetTokenAlreadyUsedError:
+        raise AuthValidationError("TOKEN_ALREADY_USED", "Token đặt lại mật khẩu đã được sử dụng")
+    except password_reset_repository.ResetTokenExpiredError:
+        raise AuthValidationError("TOKEN_EXPIRED", "Token đặt lại mật khẩu đã hết hạn")
+
+    return {
+        "message": "Mật khẩu đã được đặt lại thành công",
     }
 
 

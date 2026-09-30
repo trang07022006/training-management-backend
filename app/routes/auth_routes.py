@@ -6,6 +6,8 @@ from app.services.auth_service import (
     AuthValidationError,
     authenticate_and_login,
     process_forgot_password_request,
+    reset_password_with_token,
+    validate_reset_token,
 )
 
 auth_bp = Blueprint(
@@ -103,6 +105,81 @@ def forgot_password():
         }), 500
     except Exception:
         # Không dùng mock database khi MySQL có lỗi
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi kết nối cơ sở dữ liệu",
+        }), 500
+
+
+@auth_bp.post("/reset-password")
+def reset_password():
+    if not request.is_json:
+        return jsonify({"code": "INVALID_REQUEST", "message": "Yêu cầu không hợp lệ"}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"code": "INVALID_REQUEST", "message": "Yêu cầu không hợp lệ"}), 400
+
+    token = data.get("token") or data.get("reset_token")
+    new_password = data.get("new_password") or data.get("password")
+
+    if not isinstance(token, str) or not token.strip():
+        return jsonify({"code": "TOKEN_REQUIRED", "message": "Token là bắt buộc"}), 400
+
+    if not isinstance(new_password, str) or not new_password:
+        return jsonify({"code": "PASSWORD_REQUIRED", "message": "Mật khẩu mới là bắt buộc"}), 400
+
+    try:
+        result = reset_password_with_token(
+            raw_token=token.strip(),
+            new_password=new_password,
+        )
+        return jsonify(result), 200
+    except AuthValidationError as error:
+        return jsonify({
+            "code": error.code,
+            "message": error.message,
+        }), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi kết nối cơ sở dữ liệu",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi kết nối cơ sở dữ liệu",
+        }), 500
+
+
+@auth_bp.post("/verify-reset-token")
+def verify_reset_token():
+    if not request.is_json:
+        return jsonify({"code": "INVALID_REQUEST", "message": "Yêu cầu không hợp lệ"}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"code": "INVALID_REQUEST", "message": "Yêu cầu không hợp lệ"}), 400
+
+    token = data.get("token") or data.get("reset_token")
+    if not isinstance(token, str) or not token.strip():
+        return jsonify({"code": "TOKEN_REQUIRED", "message": "Token là bắt buộc"}), 400
+
+    try:
+        validate_reset_token(raw_token=token.strip())
+        return jsonify({"valid": True, "message": "Token hợp lệ"}), 200
+    except AuthValidationError as error:
+        return jsonify({
+            "valid": False,
+            "code": error.code,
+            "message": error.message,
+        }), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi kết nối cơ sở dữ liệu",
+        }), 500
+    except Exception:
         return jsonify({
             "code": "DATABASE_ERROR",
             "message": "Lỗi kết nối cơ sở dữ liệu",
