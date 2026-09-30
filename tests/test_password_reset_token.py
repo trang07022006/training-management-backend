@@ -254,7 +254,7 @@ class Scrum47SingleUsePasswordResetTokenTests(unittest.TestCase):
         self.app.register_blueprint(auth_bp)
         self.client = self.app.test_client()
 
-        self.fixed_now = datetime(2026, 9, 30, 16, 0, 0, tzinfo=timezone.utc)
+        self.fixed_now = datetime.now(timezone.utc)
         self.raw_token = "secure-random-token-xyz-1234567890"
         self.token_hash = hash_reset_token(self.raw_token)
         self.user_id = "user-ictu-12345"
