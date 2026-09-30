@@ -1,3 +1,4 @@
+import re
 from werkzeug.security import check_password_hash
 
 from app.repositories import user_repository
@@ -19,6 +20,31 @@ def verify_current_password(stored_password_hash: str, plain_password: str) -> b
     return check_password_hash(stored_password_hash, plain_password)
 
 
+def validate_new_password_policy(new_password: str, current_password: str | None = None) -> None:
+    """
+    Kiểm tra điều kiện mật khẩu mới (SCRUM-55):
+    - Không rỗng
+    - Tối thiểu 8 ký tự
+    - Phải có ít nhất 1 chữ cái
+    - Phải có ít nhất 1 chữ số
+    - Không được trùng với mật khẩu hiện tại
+    """
+    if not isinstance(new_password, str) or not new_password:
+        raise ChangePasswordError("NEW_PASSWORD_REQUIRED", "Mật khẩu mới là bắt buộc")
+
+    if len(new_password) < 8:
+        raise ChangePasswordError("PASSWORD_TOO_SHORT", "Mật khẩu mới phải có tối thiểu 8 ký tự")
+
+    has_letter = bool(re.search(r"[a-zA-Z]", new_password))
+    has_digit = bool(re.search(r"[0-9]", new_password))
+
+    if not has_letter or not has_digit:
+        raise ChangePasswordError("PASSWORD_INVALID", "Mật khẩu mới phải bao gồm cả chữ cái và chữ số")
+
+    if current_password is not None and new_password == current_password:
+        raise ChangePasswordError("PASSWORD_SAME_AS_CURRENT", "Mật khẩu mới không được trùng với mật khẩu hiện tại")
+
+
 def change_password(
     user_id: str,
     current_password: str,
@@ -27,15 +53,16 @@ def change_password(
 ) -> dict:
     """
     Xử lý đổi mật khẩu:
-    - Kiểm tra dữ liệu đầu vào
-    - Lấy user từ database theo user_id (từ JWT/session)
-    - Xác thực mật khẩu hiện tại
+    1. Kiểm tra mật khẩu hiện tại có hợp lệ không
+    2. Kiểm tra chính sách mật khẩu mới
+    3. Lấy user từ database theo user_id (từ JWT/session)
+    4. Xác thực mật khẩu hiện tại
     """
     if not isinstance(current_password, str) or not current_password:
         raise ChangePasswordError("CURRENT_PASSWORD_REQUIRED", "Mật khẩu hiện tại là bắt buộc")
 
-    if not isinstance(new_password, str) or not new_password:
-        raise ChangePasswordError("NEW_PASSWORD_REQUIRED", "Mật khẩu mới là bắt buộc")
+    # Kiểm tra điều kiện mật khẩu mới theo chính sách SCRUM-55
+    validate_new_password_policy(new_password, current_password)
 
     user = user_repository.get_user_by_id(user_id)
     if user is None:
@@ -48,5 +75,5 @@ def change_password(
         )
 
     return {
-        "message": "Xác thực mật khẩu hiện tại thành công",
+        "message": "Xác thực mật khẩu hiện tại và điều kiện mật khẩu mới thành công",
     }
