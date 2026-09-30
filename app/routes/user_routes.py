@@ -11,6 +11,7 @@ import math
 from flask import Blueprint, current_app, jsonify, request
 from mysql.connector import Error as MySQLError
 from app.repositories import user_repository
+from app.services import user_service
 from app.utils.rbac_auth import permission_required
 
 user_bp = Blueprint("users", __name__, url_prefix="/api")
@@ -80,12 +81,64 @@ def list_users():
 @user_bp.post("/users")
 @permission_required("user.manage")
 def create_user():
-    """Tạo hoặc quản trị người dùng - Yêu cầu quyền user.manage."""
-    data = request.get_json(silent=True) or {}
+    """
+    Tạo người dùng mới - Yêu cầu quyền user.manage (SCRUM-84).
+    Request body (JSON):
+    - email: str (bắt buộc)
+    - password: str (bắt buộc, tối thiểu 8 ký tự, chữ và số)
+    - name: str (bắt buộc)
+    - phone: str (tùy chọn)
+    - role: str (tùy chọn, mặc định "user")
+    - status: str (tùy chọn, mặc định "active")
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    email = data.get("email")
+    password = data.get("password")
+    name = data.get("name")
+    phone = data.get("phone")
+    role = data.get("role", "user")
+    status = data.get("status", "active")
+
+    try:
+        new_user = user_service.create_user_service(
+            email=email,
+            password=password,
+            name=name,
+            phone=phone,
+            role=role,
+            status=status,
+        )
+    except user_service.UserValidationError as e:
+        return jsonify({
+            "code": e.code,
+            "message": e.message,
+        }), 400
+    except user_service.DuplicateEmailError as e:
+        return jsonify({
+            "code": e.code,
+            "message": e.message,
+        }), 409
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi tạo người dùng.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi trong quá trình tạo người dùng.",
+        }), 500
+
     return jsonify({
         "status": "success",
         "message": "Tạo người dùng thành công",
-        "data": {"id": "user-new", "email": data.get("email")},
+        "data": new_user.to_public_dict(),
     }), 201
 
 

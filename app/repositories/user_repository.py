@@ -93,6 +93,8 @@ def list_users(
             status,
             failed_login_attempts,
             locked_until,
+            name,
+            phone,
             created_at,
             updated_at
         FROM users
@@ -125,7 +127,11 @@ def get_user_by_email(email: str) -> User | None:
             role,
             status,
             failed_login_attempts,
-            locked_until
+            locked_until,
+            name,
+            phone,
+            created_at,
+            updated_at
         FROM users
         WHERE email = %s
     """
@@ -151,7 +157,11 @@ def get_user_by_id(user_id: str) -> User | None:
             role,
             status,
             failed_login_attempts,
-            locked_until
+            locked_until,
+            name,
+            phone,
+            created_at,
+            updated_at
         FROM users
         WHERE id = %s
     """
@@ -164,6 +174,51 @@ def get_user_by_id(user_id: str) -> User | None:
         return None
 
     return _row_to_user(row)
+
+
+def create_user(user: User) -> User:
+    """
+    Tạo người dùng mới vào cơ sở dữ liệu MySQL (SCRUM-84).
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    created_at = user.created_at or now
+    updated_at = user.updated_at or now
+
+    sql = """
+        INSERT INTO users (
+            id,
+            email,
+            password_hash,
+            name,
+            phone,
+            role,
+            status,
+            failed_login_attempts,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    values = (
+        user.id,
+        user.email,
+        user.password_hash,
+        user.name,
+        user.phone,
+        user.role,
+        user.status,
+        user.failed_login_attempts or 0,
+        _to_mysql_datetime(created_at),
+        _to_mysql_datetime(updated_at),
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+
+    user.created_at = created_at
+    user.updated_at = updated_at
+    return user
 
 
 def update_user_lockout(
