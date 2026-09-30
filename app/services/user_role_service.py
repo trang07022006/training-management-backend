@@ -9,6 +9,8 @@ Xử lý nghiệp vụ:
 """
 
 import logging
+from mysql.connector import IntegrityError
+
 from app.models.role import Role
 from app.repositories import role_repository, user_repository, user_role_repository
 
@@ -134,8 +136,11 @@ def assign_role_to_user(user_id: str, role_id_or_code: str) -> dict:
     if user_role_repository.check_user_role_exists(clean_user_id, role.id):
         raise DuplicateRoleAssignmentError(f"Người dùng '{user.email or clean_user_id}' đã có vai trò '{role.name}'.")
 
-    # Gán vai trò
-    user_role_repository.assign_role_to_user(clean_user_id, role.id)
+    # Gán vai trò (có phòng thủ IntegrityError nếu có race condition)
+    try:
+        user_role_repository.assign_role_to_user(clean_user_id, role.id)
+    except IntegrityError:
+        raise DuplicateRoleAssignmentError(f"Người dùng '{user.email or clean_user_id}' đã có vai trò '{role.name}'.")
 
     # Đồng bộ primary role trên users table (tương thích backward với Login token)
     primary_code = user_role_repository.get_primary_role_code_by_user_id(clean_user_id)
