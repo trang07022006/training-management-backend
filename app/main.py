@@ -18,6 +18,7 @@ CORS(app)
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(session_bp)
+app.register_blueprint(auth_bp)
 
 
 @app.route("/api/health", methods=["GET"])

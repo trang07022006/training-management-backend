@@ -6,8 +6,8 @@ from werkzeug.security import check_password_hash
 @dataclass
 class User:
     id: str
-    email: str
-    password_hash: str
+    email: str | None = None
+    password_hash: str = ""
     role: str = "user"
     status: str = "active"
     failed_login_attempts: int = 0
@@ -33,5 +33,3 @@ class User:
         if locked_until.tzinfo is None:
             locked_until = locked_until.replace(tzinfo=timezone.utc)
         return now < locked_until
-
-

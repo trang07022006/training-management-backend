@@ -26,12 +26,10 @@ def _database_cursor(write: bool = False):
 
         if write:
             connection.commit()
-
     except Exception:
         if write:
             connection.rollback()
         raise
-
     finally:
         connection.close()
 
@@ -138,3 +136,17 @@ def reset_user_lockout(user_id: str) -> None:
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (user_id,))
 
+
+def update_user_password(user_id: str, new_password_hash: str) -> bool:
+    """
+    Cập nhật mật khẩu băm của người dùng vào MySQL (SCRUM-56).
+    Sử dụng parameterized query để chống SQL Injection và đảm bảo an toàn.
+    """
+    sql = """
+        UPDATE users
+        SET password_hash = %s
+        WHERE id = %s
+    """
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, (new_password_hash, user_id))
+        return cursor.rowcount == 1
