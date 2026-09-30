@@ -310,6 +310,14 @@ def reset_password_with_token(
     if not isinstance(new_password, str) or not new_password:
         raise AuthValidationError("PASSWORD_REQUIRED", "Mật khẩu mới là bắt buộc")
 
+    if len(new_password) < 8:
+        raise AuthValidationError("PASSWORD_TOO_SHORT", "Mật khẩu phải có tối thiểu 8 ký tự")
+
+    has_letter = bool(re.search(r"[a-zA-Z]", new_password))
+    has_digit = bool(re.search(r"[0-9]", new_password))
+    if not has_letter or not has_digit:
+        raise AuthValidationError("PASSWORD_INVALID", "Mật khẩu phải bao gồm cả chữ cái và chữ số")
+
     clean_token = raw_token.strip()
     now = current_time or datetime.now(timezone.utc)
     token_hash = hash_reset_token(clean_token)
