@@ -3,6 +3,12 @@ from datetime import datetime, timezone
 from werkzeug.security import check_password_hash
 
 
+ACCOUNT_STATUS_ACTIVE = "active"
+ACCOUNT_STATUS_LOCKED = "locked"
+ACCOUNT_STATUS_INACTIVE = "inactive"
+VALID_ACCOUNT_STATUSES = {ACCOUNT_STATUS_ACTIVE, ACCOUNT_STATUS_LOCKED, ACCOUNT_STATUS_INACTIVE}
+
+
 @dataclass
 class User:
     id: str
@@ -50,3 +56,13 @@ class User:
         if locked_until.tzinfo is None:
             locked_until = locked_until.replace(tzinfo=timezone.utc)
         return now < locked_until
+
+    def is_account_locked(self, current_time: datetime | None = None) -> bool:
+        """Kiểm tra tài khoản bị khóa (khóa bởi quản trị viên hoặc khóa tạm thời)."""
+        if self.status == "locked":
+            return True
+        return self.is_locked(current_time=current_time)
+
+    def is_active(self, current_time: datetime | None = None) -> bool:
+        """Kiểm tra tài khoản đang hoạt động bình thường."""
+        return self.status == "active" and not self.is_locked(current_time=current_time)

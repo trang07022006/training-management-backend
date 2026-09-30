@@ -350,3 +350,19 @@ def update_user(user: User) -> bool:
         user.updated_at = updated_at
         return cursor.rowcount > 0
 
+
+def update_user_status(user_id: str, status: str) -> bool:
+    """
+    Cập nhật trạng thái tài khoản người dùng (SCRUM-104).
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    sql = """
+        UPDATE users
+        SET status = %s, updated_at = %s
+        WHERE id = %s
+    """
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, (status, _to_mysql_datetime(now), user_id))
+        return cursor.rowcount > 0
+

@@ -223,3 +223,29 @@ def update_user_service(user_id: str, updates: dict) -> User:
 
     return user
 
+
+ACCOUNT_STATUS_ACTIVE = "active"
+ACCOUNT_STATUS_LOCKED = "locked"
+ACCOUNT_STATUS_INACTIVE = "inactive"
+
+
+def get_user_account_status(user_id: str) -> dict:
+    """
+    Chuẩn hóa việc đọc trạng thái tài khoản từ database (SCRUM-104).
+    Xác định rõ ràng: ACTIVE, LOCKED hoặc trạng thái hợp lệ trong hệ thống.
+    Tuyệt đối không expose mật khẩu, token hay DB internals.
+    """
+    user = user_repository.get_user_by_id(user_id)
+    if user is None:
+        raise UserNotFoundError()
+
+    normalized_status = user.status if user.status in VALID_STATUSES else "unknown"
+    is_locked = (normalized_status == ACCOUNT_STATUS_LOCKED) or user.is_locked()
+
+    return {
+        "user_id": str(user.id),
+        "status": normalized_status,
+        "is_locked": is_locked,
+        "is_active": normalized_status == ACCOUNT_STATUS_ACTIVE and not is_locked,
+    }
+
