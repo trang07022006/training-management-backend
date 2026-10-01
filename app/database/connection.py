@@ -1,8 +1,10 @@
 import os
+from pathlib import Path
 import mysql.connector
 from dotenv import load_dotenv
 
-load_dotenv()
+backend_dir = Path(__file__).resolve().parents[2]
+load_dotenv(backend_dir / ".env", override=True)
 
 def get_db_connection():
     port_val = os.getenv("DB_PORT", "3306")
