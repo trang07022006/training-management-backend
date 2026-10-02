@@ -70,6 +70,7 @@ def login():
         "user": {
             "id": user.id,
             "email": user.email,
+            "name": user.name,
             "role": user.role,
         },
         "session_id": session.session_id,

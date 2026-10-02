@@ -250,3 +250,181 @@ def send_password_reset_email(
         html_content=html_body,
     )
     return url
+
+
+def build_account_creation_email_content(
+    to_email: str,
+    name: str | None = None,
+    raw_password: str | None = None,
+    login_url: str | None = None,
+) -> tuple[str, str, str]:
+    """
+    Tạo nội dung email thông báo cấp tài khoản mới:
+    - Tiêu đề (Subject)
+    - Plain text body
+    - HTML body
+    Bao gồm thông tin đăng nhập, liên kết đăng nhập và khuyến cáo đổi mật khẩu.
+    """
+    frontend_url = get_frontend_url()
+    target_login_url = login_url or f"{frontend_url}/login"
+    user_display_name = name or to_email
+
+    subject = "[ICTU] Thông tin tài khoản mới - Hệ thống Quản lý Đào tạo"
+
+    pwd_text = f"- Mật khẩu ban đầu: {raw_password}\n" if raw_password else ""
+    pwd_html = (
+        f"<li style='margin-bottom: 8px;'><strong>Mật khẩu ban đầu:</strong> "
+        f"<code style='background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-weight: bold;'>{raw_password}</code></li>"
+        if raw_password
+        else ""
+    )
+
+    text_body = f"""Xin chào {user_display_name},
+
+Bạn đã được cấp tài khoản trên Hệ thống Quản lý Đào tạo ICTU.
+
+Thông tin tài khoản:
+- Email đăng nhập: {to_email}
+{pwd_text}- Đường dẫn đăng nhập: {target_login_url}
+
+LƯU Ý QUAN TRỌNG:
+- Vui lòng đăng nhập và đổi mật khẩu ngay trong lần đầu tiên sử dụng để đảm bảo an toàn.
+- Tuyệt đối không chia sẻ thông tin tài khoản cho bất kỳ ai.
+
+Trân trọng,
+Hệ thống Quản lý Đào tạo ICTU
+"""
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thông tin tài khoản mới</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      color: #333333;
+      background-color: #f4f6f8;
+      margin: 0;
+      padding: 0;
+    }}
+    .email-container {{
+      max-width: 600px;
+      margin: 30px auto;
+      background: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+      border: 1px solid #e1e4e8;
+    }}
+    .email-header {{
+      background: #1e3a8a;
+      color: #ffffff;
+      padding: 24px;
+      text-align: center;
+    }}
+    .email-header h1 {{
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+    }}
+    .email-body {{
+      padding: 32px 24px;
+    }}
+    .credentials-box {{
+      background-color: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 16px 20px;
+      margin: 20px 0;
+    }}
+    .btn-login {{
+      display: inline-block;
+      background-color: #2563eb;
+      color: #ffffff !important;
+      padding: 12px 28px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: 6px;
+      margin: 20px 0;
+    }}
+    .note-box {{
+      background-color: #eff6ff;
+      border-left: 4px solid #2563eb;
+      padding: 12px 16px;
+      margin: 20px 0;
+      font-size: 14px;
+      color: #1e40af;
+    }}
+    .email-footer {{
+      background: #f8fafc;
+      padding: 16px 24px;
+      text-align: center;
+      font-size: 12px;
+      color: #64748b;
+      border-top: 1px solid #e2e8f0;
+    }}
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="email-header">
+      <h1>HỆ THỐNG QUẢN LÝ ĐÀO TẠO ICTU</h1>
+    </div>
+    <div class="email-body">
+      <p>Xin chào <strong>{user_display_name}</strong>,</p>
+      <p>Tài khoản của bạn đã được khởi tạo thành công trên Hệ thống Quản lý Đào tạo ICTU.</p>
+
+      <div class="credentials-box">
+        <h3 style="margin-top: 0; color: #1e3a8a; font-size: 16px;">Thông tin đăng nhập:</h3>
+        <ul style="list-style: none; padding-left: 0; margin-bottom: 0;">
+          <li style="margin-bottom: 8px;"><strong>Email:</strong> {to_email}</li>
+          {pwd_html}
+        </ul>
+      </div>
+
+      <p style="text-align: center;">
+        <a href="{target_login_url}" class="btn-login" target="_blank">Đăng nhập ngay</a>
+      </p>
+
+      <div class="note-box">
+        <strong>Khuyến cáo bảo mật:</strong>
+        <ul style="margin: 8px 0 0 0; padding-left: 20px;">
+          <li>Vui lòng đăng nhập và đổi mật khẩu trong lần đầu tiên sử dụng.</li>
+          <li>Không chia sẻ thông tin tài khoản cho bất kỳ ai để bảo vệ dữ liệu cá nhân.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="email-footer">
+      <p>Email này được gửi tự động từ Hệ thống Quản lý Đào tạo ICTU. Vui lòng không phản hồi email này.</p>
+    </div>
+  </div>
+</body>
+</html>
+"""
+    return subject, text_body, html_body
+
+
+def send_account_creation_email(
+    to_email: str,
+    name: str | None = None,
+    raw_password: str | None = None,
+    login_url: str | None = None,
+) -> None:
+    """Gửi email thông báo tài khoản mới tới người dùng."""
+    subject, text_body, html_body = build_account_creation_email_content(
+        to_email=to_email,
+        name=name,
+        raw_password=raw_password,
+        login_url=login_url,
+    )
+    send_email(
+        to_email=to_email,
+        subject=subject,
+        text_content=text_body,
+        html_content=html_body,
+    )
+
