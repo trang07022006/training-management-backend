@@ -224,6 +224,47 @@ def preview_user_import():
         }), 500
 
 
+@user_bp.post("/users/import")
+@permission_required("user.manage")
+def import_users():
+    """
+    Import các dòng người dùng hợp lệ từ file Excel vào cơ sở dữ liệu (SCRUM-119 Activity A4).
+    Yêu cầu quyền user.manage.
+    """
+    if "file" not in request.files:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    try:
+        result = user_import_service.execute_user_import(
+            file_stream=file,
+            filename=file.filename,
+        )
+        return jsonify({
+            "status": "success",
+            "data": result,
+        }), 200
+    except user_import_service.UserImportError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi trong quá trình import người dùng.",
+        }), 500
+
+
 @user_bp.route("/users/<user_id>", methods=["PUT", "PATCH"])
 @permission_required("user.manage")
 def update_user(user_id: str):

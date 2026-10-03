@@ -11,11 +11,14 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from app.repositories import user_repository
+from app.services import user_service
 from app.services.user_service import (
     EMAIL_REGEX,
     PHONE_REGEX,
     VALID_ROLES,
     VALID_STATUSES,
+    DuplicateEmailError,
+    UserValidationError,
     normalize_email,
 )
 
@@ -397,4 +400,121 @@ def parse_user_import_workbook(file_stream, filename: str | None = None) -> dict
         "invalid_rows": invalid_count,
         "rows": preview_rows,
         "_internal_rows": internal_rows,
+    }
+
+
+def execute_user_import(file_stream, filename: str | None = None) -> dict:
+    """
+    Thực hiện import các dòng hợp lệ vào cơ sở dữ liệu (SCRUM-119 Activity A4).
+    - Parse và validate workbook bằng logic A2/A3
+    - Duyệt qua từng dòng dữ liệu:
+      - Dòng invalid -> bỏ qua, không ghi DB, lưu errors
+      - Dòng valid -> tạo user qua create_user_service (hash mật khẩu, gán role, kiểm tra duplicate)
+      - Lỗi từng dòng (nếu có) không làm rollback các dòng thành công khác (partial success)
+    - Trả về kết quả tổng hợp import an toàn (không lộ plaintext password)
+    """
+    parse_result = parse_user_import_workbook(file_stream, filename=filename)
+    internal_rows = parse_result.get("_internal_rows", [])
+
+    imported_rows_count = 0
+    skipped_rows_count = 0
+    result_rows = []
+
+    for row in internal_rows:
+        row_number = row["row_number"]
+        name = row["name"]
+        email = row["email"]
+        password = row["password"]
+        phone = row["phone"]
+        role = row["role"]
+        status = row["status"]
+        is_valid = row.get("valid", False)
+        initial_errors = list(row.get("errors", []))
+
+        if not is_valid:
+            # Dòng không hợp lệ từ bước validate -> bỏ qua, không ghi DB
+            skipped_rows_count += 1
+            result_rows.append({
+                "row_number": row_number,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": status,
+                "imported": False,
+                "errors": initial_errors,
+            })
+            continue
+
+        # Dòng hợp lệ -> tiến hành ghi DB từng dòng độc lập
+        try:
+            user_service.create_user_service(
+                email=email,
+                password=password,
+                name=name,
+                phone=phone,
+                role=role,
+                status=status,
+            )
+            imported_rows_count += 1
+            result_rows.append({
+                "row_number": row_number,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": status,
+                "imported": True,
+                "errors": [],
+            })
+        except DuplicateEmailError:
+            skipped_rows_count += 1
+            result_rows.append({
+                "row_number": row_number,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": status,
+                "imported": False,
+                "errors": [{
+                    "field": "email",
+                    "code": "DUPLICATE_EMAIL",
+                    "message": "Email này đã được sử dụng trong hệ thống.",
+                }],
+            })
+        except UserValidationError as e:
+            skipped_rows_count += 1
+            result_rows.append({
+                "row_number": row_number,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": status,
+                "imported": False,
+                "errors": [{
+                    "field": "validation",
+                    "code": e.code,
+                    "message": e.message,
+                }],
+            })
+        except Exception:
+            skipped_rows_count += 1
+            result_rows.append({
+                "row_number": row_number,
+                "name": name,
+                "email": email,
+                "role": role,
+                "status": status,
+                "imported": False,
+                "errors": [{
+                    "field": "database",
+                    "code": "IMPORT_FAILED",
+                    "message": "Lỗi khi lưu người dùng vào cơ sở dữ liệu.",
+                }],
+            })
+
+    return {
+        "filename": parse_result.get("filename", filename or ""),
+        "total_rows": len(result_rows),
+        "imported_rows": imported_rows_count,
+        "skipped_rows": skipped_rows_count,
+        "rows": result_rows,
     }
