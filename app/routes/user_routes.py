@@ -8,10 +8,10 @@ Sử dụng các quyền hạn đã khởi tạo từ SCRUM-60 -> 64:
 """
 
 import math
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 from mysql.connector import Error as MySQLError
 from app.repositories import user_repository
-from app.services import user_service
+from app.services import user_import_service, user_service
 from app.utils.rbac_auth import permission_required
 
 user_bp = Blueprint("users", __name__, url_prefix="/api")
@@ -152,6 +152,28 @@ def create_user():
         "message": "Tạo người dùng thành công",
         "data": new_user.to_public_dict(),
     }), 201
+
+
+@user_bp.get("/users/import/template")
+@permission_required("user.manage")
+def download_user_import_template():
+    """
+    Tải file Excel mẫu phục vụ bulk import người dùng (SCRUM-119 Activity A1).
+    Yêu cầu quyền user.manage.
+    """
+    try:
+        buffer = user_import_service.generate_user_import_template()
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=user_import_service.USER_IMPORT_TEMPLATE_FILENAME,
+            mimetype=user_import_service.EXCEL_MIMETYPE,
+        )
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi khi tạo file mẫu Excel.",
+        }), 500
 
 
 @user_bp.route("/users/<user_id>", methods=["PUT", "PATCH"])
