@@ -137,6 +137,16 @@ def forgot_password():
         result = process_forgot_password_request(email)
         return jsonify(result), 200
     except AuthValidationError as error:
+        if error.code == "FORGOT_PASSWORD_COOLDOWN":
+            retry_after = error.retry_after_seconds or 60
+            response = jsonify({
+                "code": error.code,
+                "message": error.message,
+                "retry_after_seconds": retry_after,
+            })
+            response.headers["Retry-After"] = str(retry_after)
+            return response, 429
+
         return jsonify({
             "code": error.code,
             "message": error.message,
