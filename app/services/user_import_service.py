@@ -2,11 +2,22 @@
 Service hỗ trợ bulk import người dùng qua Excel (SCRUM-119).
 Activity A1: Tạo file Excel mẫu cho bulk import người dùng.
 Activity A2: Upload và đọc dữ liệu từ sheet Users của file Excel.
+Activity A3: Validate từng dòng dữ liệu Excel và trả preview lỗi chi tiết.
 """
 
 from io import BytesIO
+import re
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
+
+from app.repositories import user_repository
+from app.services.user_service import (
+    EMAIL_REGEX,
+    PHONE_REGEX,
+    VALID_ROLES,
+    VALID_STATUSES,
+    normalize_email,
+)
 
 
 USER_IMPORT_TEMPLATE_HEADERS = [
@@ -122,15 +133,179 @@ def generate_user_import_template() -> BytesIO:
     return buffer
 
 
+def validate_import_rows(raw_rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    Validate từng dòng dữ liệu sau khi đọc từ Excel (SCRUM-119 Activity A3).
+    - Kiểm tra bắt buộc: name, email, password
+    - Kiểm tra định dạng: email, phone, password policy
+    - Kiểm tra hợp lệ: role, status
+    - Áp dụng giá trị mặc định cho role (user) và status (active) nếu để trống
+    - Kiểm tra email trùng lặp trong nội bộ file và trùng lặp với DB
+    - Trả về (preview_rows, internal_rows) với trạng thái valid và danh sách errors chi tiết
+    """
+    preview_rows = []
+    internal_rows = []
+    seen_emails_in_file: set[str] = set()
+
+    for item in raw_rows:
+        row_idx = item.get("row_number", 0)
+        raw_name = item.get("name")
+        raw_email = item.get("email")
+        raw_password = item.get("password")
+        raw_phone = item.get("phone")
+        raw_role = item.get("role")
+        raw_status = item.get("status")
+
+        errors: list[dict] = []
+
+        # 1. Validate NAME (bắt buộc, không để trống)
+        cleaned_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else ""
+        if not cleaned_name:
+            errors.append({
+                "field": "name",
+                "code": "NAME_REQUIRED",
+                "message": "Họ và tên không được để trống.",
+            })
+
+        # 2. Validate EMAIL (bắt buộc, đúng định dạng, không trùng file, không trùng DB)
+        norm_email = ""
+        email_str = raw_email.strip() if isinstance(raw_email, str) else ""
+        if not email_str:
+            errors.append({
+                "field": "email",
+                "code": "EMAIL_REQUIRED",
+                "message": "Email là bắt buộc.",
+            })
+        else:
+            norm_email = normalize_email(email_str)
+            if len(norm_email) > 255 or not EMAIL_REGEX.match(norm_email):
+                errors.append({
+                    "field": "email",
+                    "code": "INVALID_EMAIL",
+                    "message": "Email không đúng định dạng.",
+                })
+            else:
+                # Kiểm tra trùng lặp trong file
+                if norm_email in seen_emails_in_file:
+                    errors.append({
+                        "field": "email",
+                        "code": "DUPLICATE_EMAIL_IN_FILE",
+                        "message": f"Email '{norm_email}' bị trùng lặp với dòng khác trong file.",
+                    })
+                else:
+                    seen_emails_in_file.add(norm_email)
+                    # Kiểm tra trùng lặp trong cơ sở dữ liệu
+                    try:
+                        if user_repository.check_email_exists(norm_email):
+                            errors.append({
+                                "field": "email",
+                                "code": "DUPLICATE_EMAIL",
+                                "message": "Email này đã được sử dụng trong hệ thống.",
+                            })
+                    except Exception:
+                        pass
+
+        # 3. Validate PASSWORD (bắt buộc, policy >= 8 ký tự, có cả chữ và số)
+        password_str = str(raw_password) if raw_password is not None else ""
+        password_present = bool(password_str.strip())
+        if not password_str:
+            errors.append({
+                "field": "password",
+                "code": "PASSWORD_REQUIRED",
+                "message": "Mật khẩu là bắt buộc.",
+            })
+        else:
+            if len(password_str) < 8:
+                errors.append({
+                    "field": "password",
+                    "code": "PASSWORD_TOO_SHORT",
+                    "message": "Mật khẩu phải có tối thiểu 8 ký tự.",
+                })
+            elif not re.search(r"[a-zA-Z]", password_str) or not re.search(r"[0-9]", password_str):
+                errors.append({
+                    "field": "password",
+                    "code": "PASSWORD_INVALID",
+                    "message": "Mật khẩu phải bao gồm cả chữ cái và chữ số.",
+                })
+
+        # 4. Validate PHONE (tùy chọn; nếu có thì 9-15 chữ số)
+        cleaned_phone = None
+        if raw_phone is not None and str(raw_phone).strip():
+            phone_candidate = str(raw_phone).strip()
+            if not PHONE_REGEX.match(phone_candidate):
+                errors.append({
+                    "field": "phone",
+                    "code": "INVALID_PHONE",
+                    "message": "Số điện thoại không hợp lệ (cần 9-15 chữ số).",
+                })
+            else:
+                cleaned_phone = phone_candidate
+
+        # 5. Validate ROLE (tùy chọn, mặc định "user", chỉ nhận admin, trainer, trainee, user)
+        if raw_role is None or str(raw_role).strip() == "":
+            selected_role = "user"
+        else:
+            selected_role = str(raw_role).strip().lower()
+            if selected_role not in VALID_ROLES:
+                errors.append({
+                    "field": "role",
+                    "code": "INVALID_ROLE",
+                    "message": f"Vai trò không hợp lệ: {raw_role}.",
+                })
+
+        # 6. Validate STATUS (tùy chọn, mặc định "active", chỉ nhận active, inactive, locked)
+        if raw_status is None or str(raw_status).strip() == "":
+            selected_status = "active"
+        else:
+            selected_status = str(raw_status).strip().lower()
+            if selected_status not in VALID_STATUSES:
+                errors.append({
+                    "field": "status",
+                    "code": "INVALID_STATUS",
+                    "message": f"Trạng thái không hợp lệ: {raw_status}.",
+                })
+
+        is_valid = len(errors) == 0
+
+        # Public preview record: KHÔNG chứa plaintext password
+        preview_rows.append({
+            "row_number": row_idx,
+            "name": cleaned_name,
+            "email": norm_email or email_str,
+            "phone": cleaned_phone,
+            "role": selected_role,
+            "status": selected_status,
+            "password_present": password_present,
+            "valid": is_valid,
+            "errors": errors,
+        })
+
+        # Internal record: Giữ password phục vụ Activity import
+        internal_rows.append({
+            "row_number": row_idx,
+            "name": cleaned_name,
+            "email": norm_email or email_str,
+            "password": password_str,
+            "phone": cleaned_phone,
+            "role": selected_role,
+            "status": selected_status,
+            "valid": is_valid,
+            "errors": errors,
+        })
+
+    return preview_rows, internal_rows
+
+
 def parse_user_import_workbook(file_stream, filename: str | None = None) -> dict:
     """
-    Đọc và parse dữ liệu từ workbook Excel .xlsx (Activity A2).
+    Đọc và parse dữ liệu từ workbook Excel .xlsx (Activity A2 & A3).
     - Kiểm tra định dạng .xlsx
     - Kiểm tra file không rỗng và không bị hỏng
     - Mở sheet 'Users'
     - Kiểm tra cấu trúc header đúng chuẩn contract
     - Bỏ qua các dòng trống hoàn toàn
     - Giữ nguyên số dòng Excel thực tế (row_number)
+    - Validate từng dòng dữ liệu và gắn danh sách errors chi tiết (Activity A3)
     - Trả về danh sách preview an toàn (không để lộ mật khẩu plaintext)
     - Giữ _internal_rows phục vụ các Activity xử lý tiếp theo
     """
@@ -178,8 +353,7 @@ def parse_user_import_workbook(file_stream, filename: str | None = None) -> dict
     if cleaned_headers != USER_IMPORT_TEMPLATE_HEADERS:
         raise UserImportError("INVALID_HEADER", "Cấu trúc tiêu đề (header) của sheet Users không đúng mẫu quy định.")
 
-    parsed_rows = []
-    preview_rows = []
+    raw_rows = []
     row_index = 1  # Hàng 1 là header
 
     for row in rows_iter:
@@ -197,7 +371,7 @@ def parse_user_import_workbook(file_stream, filename: str | None = None) -> dict
 
         name_val, email_val, password_val, phone_val, role_val, status_val = cleaned_cells
 
-        internal_record = {
+        raw_rows.append({
             "row_number": row_index,
             "name": name_val or "",
             "email": email_val or "",
@@ -205,28 +379,22 @@ def parse_user_import_workbook(file_stream, filename: str | None = None) -> dict
             "phone": phone_val,
             "role": role_val,
             "status": status_val,
-        }
-        parsed_rows.append(internal_record)
+        })
 
-        # Preview record: KHÔNG chứa plaintext password
-        preview_record = {
-            "row_number": row_index,
-            "name": name_val or "",
-            "email": email_val or "",
-            "phone": phone_val,
-            "role": role_val,
-            "status": status_val,
-            "password_present": bool(password_val),
-        }
-        preview_rows.append(preview_record)
-
-    if not parsed_rows:
+    if not raw_rows:
         raise UserImportError("NO_DATA", "File Excel không chứa dòng dữ liệu nào để import.")
+
+    # Validate từng dòng và thống kê hợp lệ (Activity A3)
+    preview_rows, internal_rows = validate_import_rows(raw_rows)
+    valid_count = sum(1 for r in preview_rows if r["valid"])
+    invalid_count = len(preview_rows) - valid_count
 
     return {
         "filename": fname,
         "headers": list(USER_IMPORT_TEMPLATE_HEADERS),
-        "total_rows": len(parsed_rows),
+        "total_rows": len(preview_rows),
+        "valid_rows": valid_count,
+        "invalid_rows": invalid_count,
         "rows": preview_rows,
-        "_internal_rows": parsed_rows,
+        "_internal_rows": internal_rows,
     }

@@ -207,6 +207,8 @@ def preview_user_import():
                 "filename": result["filename"],
                 "headers": result["headers"],
                 "total_rows": result["total_rows"],
+                "valid_rows": result["valid_rows"],
+                "invalid_rows": result["invalid_rows"],
                 "rows": result["rows"],
             },
         }), 200
