@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
-from app.repositories import password_reset_repository, user_repository
+from app.repositories import password_reset_repository, user_repository, user_role_repository
 from app.services import email_service
 from app.services.session_service import create_stored_login_session
 
@@ -176,7 +176,13 @@ def authenticate_and_login(
     Tái sử dụng create_stored_login_session từ session_service.
     """
     user = validate_credentials(email=email, password=password, current_time=current_time)
-    session, tokens = create_stored_login_session(user_id=str(user.id))
+    try:
+        roles = user_role_repository.get_role_codes_by_user_id(str(user.id))
+    except Exception:
+        roles = []
+    if not roles and user.role:
+        roles = [user.role]
+    session, tokens = create_stored_login_session(user_id=str(user.id), roles=roles)
     return user, session, tokens
 
 

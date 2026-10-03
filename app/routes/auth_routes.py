@@ -13,6 +13,8 @@ from app.services.change_password_service import (
     ChangePasswordError,
     change_password,
 )
+from app.repositories import user_role_repository
+from app.services import authorization_service
 from app.utils.session_auth import session_required
 
 auth_bp = Blueprint(
@@ -64,6 +66,27 @@ def login():
 
     access_payload = decode_token(tokens["access_token"])
 
+    try:
+        user_roles = user_role_repository.get_role_codes_by_user_id(str(user.id))
+    except Exception:
+        user_roles = []
+
+    if not user_roles and user.role:
+        user_roles = [user.role]
+
+    try:
+        effective_permissions = authorization_service.get_user_permissions(str(user.id))
+    except Exception:
+        effective_permissions = []
+
+    if user.role and user.role in user_roles:
+        display_role = user.role
+    else:
+        try:
+            display_role = user_role_repository.get_primary_role_code_by_user_id(str(user.id)) or (user_roles[0] if user_roles else "user")
+        except Exception:
+            display_role = user.role or "user"
+
     response = jsonify({
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
@@ -73,7 +96,9 @@ def login():
             "id": user.id,
             "email": user.email,
             "name": user.name,
-            "role": user.role,
+            "role": display_role,
+            "roles": user_roles,
+            "permissions": effective_permissions,
         },
         "session_id": session.session_id,
         "idle_expires_at": session.idle_expires_at.isoformat(),

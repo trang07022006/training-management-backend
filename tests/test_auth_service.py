@@ -232,7 +232,7 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(session.session_id, "session-456")
         self.assertEqual(tokens["access_token"], "acc-token")
         mock_get_user.assert_called_once_with("trainer@example.com")
-        mock_create_session.assert_called_once_with(user_id="user-456")
+        mock_create_session.assert_called_once_with(user_id="user-456", roles=["trainer"])
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_authenticate_user_not_found(self, mock_get_user):

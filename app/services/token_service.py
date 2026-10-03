@@ -1,7 +1,7 @@
 from flask_jwt_extended import create_access_token, create_refresh_token
 
 
-def create_login_tokens(user_id: str, session_id: str):
+def create_login_tokens(user_id: str, session_id: str, roles: list[str] | None = None):
     """Chỉ gọi sau khi phần login đã xác minh tài khoản và mật khẩu."""
 
     if not isinstance(user_id, str) or not user_id.strip():
@@ -11,6 +11,8 @@ def create_login_tokens(user_id: str, session_id: str):
         raise ValueError("session_id phải là chuỗi không rỗng.")
 
     claims = {"sid": session_id}
+    if roles:
+        claims["roles"] = roles
 
     access_token = create_access_token(
         identity=user_id,
@@ -25,4 +27,4 @@ def create_login_tokens(user_id: str, session_id: str):
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-    }
+    }
