@@ -19,8 +19,9 @@ MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION_MINUTES = 15
 LOCKOUT_DURATION = timedelta(minutes=LOCKOUT_DURATION_MINUTES)
 INVALID_CREDENTIALS_MESSAGE = "Email hoặc mật khẩu không đúng"
-ACCOUNT_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa 15 phút do nhập sai mật khẩu quá 5 lần. Vui lòng thử lại sau."
+ACCOUNT_LOCKED_MESSAGE = "Tài khoản đang bị khóa. Vui lòng liên hệ quản trị viên."
 ACCOUNT_INACTIVE_MESSAGE = "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên."
+ACCOUNT_TEMP_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa do nhập sai mật khẩu quá số lần cho phép. Vui lòng thử lại sau."
 PUBLIC_FORGOT_PASSWORD_MESSAGE = (
     "Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi tới email của bạn."
 )
@@ -37,13 +38,17 @@ class AuthValidationError(Exception):
         code: str,
         message: str | None = None,
         locked_until: datetime | None = None,
+        retry_after_seconds: int | None = None,
     ):
         self.code = code
         self.locked_until = locked_until
+        self.retry_after_seconds = retry_after_seconds
         if message is None and code == "INVALID_CREDENTIALS":
             message = INVALID_CREDENTIALS_MESSAGE
         elif message is None and code == "ACCOUNT_LOCKED":
             message = ACCOUNT_LOCKED_MESSAGE
+        elif message is None and code == "ACCOUNT_TEMP_LOCKED":
+            message = ACCOUNT_TEMP_LOCKED_MESSAGE
         elif message is None and code in ("ACCOUNT_INACTIVE", "ACCOUNT_DISABLED"):
             message = ACCOUNT_INACTIVE_MESSAGE
         self.message = message
@@ -97,10 +102,13 @@ def validate_credentials(
 
     # 1. Kiểm tra tài khoản có đang trong thời gian bị khóa tạm thời hay không
     if user.is_locked(current_time=now):
+        locked_time = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=timezone.utc)
+        remaining_seconds = max(0, int((locked_time - now).total_seconds()))
         raise AuthValidationError(
-            code="ACCOUNT_LOCKED",
-            message=ACCOUNT_LOCKED_MESSAGE,
+            code="ACCOUNT_TEMP_LOCKED",
+            message=ACCOUNT_TEMP_LOCKED_MESSAGE,
             locked_until=user.locked_until,
+            retry_after_seconds=remaining_seconds,
         )
 
     # 2. Kiểm tra nếu thời gian khóa đã hết hạn, bắt đầu chu kỳ đếm mới
@@ -121,10 +129,12 @@ def validate_credentials(
                 failed_login_attempts=new_failed_attempts,
                 locked_until=locked_until,
             )
+            remaining_seconds = int(LOCKOUT_DURATION.total_seconds())
             raise AuthValidationError(
-                code="ACCOUNT_LOCKED",
-                message=ACCOUNT_LOCKED_MESSAGE,
+                code="ACCOUNT_TEMP_LOCKED",
+                message=ACCOUNT_TEMP_LOCKED_MESSAGE,
                 locked_until=locked_until,
+                retry_after_seconds=remaining_seconds,
             )
         else:
             # Sai lần 1–4: tăng bộ đếm
@@ -150,14 +160,9 @@ def validate_credentials(
     if user.status == "locked":
         raise AuthValidationError(
             code="ACCOUNT_LOCKED",
-            message="Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên để được hỗ trợ.",
+            message=ACCOUNT_LOCKED_MESSAGE,
         )
-    elif user.status == "inactive":
-        raise AuthValidationError(
-            code="ACCOUNT_INACTIVE",
-            message=ACCOUNT_INACTIVE_MESSAGE,
-        )
-    elif user.status != "active":
+    elif user.status == "inactive" or user.status != "active":
         raise AuthValidationError(
             code="ACCOUNT_INACTIVE",
             message=ACCOUNT_INACTIVE_MESSAGE,

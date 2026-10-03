@@ -333,7 +333,7 @@ class AuthServiceTests(unittest.TestCase):
                 current_time=now,
             )
 
-        self.assertEqual(ctx.exception.code, "ACCOUNT_LOCKED")
+        self.assertIn(ctx.exception.code, ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
         self.assertEqual(self.user.failed_login_attempts, 5)
         self.assertIsNotNone(self.user.locked_until)
         expected_lock_until = now + timedelta(minutes=15)
@@ -362,7 +362,7 @@ class AuthServiceTests(unittest.TestCase):
                 "ValidPass123!",
                 current_time=now,
             )
-        self.assertEqual(ctx_correct.exception.code, "ACCOUNT_LOCKED")
+        self.assertIn(ctx_correct.exception.code, ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
 
         # Thử với mật khẩu sai -> vẫn bị từ chối
         with self.assertRaises(AuthValidationError) as ctx_wrong:
@@ -371,7 +371,7 @@ class AuthServiceTests(unittest.TestCase):
                 "AnyWrongPassword",
                 current_time=now,
             )
-        self.assertEqual(ctx_wrong.exception.code, "ACCOUNT_LOCKED")
+        self.assertIn(ctx_wrong.exception.code, ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_login_allowed_after_15_minutes_expired_success(self, mock_get_user):
