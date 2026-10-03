@@ -176,6 +176,52 @@ def download_user_import_template():
         }), 500
 
 
+@user_bp.post("/users/import/preview")
+@permission_required("user.manage")
+def preview_user_import():
+    """
+    Đọc và xem trước dữ liệu file Excel import người dùng (SCRUM-119 Activity A2).
+    Yêu cầu quyền user.manage.
+    """
+    if "file" not in request.files:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    try:
+        result = user_import_service.parse_user_import_workbook(
+            file_stream=file,
+            filename=file.filename,
+        )
+        return jsonify({
+            "status": "success",
+            "data": {
+                "filename": result["filename"],
+                "headers": result["headers"],
+                "total_rows": result["total_rows"],
+                "rows": result["rows"],
+            },
+        }), 200
+    except user_import_service.UserImportError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi trong quá trình xử lý file Excel.",
+        }), 500
+
+
 @user_bp.route("/users/<user_id>", methods=["PUT", "PATCH"])
 @permission_required("user.manage")
 def update_user(user_id: str):
