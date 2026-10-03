@@ -30,7 +30,7 @@ INITIAL_PERMISSIONS = [
 # Danh mục mapping quyền cho từng vai trò
 INITIAL_ROLE_PERMISSIONS_MAP = {
     "admin": ["user.view", "user.manage", "course.view", "course.manage", "session.view", "session.revoke"],
-    "trainer": ["user.view", "course.view", "course.manage", "session.view"],
+    "trainer": ["course.view", "course.manage", "session.view"],
     "trainee": ["course.view", "session.view"],
     "user": ["session.view"],
 }
@@ -76,6 +76,13 @@ def sync_initial_rbac_data() -> dict:
                 if perm:
                     role_permission_repository.assign_permission_to_role(role.id, perm.id)
                     mappings_created += 1
+
+        # Thu hồi các quyền đã bị loại khỏi cấu hình chuẩn của vai trò
+        for p_code in existing_perm_codes:
+            if p_code not in perm_codes:
+                perm = permission_repository.get_permission_by_code(p_code)
+                if perm:
+                    role_permission_repository.remove_permission_from_role(role.id, perm.id)
 
     return {
         "roles_created": roles_created,

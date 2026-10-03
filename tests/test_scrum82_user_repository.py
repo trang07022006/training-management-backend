@@ -112,11 +112,11 @@ class Scrum82UserRepositoryTests(unittest.TestCase):
         mock_cursor.fetchone.return_value = {"total": 5}
         mock_cursor.fetchall.return_value = self.mock_user_rows
 
-        # page < 1 -> fallback 1; page_size > 100 -> fallback 20
+        # page < 1 -> fallback 1; page_size > 100 -> fallback 10
         users, total = list_users(page=-5, page_size=500)
         self.assertEqual(total, 5)
-        # Limit 20, offset 0
-        mock_cursor.execute.assert_called_with(unittest.mock.ANY, (20, 0))
+        # Limit 10, offset 0
+        mock_cursor.execute.assert_called_with(unittest.mock.ANY, (10, 0))
 
     @patch("app.repositories.user_repository.get_db_connection")
     def test_05_empty_database_or_out_of_bound_page_returns_empty(self, mock_get_conn):

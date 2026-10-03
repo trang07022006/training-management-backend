@@ -155,7 +155,7 @@ class Scrum72ProtectApisWithPermissionsTests(unittest.TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.get_json()["code"], "FORBIDDEN")
 
-    # 5. role khác nhau nhưng cùng sở hữu permission -> allow (Ví dụ: Trainer và Admin cùng có user.view)
+    # 5. role khác nhau nhưng cùng sở hữu permission -> allow (Ví dụ: Trainer và Trainee cùng có course.view)
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
     @patch("app.services.authorization_service.user_role_repository.get_roles_by_user_id")
@@ -164,14 +164,32 @@ class Scrum72ProtectApisWithPermissionsTests(unittest.TestCase):
         self, mock_rp_codes, mock_ur_roles, mock_perm_repo, mock_get_session
     ):
         mock_get_session.return_value = self.session
+        mock_perm_repo.return_value = Permission(id="p-cv", code="course.view", name="Xem khóa học")
+        # Giả lập người dùng đăng nhập là Trainee
+        mock_ur_roles.return_value = [Role(id="r-trainee", code="trainee", name="Trainee")]
+        mock_rp_codes.return_value = ["course.view", "session.view"]
+
+        token = self._create_token()
+        res = self.client.get("/api/courses", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(res.status_code, 200)
+
+    # 5b. Trainer truy cập API quản lý người dùng /api/users bị từ chối 403 (chỉ Admin có user.view)
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
+    @patch("app.services.authorization_service.user_role_repository.get_roles_by_user_id")
+    @patch("app.services.authorization_service.role_permission_repository.get_permission_codes_by_role_id")
+    def test_05b_trainer_accessing_users_api_denied_with_403(
+        self, mock_rp_codes, mock_ur_roles, mock_perm_repo, mock_get_session
+    ):
+        mock_get_session.return_value = self.session
         mock_perm_repo.return_value = Permission(id="p-uv", code="user.view", name="Xem user")
-        # Giả lập người dùng đăng nhập là Trainer
         mock_ur_roles.return_value = [Role(id="r-trainer", code="trainer", name="Trainer")]
-        mock_rp_codes.return_value = ["user.view", "course.view"]
+        mock_rp_codes.return_value = ["course.view", "course.manage", "session.view"]
 
         token = self._create_token()
         res = self.client.get("/api/users", headers={"Authorization": f"Bearer {token}"})
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.get_json()["code"], "FORBIDDEN")
 
     # 6. client giả mạo role admin trong header / query / body -> không bypass
     @patch("app.utils.rbac_auth.get_session_by_id")

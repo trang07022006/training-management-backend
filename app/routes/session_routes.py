@@ -14,6 +14,8 @@ from app.services.session_service import (
     logout_stored_session,
     renew_stored_session,
 )
+from app.repositories import user_repository, user_role_repository
+from app.services import authorization_service
 
 
 session_bp = Blueprint(
@@ -112,11 +114,41 @@ def logout_session():
 @session_required
 def current_session():
     session = g.login_session
+    user_id = session.user_id
+
+    try:
+        user = user_repository.get_user_by_id(user_id)
+    except Exception:
+        user = None
+
+    try:
+        user_roles = user_role_repository.get_role_codes_by_user_id(user_id)
+    except Exception:
+        user_roles = []
+
+    if not user_roles and user and user.role:
+        user_roles = [user.role]
+
+    try:
+        effective_permissions = authorization_service.get_user_permissions(user_id)
+    except Exception:
+        effective_permissions = []
+
+    if user and user.role and user.role in user_roles:
+        display_role = user.role
+    else:
+        try:
+            display_role = user_role_repository.get_primary_role_code_by_user_id(user_id) or (user.role if user else "user")
+        except Exception:
+            display_role = user.role if user else "user"
 
     response = jsonify({
         "user_id": session.user_id,
         "idle_expires_at": session.idle_expires_at.isoformat(),
         "absolute_expires_at": session.absolute_expires_at.isoformat(),
+        "role": display_role,
+        "roles": user_roles,
+        "permissions": effective_permissions,
     })
     response.headers["Cache-Control"] = "no-store"
 

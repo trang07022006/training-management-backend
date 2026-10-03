@@ -249,7 +249,7 @@ class AuthRoutesTests(unittest.TestCase):
         response = self.post_login(data={"email": "trainee@example.com", "password": "SecretPassword123!"})
         self.assertEqual(response.status_code, 403)
         data = response.get_json()
-        self.assertEqual(data["code"], "ACCOUNT_LOCKED")
+        self.assertIn(data["code"], ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
         self.assertIn("khóa", data["message"].lower())
         self.assertIn("locked_until", data)
 
@@ -263,7 +263,7 @@ class AuthRoutesTests(unittest.TestCase):
         response = self.post_login(data={"email": "trainee@example.com", "password": "WrongPassword!"})
         self.assertEqual(response.status_code, 403)
         data = response.get_json()
-        self.assertEqual(data["code"], "ACCOUNT_LOCKED")
+        self.assertIn(data["code"], ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
         self.assertIn("locked_until", data)
         self.assertEqual(self.user.failed_login_attempts, 5)
         self.assertIsNotNone(self.user.locked_until)

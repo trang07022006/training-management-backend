@@ -473,7 +473,7 @@ class Scrum88OverallUserManagementTests(unittest.TestCase):
         token = self._create_token()
         res = self.client.get("/api/users?search=Nam", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search="Nam")
+        mock_list.assert_called_with(page=1, page_size=10, search="Nam")
 
     @patch("app.routes.user_routes.user_repository.list_users")
     @patch("app.utils.rbac_auth.get_session_by_id")
@@ -490,7 +490,7 @@ class Scrum88OverallUserManagementTests(unittest.TestCase):
         token = self._create_token()
         res = self.client.get("/api/users?search=admin@", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search="admin@")
+        mock_list.assert_called_with(page=1, page_size=10, search="admin@")
 
     @patch("app.routes.user_routes.user_repository.list_users")
     @patch("app.utils.rbac_auth.get_session_by_id")
@@ -507,7 +507,7 @@ class Scrum88OverallUserManagementTests(unittest.TestCase):
         token = self._create_token()
         res = self.client.get("/api/users?search=0988776655", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search="0988776655")
+        mock_list.assert_called_with(page=1, page_size=10, search="0988776655")
 
     @patch("app.routes.user_routes.user_repository.list_users")
     @patch("app.utils.rbac_auth.get_session_by_id")
@@ -525,7 +525,7 @@ class Scrum88OverallUserManagementTests(unittest.TestCase):
         query = "<script>alert('xss')</script>"
         res = self.client.get("/api/users", query_string={"search": query}, headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search=query)
+        mock_list.assert_called_with(page=1, page_size=10, search=query)
 
     @patch("app.routes.user_routes.user_repository.list_users")
     @patch("app.utils.rbac_auth.get_session_by_id")
@@ -569,7 +569,7 @@ class Scrum88OverallUserManagementTests(unittest.TestCase):
         sqli = "1' UNION SELECT * FROM users --"
         res = self.client.get(f"/api/users?search={sqli}", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search=sqli)
+        mock_list.assert_called_with(page=1, page_size=10, search=sqli)
 
     @patch("app.routes.user_routes.user_repository.list_users")
     @patch("app.utils.rbac_auth.get_session_by_id")

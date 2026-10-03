@@ -84,7 +84,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         data = res.get_json()
         self.assertEqual(data["data"]["total"], 1)
         self.assertEqual(data["data"]["items"][0]["name"], "Nguyễn Văn A")
-        mock_list.assert_called_with(page=1, page_size=20, search="Nguyễn")
+        mock_list.assert_called_with(page=1, page_size=10, search="Nguyễn")
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -104,7 +104,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data["data"]["items"][0]["email"], "tranthib@daotao.edu.vn")
-        mock_list.assert_called_with(page=1, page_size=20, search="tranthib@")
+        mock_list.assert_called_with(page=1, page_size=10, search="tranthib@")
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -124,7 +124,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data["data"]["items"][0]["phone"], "0911000003")
-        mock_list.assert_called_with(page=1, page_size=20, search="0911000003")
+        mock_list.assert_called_with(page=1, page_size=10, search="0911000003")
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -163,7 +163,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         res = self.client.get("/api/users?search=daotao", headers={"Authorization": f"Bearer {token}"})
 
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search="daotao")
+        mock_list.assert_called_with(page=1, page_size=10, search="daotao")
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -182,7 +182,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         res = self.client.get("/api/users", query_string={"search": special_query}, headers={"Authorization": f"Bearer {token}"})
 
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search=special_query)
+        mock_list.assert_called_with(page=1, page_size=10, search=special_query)
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -201,7 +201,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         res = self.client.get(f"/api/users?search={sqli_payload}", headers={"Authorization": f"Bearer {token}"})
 
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, search=sqli_payload.strip())
+        mock_list.assert_called_with(page=1, page_size=10, search=sqli_payload.strip())
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -219,7 +219,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         res = self.client.get("/api/users?status=locked", headers={"Authorization": f"Bearer {token}"})
 
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, status="locked")
+        mock_list.assert_called_with(page=1, page_size=10, status="locked")
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
@@ -237,7 +237,7 @@ class Scrum87SearchFilterTests(unittest.TestCase):
         res = self.client.get("/api/users?role=trainer", headers={"Authorization": f"Bearer {token}"})
 
         self.assertEqual(res.status_code, 200)
-        mock_list.assert_called_with(page=1, page_size=20, role="trainer")
+        mock_list.assert_called_with(page=1, page_size=10, role="trainer")
 
     @patch("app.utils.rbac_auth.get_session_by_id")
     @patch("app.services.authorization_service.permission_repository.get_permission_by_code")

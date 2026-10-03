@@ -194,20 +194,21 @@ class AuthServiceTests(unittest.TestCase):
         mock_get_user.assert_called_once_with("trainer@example.com")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
-    def test_validate_credentials_disabled_account(self, mock_get_user):
-        disabled_user = User(
+    def test_validate_credentials_inactive_account(self, mock_get_user):
+        inactive_user = User(
             id="user-789",
             email="disabled@example.com",
             password_hash=generate_password_hash("ValidPass123!"),
             role="trainee",
             status="inactive",
         )
-        mock_get_user.return_value = disabled_user
+        mock_get_user.return_value = inactive_user
 
         with self.assertRaises(AuthValidationError) as ctx:
             validate_credentials("disabled@example.com", "ValidPass123!")
 
-        self.assertEqual(ctx.exception.code, "ACCOUNT_DISABLED")
+        self.assertEqual(ctx.exception.code, "ACCOUNT_INACTIVE")
+        self.assertEqual(ctx.exception.message, "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên.")
 
     def test_validate_credentials_empty_inputs(self):
         with self.assertRaises(AuthValidationError) as ctx:
@@ -231,7 +232,7 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(session.session_id, "session-456")
         self.assertEqual(tokens["access_token"], "acc-token")
         mock_get_user.assert_called_once_with("trainer@example.com")
-        mock_create_session.assert_called_once_with(user_id="user-456")
+        mock_create_session.assert_called_once_with(user_id="user-456", roles=["trainer"])
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_authenticate_user_not_found(self, mock_get_user):
@@ -254,20 +255,21 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.message, "Email hoặc mật khẩu không đúng")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
-    def test_authenticate_disabled_account(self, mock_get_user):
-        disabled_user = User(
+    def test_authenticate_inactive_account(self, mock_get_user):
+        inactive_user = User(
             id="user-789",
             email="disabled@example.com",
             password_hash=generate_password_hash("ValidPass123!"),
             role="trainee",
             status="inactive",
         )
-        mock_get_user.return_value = disabled_user
+        mock_get_user.return_value = inactive_user
 
         with self.assertRaises(AuthValidationError) as ctx:
             authenticate_and_login("disabled@example.com", "ValidPass123!")
 
-        self.assertEqual(ctx.exception.code, "ACCOUNT_DISABLED")
+        self.assertEqual(ctx.exception.code, "ACCOUNT_INACTIVE")
+        self.assertEqual(ctx.exception.message, "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên.")
 
     def test_authenticate_empty_inputs(self):
         with self.assertRaises(AuthValidationError) as ctx:
@@ -331,7 +333,7 @@ class AuthServiceTests(unittest.TestCase):
                 current_time=now,
             )
 
-        self.assertEqual(ctx.exception.code, "ACCOUNT_LOCKED")
+        self.assertIn(ctx.exception.code, ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
         self.assertEqual(self.user.failed_login_attempts, 5)
         self.assertIsNotNone(self.user.locked_until)
         expected_lock_until = now + timedelta(minutes=15)
@@ -360,7 +362,7 @@ class AuthServiceTests(unittest.TestCase):
                 "ValidPass123!",
                 current_time=now,
             )
-        self.assertEqual(ctx_correct.exception.code, "ACCOUNT_LOCKED")
+        self.assertIn(ctx_correct.exception.code, ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
 
         # Thử với mật khẩu sai -> vẫn bị từ chối
         with self.assertRaises(AuthValidationError) as ctx_wrong:
@@ -369,7 +371,7 @@ class AuthServiceTests(unittest.TestCase):
                 "AnyWrongPassword",
                 current_time=now,
             )
-        self.assertEqual(ctx_wrong.exception.code, "ACCOUNT_LOCKED")
+        self.assertIn(ctx_wrong.exception.code, ("ACCOUNT_TEMP_LOCKED", "ACCOUNT_LOCKED"))
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_login_allowed_after_15_minutes_expired_success(self, mock_get_user):

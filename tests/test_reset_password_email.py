@@ -19,9 +19,11 @@ from app.services.auth_service import (
 )
 from app.services.email_service import (
     EmailDeliveryError,
+    build_account_creation_email_content,
     build_reset_password_email_content,
     build_reset_password_url,
     get_smtp_config,
+    send_account_creation_email,
     send_email,
     send_password_reset_email,
 )
@@ -318,6 +320,61 @@ class Scrum48PasswordResetEmailTests(unittest.TestCase):
         self.assertEqual(sent_msg["From"], "test-noreply@ictu.edu.vn")
         self.assertIn("Yêu cầu đặt lại mật khẩu", sent_msg["Subject"])
 
+    # =========================================================================
+    # 11. Email tạo tài khoản mới: kiểm tra tiêu đề, nội dung và mật khẩu ban đầu
+    # =========================================================================
+    def test_account_creation_email_content(self):
+        subject, text_body, html_body = build_account_creation_email_content(
+            to_email="newuser@ictu.edu.vn",
+            name="Nguyễn Văn B",
+            raw_password="InitialPassword123",
+            login_url="http://localhost:5173/login",
+        )
+
+        self.assertIn("Thông tin tài khoản mới", subject)
+        self.assertIn("Nguyễn Văn B", text_body)
+        self.assertIn("newuser@ictu.edu.vn", text_body)
+        self.assertIn("InitialPassword123", text_body)
+        self.assertIn("http://localhost:5173/login", text_body)
+
+        self.assertIn("Nguyễn Văn B", html_body)
+        self.assertIn("newuser@ictu.edu.vn", html_body)
+        self.assertIn("InitialPassword123", html_body)
+        self.assertIn("http://localhost:5173/login", html_body)
+
+    @patch("smtplib.SMTP")
+    def test_send_account_creation_email(self, mock_smtp_cls):
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value = mock_server
+
+        custom_env = {
+            "SMTP_HOST": "smtp.gmail.com",
+            "SMTP_PORT": "587",
+            "SMTP_USERNAME": "lletrang070206@gmail.com",
+            "SMTP_PASSWORD": "app_password_mock",
+            "SMTP_FROM_EMAIL": "lletrang070206@gmail.com",
+            "SMTP_USE_TLS": "true",
+            "SMTP_USE_SSL": "false",
+        }
+
+        with patch.dict(os.environ, custom_env):
+            send_account_creation_email(
+                to_email="hocvien@ictu.edu.vn",
+                name="Trần Văn C",
+                raw_password="SecurePass789",
+            )
+
+        mock_smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=10)
+        mock_server.starttls.assert_called_once()
+        mock_server.login.assert_called_once_with("lletrang070206@gmail.com", "app_password_mock")
+        mock_server.send_message.assert_called_once()
+
+        sent_msg = mock_server.send_message.call_args[0][0]
+        self.assertEqual(sent_msg["To"], "hocvien@ictu.edu.vn")
+        self.assertEqual(sent_msg["From"], "lletrang070206@gmail.com")
+        self.assertIn("Thông tin tài khoản mới", sent_msg["Subject"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

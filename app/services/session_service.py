@@ -15,13 +15,13 @@ class SessionValidationError(Exception):
         super().__init__(code)
 
 
-def create_login_session(user_id: str):
+def create_login_session(user_id: str, roles: list[str] | None = None):
     """Chỉ gọi sau khi phần login đã xác minh tài khoản và mật khẩu."""
 
     session_id = secrets.token_hex(16)
     created_at = datetime.now(timezone.utc)
 
-    tokens = create_login_tokens(user_id, session_id)
+    tokens = create_login_tokens(user_id, session_id, roles=roles)
     refresh_payload = decode_token(tokens["refresh_token"])
 
     absolute_expires_at = datetime.fromtimestamp(
@@ -144,9 +144,9 @@ def renew_stored_session(
 
     return renewed_session
 
-def create_stored_login_session(user_id: str):
+def create_stored_login_session(user_id: str, roles: list[str] | None = None):
     """Chỉ gọi sau khi đã xác minh tài khoản và mật khẩu."""
-    session, tokens = create_login_session(user_id)
+    session, tokens = create_login_session(user_id, roles=roles)
 
     # Nếu lưu thất bại, lỗi được đưa lên bên gọi.
     # Hàm sẽ không chạy đến dòng return.
