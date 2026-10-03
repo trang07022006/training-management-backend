@@ -100,9 +100,10 @@ class Scrum83ListUsersApiTests(unittest.TestCase):
         self.assertEqual(data["status"], "success")
         self.assertEqual(data["data"]["total"], 2)
         self.assertEqual(data["data"]["page"], 1)
-        self.assertEqual(data["data"]["page_size"], 20)
+        self.assertEqual(data["data"]["page_size"], 10)
         self.assertEqual(data["data"]["total_pages"], 1)
         self.assertEqual(len(data["data"]["items"]), 2)
+        mock_list_users.assert_called_with(page=1, page_size=10)
 
     # 2. Unauthenticated -> 401
     def test_02_unauthenticated_request_fails(self):

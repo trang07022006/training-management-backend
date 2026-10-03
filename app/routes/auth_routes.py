@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import decode_token, get_jwt, get_jwt_identity
 from mysql.connector import Error as MySQLError
@@ -13,6 +14,8 @@ from app.services.change_password_service import (
     ChangePasswordError,
     change_password,
 )
+from app.repositories import user_role_repository
+from app.services import authorization_service
 from app.utils.session_auth import session_required
 
 auth_bp = Blueprint(
@@ -46,21 +49,53 @@ def login():
             password=password,
         )
     except AuthValidationError as error:
-        status = 403 if error.code in ("ACCOUNT_DISABLED", "ACCOUNT_LOCKED") else 401
+        status = 403 if error.code in ("ACCOUNT_DISABLED", "ACCOUNT_INACTIVE", "ACCOUNT_LOCKED", "ACCOUNT_TEMP_LOCKED") else 401
         payload = {"code": error.code}
         if error.message:
             payload["message"] = error.message
         elif error.code == "INVALID_CREDENTIALS":
             payload["message"] = "Email hoặc mật khẩu không đúng"
         elif error.code == "ACCOUNT_LOCKED":
-            payload["message"] = "Tài khoản tạm thời bị khóa 15 phút do nhập sai mật khẩu quá 5 lần. Vui lòng thử lại sau."
+            payload["message"] = "Tài khoản đang bị khóa. Vui lòng liên hệ quản trị viên."
+        elif error.code == "ACCOUNT_TEMP_LOCKED":
+            payload["message"] = "Tài khoản tạm thời bị khóa do nhập sai mật khẩu quá số lần cho phép. Vui lòng thử lại sau."
+        elif error.code in ("ACCOUNT_INACTIVE", "ACCOUNT_DISABLED"):
+            payload["message"] = "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên."
+
         if getattr(error, "locked_until", None):
             payload["locked_until"] = error.locked_until.isoformat()
+        if getattr(error, "retry_after_seconds", None) is not None:
+            payload["retry_after_seconds"] = error.retry_after_seconds
+        elif getattr(error, "locked_until", None):
+            now_utc = datetime.now(timezone.utc)
+            locked_dt = error.locked_until if error.locked_until.tzinfo else error.locked_until.replace(tzinfo=timezone.utc)
+            payload["retry_after_seconds"] = max(0, int((locked_dt - now_utc).total_seconds()))
         return jsonify(payload), status
     except MySQLError:
         return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503
 
     access_payload = decode_token(tokens["access_token"])
+
+    try:
+        user_roles = user_role_repository.get_role_codes_by_user_id(str(user.id))
+    except Exception:
+        user_roles = []
+
+    if not user_roles and user.role:
+        user_roles = [user.role]
+
+    try:
+        effective_permissions = authorization_service.get_user_permissions(str(user.id))
+    except Exception:
+        effective_permissions = []
+
+    if user.role and user.role in user_roles:
+        display_role = user.role
+    else:
+        try:
+            display_role = user_role_repository.get_primary_role_code_by_user_id(str(user.id)) or (user_roles[0] if user_roles else "user")
+        except Exception:
+            display_role = user.role or "user"
 
     response = jsonify({
         "access_token": tokens["access_token"],
@@ -70,7 +105,10 @@ def login():
         "user": {
             "id": user.id,
             "email": user.email,
-            "role": user.role,
+            "name": user.name,
+            "role": display_role,
+            "roles": user_roles,
+            "permissions": effective_permissions,
         },
         "session_id": session.session_id,
         "idle_expires_at": session.idle_expires_at.isoformat(),
@@ -99,6 +137,16 @@ def forgot_password():
         result = process_forgot_password_request(email)
         return jsonify(result), 200
     except AuthValidationError as error:
+        if error.code == "FORGOT_PASSWORD_COOLDOWN":
+            retry_after = error.retry_after_seconds or 60
+            response = jsonify({
+                "code": error.code,
+                "message": error.message,
+                "retry_after_seconds": retry_after,
+            })
+            response.headers["Retry-After"] = str(retry_after)
+            return response, 429
+
         return jsonify({
             "code": error.code,
             "message": error.message,

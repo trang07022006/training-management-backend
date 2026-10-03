@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
-from app.repositories import password_reset_repository, user_repository
+from app.repositories import password_reset_repository, user_repository, user_role_repository
 from app.services import email_service
 from app.services.session_service import create_stored_login_session
 
@@ -19,10 +19,14 @@ MAX_FAILED_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION_MINUTES = 15
 LOCKOUT_DURATION = timedelta(minutes=LOCKOUT_DURATION_MINUTES)
 INVALID_CREDENTIALS_MESSAGE = "Email hoặc mật khẩu không đúng"
-ACCOUNT_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa 15 phút do nhập sai mật khẩu quá 5 lần. Vui lòng thử lại sau."
+ACCOUNT_LOCKED_MESSAGE = "Tài khoản đang bị khóa. Vui lòng liên hệ quản trị viên."
+ACCOUNT_INACTIVE_MESSAGE = "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên."
+ACCOUNT_TEMP_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa do nhập sai mật khẩu quá số lần cho phép. Vui lòng thử lại sau."
 PUBLIC_FORGOT_PASSWORD_MESSAGE = (
     "Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi tới email của bạn."
 )
+FORGOT_PASSWORD_COOLDOWN_SECONDS = 60
+FORGOT_PASSWORD_COOLDOWN_MESSAGE = "Bạn vừa yêu cầu đặt lại mật khẩu. Vui lòng chờ trước khi gửi lại."
 
 RESET_TOKEN_EXPIRES_MINUTES = 30
 RESET_TOKEN_DURATION = timedelta(minutes=RESET_TOKEN_EXPIRES_MINUTES)
@@ -36,13 +40,21 @@ class AuthValidationError(Exception):
         code: str,
         message: str | None = None,
         locked_until: datetime | None = None,
+        retry_after_seconds: int | None = None,
     ):
         self.code = code
         self.locked_until = locked_until
+        self.retry_after_seconds = retry_after_seconds
         if message is None and code == "INVALID_CREDENTIALS":
             message = INVALID_CREDENTIALS_MESSAGE
         elif message is None and code == "ACCOUNT_LOCKED":
             message = ACCOUNT_LOCKED_MESSAGE
+        elif message is None and code == "ACCOUNT_TEMP_LOCKED":
+            message = ACCOUNT_TEMP_LOCKED_MESSAGE
+        elif message is None and code in ("ACCOUNT_INACTIVE", "ACCOUNT_DISABLED"):
+            message = ACCOUNT_INACTIVE_MESSAGE
+        elif message is None and code == "FORGOT_PASSWORD_COOLDOWN":
+            message = FORGOT_PASSWORD_COOLDOWN_MESSAGE
         self.message = message
         super().__init__(message or code)
 
@@ -94,10 +106,13 @@ def validate_credentials(
 
     # 1. Kiểm tra tài khoản có đang trong thời gian bị khóa tạm thời hay không
     if user.is_locked(current_time=now):
+        locked_time = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=timezone.utc)
+        remaining_seconds = max(0, int((locked_time - now).total_seconds()))
         raise AuthValidationError(
-            code="ACCOUNT_LOCKED",
-            message=ACCOUNT_LOCKED_MESSAGE,
+            code="ACCOUNT_TEMP_LOCKED",
+            message=ACCOUNT_TEMP_LOCKED_MESSAGE,
             locked_until=user.locked_until,
+            retry_after_seconds=remaining_seconds,
         )
 
     # 2. Kiểm tra nếu thời gian khóa đã hết hạn, bắt đầu chu kỳ đếm mới
@@ -118,10 +133,12 @@ def validate_credentials(
                 failed_login_attempts=new_failed_attempts,
                 locked_until=locked_until,
             )
+            remaining_seconds = int(LOCKOUT_DURATION.total_seconds())
             raise AuthValidationError(
-                code="ACCOUNT_LOCKED",
-                message=ACCOUNT_LOCKED_MESSAGE,
+                code="ACCOUNT_TEMP_LOCKED",
+                message=ACCOUNT_TEMP_LOCKED_MESSAGE,
                 locked_until=locked_until,
+                retry_after_seconds=remaining_seconds,
             )
         else:
             # Sai lần 1–4: tăng bộ đếm
@@ -143,16 +160,16 @@ def validate_credentials(
         user.locked_until = None
         user_repository.reset_user_lockout(user_id=user.id)
 
-    # 5. Kiểm tra trạng thái tài khoản
+    # 5. Kiểm tra trạng thái tài khoản (phân biệt rõ active, inactive, locked)
     if user.status == "locked":
         raise AuthValidationError(
             code="ACCOUNT_LOCKED",
-            message="Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên để được hỗ trợ.",
+            message=ACCOUNT_LOCKED_MESSAGE,
         )
-    elif user.status != "active":
+    elif user.status == "inactive" or user.status != "active":
         raise AuthValidationError(
-            code="ACCOUNT_DISABLED",
-            message="Tài khoản của bạn đã bị vô hiệu hóa.",
+            code="ACCOUNT_INACTIVE",
+            message=ACCOUNT_INACTIVE_MESSAGE,
         )
 
     return user
@@ -168,7 +185,13 @@ def authenticate_and_login(
     Tái sử dụng create_stored_login_session từ session_service.
     """
     user = validate_credentials(email=email, password=password, current_time=current_time)
-    session, tokens = create_stored_login_session(user_id=str(user.id))
+    try:
+        roles = user_role_repository.get_role_codes_by_user_id(str(user.id))
+    except Exception:
+        roles = []
+    if not roles and user.role:
+        roles = [user.role]
+    session, tokens = create_stored_login_session(user_id=str(user.id), roles=roles)
     return user, session, tokens
 
 
@@ -208,6 +231,14 @@ def create_password_reset_token(
     return raw_token, token_record
 
 
+_forgot_password_rate_limits: dict[str, datetime] = {}
+
+
+def clear_forgot_password_rate_limits() -> None:
+    """Xóa dữ liệu rate limit bộ nhớ để phục vụ test độc lập."""
+    _forgot_password_rate_limits.clear()
+
+
 def process_forgot_password_request(
     email: str,
     current_time: datetime | None = None,
@@ -231,14 +262,47 @@ def process_forgot_password_request(
     if not EMAIL_REGEX.match(normalized_email):
         raise AuthValidationError("INVALID_EMAIL", "Định dạng email không hợp lệ")
 
-    # Kiểm tra người dùng theo email trong MySQL database (không fallback mock)
+    now = current_time or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    # 1. Kiểm tra rate limit trong bộ nhớ (áp dụng cho CẢ email tồn tại và không tồn tại - chống enumeration)
+    last_req_time = _forgot_password_rate_limits.get(normalized_email)
+    if last_req_time is not None:
+        if last_req_time.tzinfo is None:
+            last_req_time = last_req_time.replace(tzinfo=timezone.utc)
+        elapsed = (now - last_req_time).total_seconds()
+        if elapsed < FORGOT_PASSWORD_COOLDOWN_SECONDS:
+            remaining = max(1, int(FORGOT_PASSWORD_COOLDOWN_SECONDS - elapsed))
+            raise AuthValidationError(
+                "FORGOT_PASSWORD_COOLDOWN",
+                FORGOT_PASSWORD_COOLDOWN_MESSAGE,
+                retry_after_seconds=remaining,
+            )
+
+    # 2. Kiểm tra người dùng theo email trong MySQL database (không fallback mock)
     user = user_repository.get_user_by_email(normalized_email)
 
-    # SCRUM-46 & SCRUM-48: Nếu user tồn tại, tạo token 30 phút và gửi email
+    # SCRUM-46 & SCRUM-48: Nếu user tồn tại, kiểm tra DB rate limit, tạo token 30 phút và gửi email
     if user is not None:
+        latest_token = password_reset_repository.get_latest_reset_token_by_user_id(user.id)
+        if latest_token is not None and latest_token.created_at is not None:
+            token_created_at = latest_token.created_at
+            if token_created_at.tzinfo is None:
+                token_created_at = token_created_at.replace(tzinfo=timezone.utc)
+            elapsed_db = (now - token_created_at).total_seconds()
+            if elapsed_db < FORGOT_PASSWORD_COOLDOWN_SECONDS:
+                remaining = max(1, int(FORGOT_PASSWORD_COOLDOWN_SECONDS - elapsed_db))
+                _forgot_password_rate_limits[normalized_email] = token_created_at
+                raise AuthValidationError(
+                    "FORGOT_PASSWORD_COOLDOWN",
+                    FORGOT_PASSWORD_COOLDOWN_MESSAGE,
+                    retry_after_seconds=remaining,
+                )
+
         raw_token, token_record = create_password_reset_token(
             user_id=user.id,
-            current_time=current_time,
+            current_time=now,
         )
         try:
             email_service.send_password_reset_email(
@@ -253,6 +317,9 @@ def process_forgot_password_request(
                 type(error).__name__,
             )
             # Không throw lỗi ra ngoài để bảo vệ nguyên tắc anti-enumeration
+
+    # Cập nhật thời điểm yêu cầu vào bộ nhớ rate limit
+    _forgot_password_rate_limits[normalized_email] = now
 
     return {
         "message": PUBLIC_FORGOT_PASSWORD_MESSAGE,

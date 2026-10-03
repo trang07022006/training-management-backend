@@ -24,10 +24,10 @@ def list_users():
     Lấy danh sách người dùng có phân trang - Yêu cầu quyền user.view (SCRUM-83).
     - Query parameters:
       - page: int >= 1 (mặc định 1)
-      - page_size: int 1-100 (mặc định 20)
+      - page_size: int 1-100 (mặc định 10)
     """
     page_raw = request.args.get("page", "1")
-    page_size_raw = request.args.get("page_size", "20")
+    page_size_raw = request.args.get("page_size", "10")
 
     try:
         page = int(page_raw)

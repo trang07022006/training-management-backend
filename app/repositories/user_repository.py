@@ -66,7 +66,7 @@ SAFE_SORT_COLUMNS = {
 
 def list_users(
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 10,
     sort_by: str = "created_at",
     sort_order: str = "desc",
     search: str | None = None,
@@ -75,14 +75,14 @@ def list_users(
 ) -> tuple[list[User], int]:
     """
     Truy xuất danh sách người dùng có phân trang, tìm kiếm và lọc (SCRUM-82, SCRUM-87).
-    - Mặc định 20 bản ghi/trang nếu không quy định khác.
+    - Mặc định 10 bản ghi/trang nếu không quy định khác.
     - Tìm kiếm theo tên, email, số điện thoại (tối đa 100 ký tự, tự động trim).
     - Lọc theo vai trò (role) và trạng thái (status).
     - Sắp xếp xác định (deterministic sort) kết hợp tie-breaker id.
     - SQL sử dụng hoàn toàn parameterized query tuyệt đối chống SQL injection.
     """
     safe_page = page if isinstance(page, int) and page >= 1 else 1
-    safe_page_size = page_size if isinstance(page_size, int) and 1 <= page_size <= 100 else 20
+    safe_page_size = page_size if isinstance(page_size, int) and 1 <= page_size <= 100 else 10
     offset = (safe_page - 1) * safe_page_size
 
     sort_col = SAFE_SORT_COLUMNS.get(sort_by, "created_at")

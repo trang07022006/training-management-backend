@@ -72,8 +72,9 @@ class Scrum64InitializeRbacDataTests(unittest.TestCase):
         # Admin có toàn quyền
         self.assertIn("user.manage", role_map["admin"])
         self.assertIn("course.manage", role_map["admin"])
-        # Trainer có quyền quản lý khóa học và xem user
+        # Trainer có quyền quản lý khóa học, không có quyền xem hay quản trị user
         self.assertIn("course.manage", role_map["trainer"])
+        self.assertNotIn("user.view", role_map["trainer"])
         self.assertNotIn("user.manage", role_map["trainer"])
         # Trainee và User không có quyền quản lý
         self.assertNotIn("course.manage", role_map["trainee"])

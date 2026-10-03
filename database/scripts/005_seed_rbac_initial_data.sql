@@ -39,10 +39,9 @@ VALUES
     ('role-id-admin', 'perm-id-session-view', NOW()),
     ('role-id-admin', 'perm-id-session-revoke', NOW());
 
--- Trainer: xem & quản lý khóa học, xem người dùng, xem phiên
+-- Trainer: xem & quản lý khóa học, xem phiên
 INSERT IGNORE INTO role_permissions (role_id, permission_id, created_at)
 VALUES 
-    ('role-id-trainer', 'perm-id-user-view', NOW()),
     ('role-id-trainer', 'perm-id-course-view', NOW()),
     ('role-id-trainer', 'perm-id-course-manage', NOW()),
     ('role-id-trainer', 'perm-id-session-view', NOW());
