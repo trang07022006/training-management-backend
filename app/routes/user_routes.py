@@ -251,6 +251,7 @@ def import_users():
         )
         return jsonify({
             "status": "success",
+            "message": result.get("message", "Hoàn tất import người dùng."),
             "data": result,
         }), 200
     except user_import_service.UserImportError as err:

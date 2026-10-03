@@ -405,19 +405,28 @@ def parse_user_import_workbook(file_stream, filename: str | None = None) -> dict
 
 def execute_user_import(file_stream, filename: str | None = None) -> dict:
     """
-    Thực hiện import các dòng hợp lệ vào cơ sở dữ liệu (SCRUM-119 Activity A4).
+    Thực hiện import các dòng hợp lệ vào cơ sở dữ liệu và tổng hợp kết quả (SCRUM-119 Activity A4 & A5).
     - Parse và validate workbook bằng logic A2/A3
     - Duyệt qua từng dòng dữ liệu:
-      - Dòng invalid -> bỏ qua, không ghi DB, lưu errors
-      - Dòng valid -> tạo user qua create_user_service (hash mật khẩu, gán role, kiểm tra duplicate)
+      - Dòng invalid -> bỏ qua, không ghi DB, lưu errors, result="validation_error"
+      - Dòng valid -> tạo user qua user_service.create_user_service (hash mật khẩu, gán role, kiểm tra duplicate)
       - Lỗi từng dòng (nếu có) không làm rollback các dòng thành công khác (partial success)
+    - Tổng hợp summary chi tiết:
+      - total_rows, valid_rows, invalid_rows, imported_rows, skipped_rows, failed_rows
+      - summary: { success, validation_errors, import_errors }
+      - error_summary: thống kê theo mã lỗi (error code)
+      - message: thông điệp người dùng thân thiện (tiếng Việt)
     - Trả về kết quả tổng hợp import an toàn (không lộ plaintext password)
     """
     parse_result = parse_user_import_workbook(file_stream, filename=filename)
     internal_rows = parse_result.get("_internal_rows", [])
 
+    total_rows = len(internal_rows)
+    valid_rows_count = parse_result.get("valid_rows", 0)
+    invalid_rows_count = parse_result.get("invalid_rows", 0)
+
     imported_rows_count = 0
-    skipped_rows_count = 0
+    failed_rows_count = 0
     result_rows = []
 
     for row in internal_rows:
@@ -433,7 +442,6 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
 
         if not is_valid:
             # Dòng không hợp lệ từ bước validate -> bỏ qua, không ghi DB
-            skipped_rows_count += 1
             result_rows.append({
                 "row_number": row_number,
                 "name": name,
@@ -441,6 +449,7 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 "role": role,
                 "status": status,
                 "imported": False,
+                "result": "validation_error",
                 "errors": initial_errors,
             })
             continue
@@ -463,10 +472,11 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 "role": role,
                 "status": status,
                 "imported": True,
+                "result": "imported",
                 "errors": [],
             })
         except DuplicateEmailError:
-            skipped_rows_count += 1
+            failed_rows_count += 1
             result_rows.append({
                 "row_number": row_number,
                 "name": name,
@@ -474,6 +484,7 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 "role": role,
                 "status": status,
                 "imported": False,
+                "result": "import_error",
                 "errors": [{
                     "field": "email",
                     "code": "DUPLICATE_EMAIL",
@@ -481,7 +492,7 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 }],
             })
         except UserValidationError as e:
-            skipped_rows_count += 1
+            failed_rows_count += 1
             result_rows.append({
                 "row_number": row_number,
                 "name": name,
@@ -489,6 +500,7 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 "role": role,
                 "status": status,
                 "imported": False,
+                "result": "import_error",
                 "errors": [{
                     "field": "validation",
                     "code": e.code,
@@ -496,7 +508,7 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 }],
             })
         except Exception:
-            skipped_rows_count += 1
+            failed_rows_count += 1
             result_rows.append({
                 "row_number": row_number,
                 "name": name,
@@ -504,6 +516,7 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 "role": role,
                 "status": status,
                 "imported": False,
+                "result": "import_error",
                 "errors": [{
                     "field": "database",
                     "code": "IMPORT_FAILED",
@@ -511,10 +524,40 @@ def execute_user_import(file_stream, filename: str | None = None) -> dict:
                 }],
             })
 
+    skipped_rows_count = invalid_rows_count + failed_rows_count
+
+    # Thống kê mã lỗi error_summary từ tất cả các rows
+    error_summary = {}
+    for r in result_rows:
+        for err in r.get("errors", []):
+            code = err.get("code")
+            if code:
+                error_summary[code] = error_summary.get(code, 0) + 1
+
+    # Thông điệp thân thiện với người dùng
+    if total_rows == 0:
+        message = "Không có người dùng nào được import."
+    elif imported_rows_count == total_rows:
+        message = f"Đã import thành công {imported_rows_count} người dùng."
+    elif imported_rows_count == 0:
+        message = "Không có người dùng nào được import."
+    else:
+        message = f"Đã import {imported_rows_count}/{total_rows} người dùng. Có {skipped_rows_count} dòng không được import."
+
     return {
         "filename": parse_result.get("filename", filename or ""),
-        "total_rows": len(result_rows),
+        "total_rows": total_rows,
+        "valid_rows": valid_rows_count,
+        "invalid_rows": invalid_rows_count,
         "imported_rows": imported_rows_count,
         "skipped_rows": skipped_rows_count,
+        "failed_rows": failed_rows_count,
+        "summary": {
+            "success": imported_rows_count,
+            "validation_errors": invalid_rows_count,
+            "import_errors": failed_rows_count,
+        },
+        "error_summary": error_summary,
+        "message": message,
         "rows": result_rows,
     }
