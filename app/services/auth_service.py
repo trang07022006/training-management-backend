@@ -20,6 +20,7 @@ LOCKOUT_DURATION_MINUTES = 15
 LOCKOUT_DURATION = timedelta(minutes=LOCKOUT_DURATION_MINUTES)
 INVALID_CREDENTIALS_MESSAGE = "Email hoặc mật khẩu không đúng"
 ACCOUNT_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa 15 phút do nhập sai mật khẩu quá 5 lần. Vui lòng thử lại sau."
+ACCOUNT_INACTIVE_MESSAGE = "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên."
 PUBLIC_FORGOT_PASSWORD_MESSAGE = (
     "Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi tới email của bạn."
 )
@@ -43,6 +44,8 @@ class AuthValidationError(Exception):
             message = INVALID_CREDENTIALS_MESSAGE
         elif message is None and code == "ACCOUNT_LOCKED":
             message = ACCOUNT_LOCKED_MESSAGE
+        elif message is None and code in ("ACCOUNT_INACTIVE", "ACCOUNT_DISABLED"):
+            message = ACCOUNT_INACTIVE_MESSAGE
         self.message = message
         super().__init__(message or code)
 
@@ -143,16 +146,21 @@ def validate_credentials(
         user.locked_until = None
         user_repository.reset_user_lockout(user_id=user.id)
 
-    # 5. Kiểm tra trạng thái tài khoản
+    # 5. Kiểm tra trạng thái tài khoản (phân biệt rõ active, inactive, locked)
     if user.status == "locked":
         raise AuthValidationError(
             code="ACCOUNT_LOCKED",
             message="Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên để được hỗ trợ.",
         )
+    elif user.status == "inactive":
+        raise AuthValidationError(
+            code="ACCOUNT_INACTIVE",
+            message=ACCOUNT_INACTIVE_MESSAGE,
+        )
     elif user.status != "active":
         raise AuthValidationError(
-            code="ACCOUNT_DISABLED",
-            message="Tài khoản của bạn đã bị vô hiệu hóa.",
+            code="ACCOUNT_INACTIVE",
+            message=ACCOUNT_INACTIVE_MESSAGE,
         )
 
     return user

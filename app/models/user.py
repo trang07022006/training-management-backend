@@ -66,3 +66,7 @@ class User:
     def is_active(self, current_time: datetime | None = None) -> bool:
         """Kiểm tra tài khoản đang hoạt động bình thường."""
         return self.status == "active" and not self.is_locked(current_time=current_time)
+
+    def is_inactive(self) -> bool:
+        """Kiểm tra tài khoản ở trạng thái không hoạt động (inactive)."""
+        return self.status == "inactive"

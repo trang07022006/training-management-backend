@@ -194,20 +194,21 @@ class AuthServiceTests(unittest.TestCase):
         mock_get_user.assert_called_once_with("trainer@example.com")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
-    def test_validate_credentials_disabled_account(self, mock_get_user):
-        disabled_user = User(
+    def test_validate_credentials_inactive_account(self, mock_get_user):
+        inactive_user = User(
             id="user-789",
             email="disabled@example.com",
             password_hash=generate_password_hash("ValidPass123!"),
             role="trainee",
             status="inactive",
         )
-        mock_get_user.return_value = disabled_user
+        mock_get_user.return_value = inactive_user
 
         with self.assertRaises(AuthValidationError) as ctx:
             validate_credentials("disabled@example.com", "ValidPass123!")
 
-        self.assertEqual(ctx.exception.code, "ACCOUNT_DISABLED")
+        self.assertEqual(ctx.exception.code, "ACCOUNT_INACTIVE")
+        self.assertEqual(ctx.exception.message, "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên.")
 
     def test_validate_credentials_empty_inputs(self):
         with self.assertRaises(AuthValidationError) as ctx:
@@ -254,20 +255,21 @@ class AuthServiceTests(unittest.TestCase):
         self.assertEqual(ctx.exception.message, "Email hoặc mật khẩu không đúng")
 
     @patch("app.services.auth_service.user_repository.get_user_by_email")
-    def test_authenticate_disabled_account(self, mock_get_user):
-        disabled_user = User(
+    def test_authenticate_inactive_account(self, mock_get_user):
+        inactive_user = User(
             id="user-789",
             email="disabled@example.com",
             password_hash=generate_password_hash("ValidPass123!"),
             role="trainee",
             status="inactive",
         )
-        mock_get_user.return_value = disabled_user
+        mock_get_user.return_value = inactive_user
 
         with self.assertRaises(AuthValidationError) as ctx:
             authenticate_and_login("disabled@example.com", "ValidPass123!")
 
-        self.assertEqual(ctx.exception.code, "ACCOUNT_DISABLED")
+        self.assertEqual(ctx.exception.code, "ACCOUNT_INACTIVE")
+        self.assertEqual(ctx.exception.message, "Tài khoản hiện không hoạt động. Vui lòng liên hệ quản trị viên.")
 
     def test_authenticate_empty_inputs(self):
         with self.assertRaises(AuthValidationError) as ctx:
