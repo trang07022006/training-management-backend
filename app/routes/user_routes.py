@@ -60,6 +60,55 @@ def get_user_profile():
         }), 500
 
 
+@user_bp.route("/v1/users/profile", methods=["PUT"])
+@user_bp.route("/users/profile", methods=["PUT"])
+@session_required
+def update_user_profile():
+    """
+    Cập nhật hồ sơ cá nhân của chính người dùng đang đăng nhập (SCRUM-120 - Activity A3).
+    - Yêu cầu đăng nhập hợp lệ (@session_required)
+    - Định danh user_id được lấy hoàn toàn từ session/token đã xác thực (g.login_session.user_id)
+    - Tuyệt đối không nhận user_id từ body/query/path
+    - Các trường cho phép: name, phone, date_of_birth, address (hỗ trợ partial update)
+    - Cấm sửa email, role, status, password hay các trường bảo mật
+    """
+    user_id = g.login_session.user_id
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_profile = user_service.update_user_profile_service(user_id=user_id, data=data)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật hồ sơ thành công.",
+            "data": updated_profile,
+        }), 200
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except user_service.UserValidationError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật hồ sơ người dùng.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi cập nhật hồ sơ người dùng.",
+        }), 500
+
+
 @user_bp.get("/users")
 @permission_required("user.view")
 def list_users():

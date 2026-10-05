@@ -9,7 +9,7 @@ Bao gồm:
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from mysql.connector.errors import IntegrityError
 from werkzeug.security import generate_password_hash
 
@@ -365,5 +365,138 @@ def get_user_profile_service(user_id: str) -> dict:
     profile_data["role"] = display_role
 
     return profile_data
+
+
+FORBIDDEN_PROFILE_FIELDS = {
+    "email",
+    "role",
+    "id",
+    "user_id",
+    "status",
+    "password",
+    "password_hash",
+    "failed_login_attempts",
+    "locked_until",
+    "created_at",
+    "updated_at",
+    "permissions",
+    "roles",
+}
+
+
+def update_user_profile_service(user_id: str, data: dict) -> dict:
+    """
+    Cập nhật thông tin hồ sơ của người dùng đang đăng nhập (SCRUM-120 - Activity A3).
+    - Kiểm tra định danh hợp lệ
+    - Từ chối cập nhật các trường cấm (email, role, status, password, ...)
+    - Hỗ trợ partial update (giữ nguyên các trường không gửi)
+    - Validate định dạng: name không rỗng, date_of_birth đúng format YYYY-MM-DD
+    - Cập nhật database qua user_repository.update_user_profile
+    - Trả về profile dict mới nhất
+    """
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise UserValidationError("INVALID_USER_ID", "Định danh người dùng không hợp lệ.")
+
+    if not isinstance(data, dict):
+        raise UserValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.")
+
+    # Kiểm tra các trường cấm
+    for field in FORBIDDEN_PROFILE_FIELDS:
+        if field in data:
+            raise UserValidationError(
+                "PROFILE_FIELD_NOT_EDITABLE",
+                "Email và vai trò không thể thay đổi từ hồ sơ cá nhân."
+            )
+
+    user = user_repository.get_user_by_id(user_id.strip())
+    if user is None:
+        raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
+
+    # 1. Name: nếu gửi thì trim và không được rỗng
+    new_name = user.name
+    if "name" in data:
+        val = data["name"]
+        if not isinstance(val, str) or not val.strip():
+            raise UserValidationError("NAME_REQUIRED", "Họ và tên không được để trống.")
+        new_name = val.strip()
+
+    # 2. Phone: nếu gửi thì trim hoặc None/blank
+    new_phone = user.phone
+    if "phone" in data:
+        val = data["phone"]
+        if val is None or val == "":
+            new_phone = None
+        elif isinstance(val, str):
+            new_phone = val.strip()
+        else:
+            raise UserValidationError("INVALID_PHONE", "Số điện thoại không hợp lệ.")
+
+    # 3. Date of birth: None hoặc YYYY-MM-DD
+    new_dob = user.date_of_birth
+    if "date_of_birth" in data:
+        val = data["date_of_birth"]
+        if val is None or val == "":
+            new_dob = None
+        elif isinstance(val, str):
+            stripped = val.strip()
+            if not stripped:
+                new_dob = None
+            else:
+                try:
+                    new_dob = datetime.strptime(stripped, "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    raise UserValidationError(
+                        "INVALID_DATE_OF_BIRTH",
+                        "Ngày sinh không hợp lệ, định dạng yêu cầu là YYYY-MM-DD."
+                    )
+        elif isinstance(val, date):
+            new_dob = val
+        else:
+            raise UserValidationError(
+                "INVALID_DATE_OF_BIRTH",
+                "Ngày sinh không hợp lệ, định dạng yêu cầu là YYYY-MM-DD."
+            )
+
+    # 4. Address: trim, giới hạn VARCHAR(255)
+    new_address = user.address
+    if "address" in data:
+        val = data["address"]
+        if val is None or val == "":
+            new_address = None
+        elif isinstance(val, str):
+            cleaned = val.strip()
+            if len(cleaned) > 255:
+                raise UserValidationError("INVALID_ADDRESS", "Địa chỉ không được vượt quá 255 ký tự.")
+            new_address = cleaned if cleaned else None
+        else:
+            raise UserValidationError("INVALID_ADDRESS", "Địa chỉ không hợp lệ.")
+
+    # Lưu thay đổi vào cơ sở dữ liệu
+    user_repository.update_user_profile(
+        user_id=user.id,
+        name=new_name,
+        phone=new_phone,
+        date_of_birth=new_dob,
+        address=new_address,
+    )
+
+    user.name = new_name
+    user.phone = new_phone
+    user.date_of_birth = new_dob
+    user.address = new_address
+
+    display_role = user.role or "user"
+    try:
+        primary_role = user_role_repository.get_primary_role_code_by_user_id(user.id)
+        if primary_role:
+            display_role = primary_role
+    except Exception:
+        pass
+
+    profile_data = user.to_profile_dict()
+    profile_data["role"] = display_role
+
+    return profile_data
+
 
 

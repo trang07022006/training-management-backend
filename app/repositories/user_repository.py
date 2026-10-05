@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.database.connection import get_db_connection
 from app.models.user import User
@@ -373,4 +373,42 @@ def update_user_status(user_id: str, status: str) -> bool:
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (status, _to_mysql_datetime(now), user_id))
         return cursor.rowcount > 0
+
+
+def update_user_profile(
+    user_id: str,
+    name: str | None,
+    phone: str | None,
+    date_of_birth: date | None,
+    address: str | None,
+) -> bool:
+    """
+    Cập nhật hồ sơ cá nhân của người dùng (SCRUM-120 - Activity A3).
+    Chỉ UPDATE: name, phone, date_of_birth, address, updated_at.
+    Tuyệt đối không update email, role, status hoặc các trường bảo mật.
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    sql = """
+        UPDATE users
+        SET
+            name = %s,
+            phone = %s,
+            date_of_birth = %s,
+            address = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        name,
+        phone,
+        date_of_birth,
+        address,
+        _to_mysql_datetime(now),
+        user_id,
+    )
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        return cursor.rowcount >= 0
+
 
