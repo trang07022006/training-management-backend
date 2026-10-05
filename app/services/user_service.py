@@ -337,3 +337,33 @@ def unlock_user_account(user_id: str) -> dict:
         "status": ACCOUNT_STATUS_ACTIVE,
     }
 
+
+def get_user_profile_service(user_id: str) -> dict:
+    """
+    Lấy thông tin hồ sơ của người dùng (SCRUM-120 - Activity A1 & A2).
+    - Kiểm tra user_id hợp lệ
+    - Đọc thông tin từ database qua user_repository
+    - Xác định vai trò chính xác của người dùng
+    - Trả về dictionary an toàn, tuyệt đối không lộ mật khẩu, mã băm hay dữ liệu phiên
+    """
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise UserValidationError("INVALID_USER_ID", "Định danh người dùng không hợp lệ.")
+
+    user = user_repository.get_user_by_id(user_id.strip())
+    if user is None:
+        raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
+
+    display_role = user.role or "user"
+    try:
+        primary_role = user_role_repository.get_primary_role_code_by_user_id(user_id.strip())
+        if primary_role:
+            display_role = primary_role
+    except Exception:
+        pass
+
+    profile_data = user.to_profile_dict()
+    profile_data["role"] = display_role
+
+    return profile_data
+
+

@@ -50,6 +50,8 @@ def _row_to_user(row: dict) -> User:
         locked_until=locked_until,
         name=row.get("name"),
         phone=row.get("phone"),
+        date_of_birth=row.get("date_of_birth"),
+        address=row.get("address"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -124,6 +126,8 @@ def list_users(
             locked_until,
             name,
             phone,
+            date_of_birth,
+            address,
             created_at,
             updated_at
         FROM users
@@ -160,6 +164,8 @@ def get_user_by_email(email: str) -> User | None:
             locked_until,
             name,
             phone,
+            date_of_birth,
+            address,
             created_at,
             updated_at
         FROM users
@@ -207,6 +213,8 @@ def get_user_by_id(user_id: str) -> User | None:
             locked_until,
             name,
             phone,
+            date_of_birth,
+            address,
             created_at,
             updated_at
         FROM users

@@ -8,13 +8,56 @@ Sử dụng các quyền hạn đã khởi tạo từ SCRUM-60 -> 64:
 """
 
 import math
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from mysql.connector import Error as MySQLError
 from app.repositories import user_repository
 from app.services import user_service
 from app.utils.rbac_auth import permission_required
+from app.utils.session_auth import session_required
 
 user_bp = Blueprint("users", __name__, url_prefix="/api")
+
+
+@user_bp.get("/v1/users/profile")
+@user_bp.get("/users/profile")
+@session_required
+def get_user_profile():
+    """
+    Lấy hồ sơ cá nhân của chính người dùng đang đăng nhập (SCRUM-120 - Activity A2).
+    - Yêu cầu đăng nhập hợp lệ (@session_required)
+    - Định danh user_id được lấy hoàn toàn từ session/token đã xác thực (g.login_session.user_id)
+    - Tuyệt đối không nhận user_id từ query parameter hoặc request body
+    - Không cho xem profile người khác thông qua endpoint này
+    - Không lộ password_hash, failed_login_attempts, locked_until hay dữ liệu phiên
+    """
+    user_id = g.login_session.user_id
+
+    try:
+        profile_data = user_service.get_user_profile_service(user_id)
+        return jsonify({
+            "status": "success",
+            "data": profile_data,
+        }), 200
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except user_service.UserValidationError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy xuất hồ sơ người dùng.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải hồ sơ người dùng.",
+        }), 500
 
 
 @user_bp.get("/users")
