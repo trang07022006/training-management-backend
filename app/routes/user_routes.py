@@ -93,10 +93,13 @@ def update_user_profile():
             "message": err.message,
         }), 404
     except user_service.UserValidationError as err:
-        return jsonify({
+        payload = {
             "code": err.code,
             "message": err.message,
-        }), 400
+        }
+        if getattr(err, "field", None):
+            payload["field"] = err.field
+        return jsonify(payload), 400
     except MySQLError:
         return jsonify({
             "code": "DATABASE_ERROR",

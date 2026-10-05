@@ -25,10 +25,12 @@ VALID_STATUSES = {"active", "inactive", "locked"}
 
 
 class UserValidationError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, field: str | None = None):
         self.code = code
         self.message = message
+        self.field = field
         super().__init__(message)
+
 
 
 class DuplicateEmailError(Exception):
@@ -367,6 +369,8 @@ def get_user_profile_service(user_id: str) -> dict:
     return profile_data
 
 
+EDITABLE_PROFILE_FIELDS = {"name", "phone", "date_of_birth", "address"}
+
 FORBIDDEN_PROFILE_FIELDS = {
     "email",
     "role",
@@ -383,14 +387,116 @@ FORBIDDEN_PROFILE_FIELDS = {
     "roles",
 }
 
+VIETNAMESE_PHONE_REGEX = re.compile(r"^0[35789]\d{8}$")
+
+
+def validate_profile_name(val) -> str:
+    """Kiểm tra và chuẩn hóa tên hồ sơ người dùng (SCRUM-120 - Activity A5)."""
+    if not isinstance(val, str) or not val.strip():
+        raise UserValidationError("NAME_REQUIRED", "Họ và tên không được để trống.", field="name")
+    cleaned = val.strip()
+    if len(cleaned) > 255:
+        raise UserValidationError("NAME_TOO_LONG", "Họ và tên không được vượt quá 255 ký tự.", field="name")
+    return cleaned
+
+
+def validate_vietnamese_phone_number(val) -> str | None:
+    """
+    Kiểm tra số điện thoại di động Việt Nam (SCRUM-120 - Activity A5).
+    - Cho phép null hoặc chuỗi rỗng để xóa/không cập nhật
+    - Định dạng bắt buộc: 0[3|5|7|8|9]xxxxxxxx (10 chữ số)
+    - Không chấp nhận chữ cái, ký tự đặc biệt hay mã quốc gia +84
+    """
+    if val is None or val == "":
+        return None
+    if not isinstance(val, str):
+        raise UserValidationError("INVALID_PHONE", "Số điện thoại không đúng định dạng.", field="phone")
+    cleaned = val.strip()
+    if not cleaned:
+        return None
+    if not VIETNAMESE_PHONE_REGEX.match(cleaned):
+        raise UserValidationError("INVALID_PHONE", "Số điện thoại không đúng định dạng.", field="phone")
+    return cleaned
+
+
+def validate_date_of_birth(val) -> date | None:
+    """
+    Kiểm tra ngày sinh (SCRUM-120 - Activity A5).
+    - Cho phép null hoặc chuỗi rỗng
+    - Phải đúng định dạng YYYY-MM-DD
+    - Ngày phải tồn tại thực tế trên lịch
+    - Không chấp nhận ngày ở tương lai
+    """
+    if val is None or val == "":
+        return None
+
+    if isinstance(val, str):
+        stripped = val.strip()
+        if not stripped:
+            return None
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", stripped):
+            raise UserValidationError(
+                "INVALID_DATE_OF_BIRTH",
+                "Ngày sinh không hợp lệ, định dạng yêu cầu là YYYY-MM-DD.",
+                field="date_of_birth",
+            )
+        try:
+            parsed_date = datetime.strptime(stripped, "%Y-%m-%d").date()
+        except ValueError:
+            raise UserValidationError(
+                "INVALID_DATE_OF_BIRTH",
+                "Ngày sinh không tồn tại trên thực tế.",
+                field="date_of_birth",
+            )
+    elif isinstance(val, date):
+        parsed_date = val
+    else:
+        raise UserValidationError(
+            "INVALID_DATE_OF_BIRTH",
+            "Ngày sinh không hợp lệ, định dạng yêu cầu là YYYY-MM-DD.",
+            field="date_of_birth",
+        )
+
+    now_date = datetime.now(timezone.utc).date()
+    if parsed_date > now_date:
+        raise UserValidationError(
+            "INVALID_DATE_OF_BIRTH",
+            "Ngày sinh không được ở thời điểm tương lai.",
+            field="date_of_birth",
+        )
+
+    return parsed_date
+
+
+def validate_address(val) -> str | None:
+    """
+    Kiểm tra địa chỉ (SCRUM-120 - Activity A5).
+    - Cho phép null hoặc chuỗi rỗng
+    - Trim khoảng trắng
+    - Tối đa 255 ký tự (phù hợp VARCHAR(255))
+    - Hỗ trợ đầy đủ Unicode tiếng Việt
+    """
+    if val is None or val == "":
+        return None
+    if not isinstance(val, str):
+        raise UserValidationError("INVALID_ADDRESS", "Địa chỉ không hợp lệ.", field="address")
+    cleaned = val.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 255:
+        raise UserValidationError("ADDRESS_TOO_LONG", "Địa chỉ không được vượt quá 255 ký tự.", field="address")
+    return cleaned
+
 
 def update_user_profile_service(user_id: str, data: dict) -> dict:
     """
-    Cập nhật thông tin hồ sơ của người dùng đang đăng nhập (SCRUM-120 - Activity A3).
+    Cập nhật thông tin hồ sơ của người dùng đang đăng nhập (SCRUM-120 - Activity A3, A4, A5).
     - Kiểm tra định danh hợp lệ
+    - Từ chối payload rỗng hoặc không có field hợp lệ
     - Từ chối cập nhật các trường cấm (email, role, status, password, ...)
-    - Hỗ trợ partial update (giữ nguyên các trường không gửi)
-    - Validate định dạng: name không rỗng, date_of_birth đúng format YYYY-MM-DD
+    - Từ chối các trường không xác định (unknown fields)
+    - Hỗ trợ partial update an toàn
+    - Validate nghiêm ngặt: name không rỗng, SĐT Việt Nam, ngày sinh không tương lai, address <= 255
     - Cập nhật database qua user_repository.update_user_profile
     - Trả về profile dict mới nhất
     """
@@ -400,76 +506,60 @@ def update_user_profile_service(user_id: str, data: dict) -> dict:
     if not isinstance(data, dict):
         raise UserValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.")
 
-    # Kiểm tra các trường cấm
+    if not data:
+        raise UserValidationError("EMPTY_UPDATE", "Dữ liệu cập nhật không được để trống.")
+
+    # 1. Kiểm tra các trường bị cấm (Activity A4)
     for field in FORBIDDEN_PROFILE_FIELDS:
         if field in data:
+            message = (
+                "Email và vai trò không thể thay đổi từ hồ sơ cá nhân."
+                if field in ("email", "role")
+                else "Trường này không được phép thay đổi từ hồ sơ cá nhân."
+            )
             raise UserValidationError(
                 "PROFILE_FIELD_NOT_EDITABLE",
-                "Email và vai trò không thể thay đổi từ hồ sơ cá nhân."
+                message,
+                field=field,
             )
+
+    # 2. Kiểm tra các trường không xác định (Unknown fields)
+    for field in data:
+        if field not in EDITABLE_PROFILE_FIELDS:
+            raise UserValidationError(
+                "UNKNOWN_FIELD",
+                f"Trường không hợp lệ: {field}.",
+                field=field,
+            )
+
+    # 3. Phải có ít nhất một trường editable trong payload
+    editable_present = [f for f in data if f in EDITABLE_PROFILE_FIELDS]
+    if not editable_present:
+        raise UserValidationError("EMPTY_UPDATE", "Dữ liệu cập nhật không có trường nào hợp lệ để thay đổi.")
 
     user = user_repository.get_user_by_id(user_id.strip())
     if user is None:
         raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
 
-    # 1. Name: nếu gửi thì trim và không được rỗng
+    # 1. Name: trim và không được rỗng
     new_name = user.name
     if "name" in data:
-        val = data["name"]
-        if not isinstance(val, str) or not val.strip():
-            raise UserValidationError("NAME_REQUIRED", "Họ và tên không được để trống.")
-        new_name = val.strip()
+        new_name = validate_profile_name(data["name"])
 
-    # 2. Phone: nếu gửi thì trim hoặc None/blank
+    # 2. Phone: SĐT di động Việt Nam hoặc None
     new_phone = user.phone
     if "phone" in data:
-        val = data["phone"]
-        if val is None or val == "":
-            new_phone = None
-        elif isinstance(val, str):
-            new_phone = val.strip()
-        else:
-            raise UserValidationError("INVALID_PHONE", "Số điện thoại không hợp lệ.")
+        new_phone = validate_vietnamese_phone_number(data["phone"])
 
-    # 3. Date of birth: None hoặc YYYY-MM-DD
+    # 3. Date of birth: YYYY-MM-DD thực tế, không tương lai
     new_dob = user.date_of_birth
     if "date_of_birth" in data:
-        val = data["date_of_birth"]
-        if val is None or val == "":
-            new_dob = None
-        elif isinstance(val, str):
-            stripped = val.strip()
-            if not stripped:
-                new_dob = None
-            else:
-                try:
-                    new_dob = datetime.strptime(stripped, "%Y-%m-%d").date()
-                except (ValueError, TypeError):
-                    raise UserValidationError(
-                        "INVALID_DATE_OF_BIRTH",
-                        "Ngày sinh không hợp lệ, định dạng yêu cầu là YYYY-MM-DD."
-                    )
-        elif isinstance(val, date):
-            new_dob = val
-        else:
-            raise UserValidationError(
-                "INVALID_DATE_OF_BIRTH",
-                "Ngày sinh không hợp lệ, định dạng yêu cầu là YYYY-MM-DD."
-            )
+        new_dob = validate_date_of_birth(data["date_of_birth"])
 
-    # 4. Address: trim, giới hạn VARCHAR(255)
+    # 4. Address: tối đa 255 ký tự
     new_address = user.address
     if "address" in data:
-        val = data["address"]
-        if val is None or val == "":
-            new_address = None
-        elif isinstance(val, str):
-            cleaned = val.strip()
-            if len(cleaned) > 255:
-                raise UserValidationError("INVALID_ADDRESS", "Địa chỉ không được vượt quá 255 ký tự.")
-            new_address = cleaned if cleaned else None
-        else:
-            raise UserValidationError("INVALID_ADDRESS", "Địa chỉ không hợp lệ.")
+        new_address = validate_address(data["address"])
 
     # Lưu thay đổi vào cơ sở dữ liệu
     user_repository.update_user_profile(
@@ -497,6 +587,7 @@ def update_user_profile_service(user_id: str, data: dict) -> dict:
     profile_data["role"] = display_role
 
     return profile_data
+
 
 
 
