@@ -52,6 +52,7 @@ def _row_to_user(row: dict) -> User:
         phone=row.get("phone"),
         date_of_birth=row.get("date_of_birth"),
         address=row.get("address"),
+        avatar_path=row.get("avatar_path"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -128,6 +129,7 @@ def list_users(
             phone,
             date_of_birth,
             address,
+            avatar_path,
             created_at,
             updated_at
         FROM users
@@ -166,6 +168,7 @@ def get_user_by_email(email: str) -> User | None:
             phone,
             date_of_birth,
             address,
+            avatar_path,
             created_at,
             updated_at
         FROM users
@@ -215,6 +218,7 @@ def get_user_by_id(user_id: str) -> User | None:
             phone,
             date_of_birth,
             address,
+            avatar_path,
             created_at,
             updated_at
         FROM users

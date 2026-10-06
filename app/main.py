@@ -1,5 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
+from app.config.avatar_config import configure_avatar
 from app.config.jwt_handlers import register_jwt_handlers
 from app.config.jwt_config import configure_jwt
 from app.database.connection import get_db_connection
@@ -13,6 +14,7 @@ from app.routes.user_role_routes import user_role_bp
 app = Flask(__name__)
 
 configure_jwt(app)
+configure_avatar(app)
 jwt.init_app(app)
 register_jwt_handlers(jwt)
 
