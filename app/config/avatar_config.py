@@ -86,9 +86,14 @@ def configure_avatar(app) -> None:
     """
     Nạp các thông số cấu hình avatar vào Flask app.config.
     """
-    upload_folder = os.getenv("AVATAR_UPLOAD_FOLDER", DEFAULT_AVATAR_UPLOAD_FOLDER)
+    upload_folder = app.config.get("AVATAR_UPLOAD_FOLDER") or os.getenv(
+        "AVATAR_UPLOAD_FOLDER", DEFAULT_AVATAR_UPLOAD_FOLDER
+    )
+    raw_size = app.config.get("AVATAR_MAX_FILE_SIZE") or os.getenv(
+        "AVATAR_MAX_FILE_SIZE", str(AVATAR_MAX_FILE_SIZE)
+    )
     try:
-        max_size = int(os.getenv("AVATAR_MAX_FILE_SIZE", str(AVATAR_MAX_FILE_SIZE)))
+        max_size = int(raw_size)
     except (ValueError, TypeError):
         max_size = AVATAR_MAX_FILE_SIZE
 

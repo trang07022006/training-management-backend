@@ -416,3 +416,28 @@ def update_user_profile(
         return cursor.rowcount >= 0
 
 
+def update_user_avatar(user_id: str, avatar_path: str) -> bool:
+    """
+    Cập nhật đường dẫn ảnh đại diện của người dùng (SCRUM-121 - Activity A2).
+    Chỉ UPDATE: avatar_path, updated_at.
+    Tuyệt đối không update email, role, status, mật khẩu hoặc các trường khác.
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    sql = """
+        UPDATE users
+        SET
+            avatar_path = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        avatar_path,
+        _to_mysql_datetime(now),
+        user_id,
+    )
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        return cursor.rowcount >= 0
+
+

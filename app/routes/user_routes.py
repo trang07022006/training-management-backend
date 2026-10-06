@@ -11,7 +11,7 @@ import math
 from flask import Blueprint, current_app, g, jsonify, request, send_file
 from mysql.connector import Error as MySQLError
 from app.repositories import user_repository
-from app.services import user_import_service, user_service
+from app.services import avatar_service, user_import_service, user_service
 from app.utils.rbac_auth import permission_required
 from app.utils.session_auth import session_required
 
@@ -109,6 +109,50 @@ def update_user_profile():
         return jsonify({
             "code": "INTERNAL_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi cập nhật hồ sơ người dùng.",
+        }), 500
+
+
+@user_bp.route("/v1/users/profile/avatar", methods=["POST"])
+@user_bp.route("/users/profile/avatar", methods=["POST"])
+@session_required
+def upload_user_avatar():
+    """
+    Tải lên ảnh đại diện cho chính người dùng đang đăng nhập (SCRUM-121 - Activity A2).
+    - Yêu cầu đăng nhập hợp lệ (@session_required)
+    - Định danh user_id được lấy hoàn toàn từ session (g.login_session.user_id)
+    - Tuyệt đối không nhận user_id, email hay role từ client request
+    - Input: multipart/form-data với field 'avatar'
+    - Kiểm tra: dung lượng tối đa 2MB, định dạng JPG/JPEG/PNG/WEBP, chữ ký ảnh thực tế
+    - Lưu file an toàn với UUID ngẫu nhiên và cập nhật relative path vào database
+    """
+    user_id = g.login_session.user_id
+    file_storage = request.files.get("avatar")
+
+    try:
+        result = avatar_service.upload_user_avatar_service(
+            user_id=user_id,
+            file_storage=file_storage,
+        )
+        return jsonify(result), 200
+    except avatar_service.AvatarError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật ảnh đại diện.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải lên ảnh đại diện.",
         }), 500
 
 
