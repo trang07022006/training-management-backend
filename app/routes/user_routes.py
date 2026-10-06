@@ -156,6 +156,47 @@ def upload_user_avatar():
         }), 500
 
 
+@user_bp.route("/v1/users/profile/avatar", methods=["DELETE"])
+@user_bp.route("/users/profile/avatar", methods=["DELETE"])
+@session_required
+def delete_user_avatar():
+    """
+    Xóa ảnh đại diện của chính người dùng đang đăng nhập (SCRUM-121 - Activity A3).
+    - Yêu cầu đăng nhập hợp lệ (@session_required)
+    - Định danh user_id được lấy hoàn toàn từ session (g.login_session.user_id)
+    - Tuyệt đối không nhận user_id, email hay role từ client request
+    - Xóa avatar trong DB trước (avatar_path = NULL)
+    - Sau khi DB thành công mới xóa file trên đĩa an toàn
+    - Idempotent: nếu chưa có avatar thì vẫn trả về HTTP 200
+    """
+    user_id = g.login_session.user_id
+
+    try:
+        result = avatar_service.delete_user_avatar_service(user_id=user_id)
+        return jsonify(result), 200
+    except avatar_service.AvatarError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi xóa ảnh đại diện.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xóa ảnh đại diện.",
+        }), 500
+
+
+
 @user_bp.get("/users")
 @permission_required("user.view")
 def list_users():

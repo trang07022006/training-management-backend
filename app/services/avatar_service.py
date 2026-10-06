@@ -83,6 +83,8 @@ def upload_user_avatar_service(user_id: str, file_storage) -> dict:
     if user is None:
         raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
 
+    old_avatar_path = user.avatar_path
+
     # 2. Kiểm tra sự tồn tại của file trong request
     if file_storage is None:
         raise AvatarRequiredError()
@@ -200,10 +202,14 @@ def upload_user_avatar_service(user_id: str, file_storage) -> dict:
         logger.error(f"Lỗi database khi cập nhật avatar: {db_err}")
         raise AvatarUploadError("Lỗi cơ sở dữ liệu khi cập nhật ảnh đại diện.")
 
+    # 11. Xóa avatar cũ an toàn (SCRUM-121 A3: chỉ xóa sau khi DB đã cập nhật thành công)
+    if old_avatar_path and old_avatar_path != relative_avatar_path:
+        delete_avatar_file(old_avatar_path, upload_folder_str)
+
     # Cập nhật cache object
     user.avatar_path = relative_avatar_path
 
-    # 11. Trả về payload kết quả chuẩn hóa
+    # 12. Trả về payload kết quả chuẩn hóa
     return {
         "status": "success",
         "message": "Cập nhật ảnh đại diện thành công.",
@@ -214,3 +220,111 @@ def upload_user_avatar_service(user_id: str, file_storage) -> dict:
             "avatar_path": relative_avatar_path,
         },
     }
+
+
+def delete_avatar_file(avatar_path: str, upload_folder_str: str) -> bool:
+    """
+    Xóa file ảnh đại diện trên đĩa một cách an toàn (SCRUM-121 - Activity A3).
+    Chỉ xóa nếu:
+    - avatar_path là chuỗi hợp lệ
+    - target path nằm strictly bên trong upload_folder (không phải chính upload_folder)
+    - target path tồn tại và là file thông thường (is_file)
+    Tuyệt đối không xóa file ngoài uploads/avatars/ kể cả khi DB chứa path traversal (../../) hay absolute path.
+    Nếu file không tồn tại hoặc có lỗi filesystem: ghi log, trả về False, không raise exception.
+    """
+    if not avatar_path or not isinstance(avatar_path, str):
+        return False
+
+    clean_path = avatar_path.strip().replace("\\", "/")
+    if clean_path.startswith("avatars/"):
+        relative_part = clean_path[len("avatars/"):]
+    else:
+        relative_part = clean_path
+
+    try:
+        upload_folder = Path(upload_folder_str).resolve()
+        target = (upload_folder / relative_part).resolve()
+
+        # Không được phép là chính thư mục upload
+        if target == upload_folder:
+            logger.warning(f"Từ chối xóa avatar: target là chính upload root ({target})")
+            return False
+
+        # Phải nằm hoàn toàn bên trong upload_folder (ngăn chặn path traversal)
+        if not target.is_relative_to(upload_folder):
+            logger.warning(f"Từ chối xóa avatar: target nằm ngoài upload root ({target})")
+            return False
+
+        # Kiểm tra file có tồn tại trên đĩa không
+        if not target.is_file():
+            logger.info(f"File avatar không tồn tại trên đĩa để xóa: {target}")
+            return False
+
+        target.unlink()
+        logger.info(f"Đã xóa file avatar thành công: {target}")
+        return True
+    except Exception as err:
+        logger.warning(f"Lỗi filesystem khi xóa file avatar ({avatar_path}): {err}")
+        return False
+
+
+def delete_user_avatar_service(user_id: str) -> dict:
+    """
+    Xóa ảnh đại diện của người dùng (SCRUM-121 - Activity A3).
+    - Lấy user từ database
+    - Nếu user không có avatar_path: trả về thành công (idempotent)
+    - Cập nhật database trước: avatar_path = NULL, updated_at = now
+    - Sau khi database cập nhật thành công: xóa file cũ trên đĩa an toàn
+    - Nếu xóa file trên đĩa gặp lỗi: DB vẫn giữ NULL, không rollback, log warning
+    """
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
+
+    user = user_repository.get_user_by_id(user_id.strip())
+    if user is None:
+        raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
+
+    old_avatar_path = user.avatar_path
+
+    # Nếu hiện tại người dùng chưa có avatar: idempotent thành công
+    if not old_avatar_path:
+        return {
+            "status": "success",
+            "message": "Đã xóa ảnh đại diện.",
+            "avatar": None,
+            "data": {
+                "avatar_path": None,
+            },
+        }
+
+    # 1. Cập nhật database trước: đặt avatar_path = NULL
+    try:
+        updated = user_repository.clear_user_avatar(user.id)
+        if not updated:
+            raise AvatarUploadError("Không thể cập nhật cơ sở dữ liệu khi xóa ảnh đại diện.")
+    except Exception as db_err:
+        if isinstance(db_err, AvatarError):
+            raise
+        logger.error(f"Lỗi database khi clear avatar: {db_err}")
+        raise AvatarUploadError("Lỗi cơ sở dữ liệu khi xóa ảnh đại diện.")
+
+    # Cập nhật cache object
+    user.avatar_path = None
+
+    # 2. Xóa file trên đĩa sau khi DB đã thành công
+    upload_folder_str = (
+        current_app.config.get("AVATAR_UPLOAD_FOLDER", AVATAR_UPLOAD_FOLDER)
+        if current_app
+        else AVATAR_UPLOAD_FOLDER
+    )
+    delete_avatar_file(old_avatar_path, upload_folder_str)
+
+    return {
+        "status": "success",
+        "message": "Đã xóa ảnh đại diện.",
+        "avatar": None,
+        "data": {
+            "avatar_path": None,
+        },
+    }
+
