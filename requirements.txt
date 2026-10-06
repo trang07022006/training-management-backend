@@ -10,3 +10,4 @@ python-dotenv==1.2.3
 Werkzeug==3.1.8
 Flask-JWT-Extended==4.7.4
 pytest
+openpyxl==3.1.5
