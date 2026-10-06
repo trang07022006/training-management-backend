@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.database.connection import get_db_connection
 from app.models.user import User
@@ -50,6 +50,8 @@ def _row_to_user(row: dict) -> User:
         locked_until=locked_until,
         name=row.get("name"),
         phone=row.get("phone"),
+        date_of_birth=row.get("date_of_birth"),
+        address=row.get("address"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -124,6 +126,8 @@ def list_users(
             locked_until,
             name,
             phone,
+            date_of_birth,
+            address,
             created_at,
             updated_at
         FROM users
@@ -160,6 +164,8 @@ def get_user_by_email(email: str) -> User | None:
             locked_until,
             name,
             phone,
+            date_of_birth,
+            address,
             created_at,
             updated_at
         FROM users
@@ -207,6 +213,8 @@ def get_user_by_id(user_id: str) -> User | None:
             locked_until,
             name,
             phone,
+            date_of_birth,
+            address,
             created_at,
             updated_at
         FROM users
@@ -365,4 +373,42 @@ def update_user_status(user_id: str, status: str) -> bool:
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (status, _to_mysql_datetime(now), user_id))
         return cursor.rowcount > 0
+
+
+def update_user_profile(
+    user_id: str,
+    name: str | None,
+    phone: str | None,
+    date_of_birth: date | None,
+    address: str | None,
+) -> bool:
+    """
+    Cập nhật hồ sơ cá nhân của người dùng (SCRUM-120 - Activity A3).
+    Chỉ UPDATE: name, phone, date_of_birth, address, updated_at.
+    Tuyệt đối không update email, role, status hoặc các trường bảo mật.
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    sql = """
+        UPDATE users
+        SET
+            name = %s,
+            phone = %s,
+            date_of_birth = %s,
+            address = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        name,
+        phone,
+        date_of_birth,
+        address,
+        _to_mysql_datetime(now),
+        user_id,
+    )
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        return cursor.rowcount >= 0
+
 

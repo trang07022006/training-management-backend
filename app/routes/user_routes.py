@@ -8,13 +8,108 @@ Sử dụng các quyền hạn đã khởi tạo từ SCRUM-60 -> 64:
 """
 
 import math
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request, send_file
 from mysql.connector import Error as MySQLError
 from app.repositories import user_repository
-from app.services import user_service
+from app.services import user_import_service, user_service
 from app.utils.rbac_auth import permission_required
+from app.utils.session_auth import session_required
 
 user_bp = Blueprint("users", __name__, url_prefix="/api")
+
+
+@user_bp.get("/v1/users/profile")
+@user_bp.get("/users/profile")
+@session_required
+def get_user_profile():
+    """
+    Lấy hồ sơ cá nhân của chính người dùng đang đăng nhập (SCRUM-120 - Activity A2).
+    - Yêu cầu đăng nhập hợp lệ (@session_required)
+    - Định danh user_id được lấy hoàn toàn từ session/token đã xác thực (g.login_session.user_id)
+    - Tuyệt đối không nhận user_id từ query parameter hoặc request body
+    - Không cho xem profile người khác thông qua endpoint này
+    - Không lộ password_hash, failed_login_attempts, locked_until hay dữ liệu phiên
+    """
+    user_id = g.login_session.user_id
+
+    try:
+        profile_data = user_service.get_user_profile_service(user_id)
+        return jsonify({
+            "status": "success",
+            "data": profile_data,
+        }), 200
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except user_service.UserValidationError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy xuất hồ sơ người dùng.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải hồ sơ người dùng.",
+        }), 500
+
+
+@user_bp.route("/v1/users/profile", methods=["PUT"])
+@user_bp.route("/users/profile", methods=["PUT"])
+@session_required
+def update_user_profile():
+    """
+    Cập nhật hồ sơ cá nhân của chính người dùng đang đăng nhập (SCRUM-120 - Activity A3).
+    - Yêu cầu đăng nhập hợp lệ (@session_required)
+    - Định danh user_id được lấy hoàn toàn từ session/token đã xác thực (g.login_session.user_id)
+    - Tuyệt đối không nhận user_id từ body/query/path
+    - Các trường cho phép: name, phone, date_of_birth, address (hỗ trợ partial update)
+    - Cấm sửa email, role, status, password hay các trường bảo mật
+    """
+    user_id = g.login_session.user_id
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_profile = user_service.update_user_profile_service(user_id=user_id, data=data)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật hồ sơ thành công.",
+            "data": updated_profile,
+        }), 200
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except user_service.UserValidationError as err:
+        payload = {
+            "code": err.code,
+            "message": err.message,
+        }
+        if getattr(err, "field", None):
+            payload["field"] = err.field
+        return jsonify(payload), 400
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật hồ sơ người dùng.",
+        }), 500
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi cập nhật hồ sơ người dùng.",
+        }), 500
 
 
 @user_bp.get("/users")
@@ -152,6 +247,118 @@ def create_user():
         "message": "Tạo người dùng thành công",
         "data": new_user.to_public_dict(),
     }), 201
+
+
+@user_bp.get("/users/import/template")
+@permission_required("user.manage")
+def download_user_import_template():
+    """
+    Tải file Excel mẫu phục vụ bulk import người dùng (SCRUM-119 Activity A1).
+    Yêu cầu quyền user.manage.
+    """
+    try:
+        buffer = user_import_service.generate_user_import_template()
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=user_import_service.USER_IMPORT_TEMPLATE_FILENAME,
+            mimetype=user_import_service.EXCEL_MIMETYPE,
+        )
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi khi tạo file mẫu Excel.",
+        }), 500
+
+
+@user_bp.post("/users/import/preview")
+@permission_required("user.manage")
+def preview_user_import():
+    """
+    Đọc và xem trước dữ liệu file Excel import người dùng (SCRUM-119 Activity A2).
+    Yêu cầu quyền user.manage.
+    """
+    if "file" not in request.files:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    try:
+        result = user_import_service.parse_user_import_workbook(
+            file_stream=file,
+            filename=file.filename,
+        )
+        return jsonify({
+            "status": "success",
+            "data": {
+                "filename": result["filename"],
+                "headers": result["headers"],
+                "total_rows": result["total_rows"],
+                "valid_rows": result["valid_rows"],
+                "invalid_rows": result["invalid_rows"],
+                "rows": result["rows"],
+            },
+        }), 200
+    except user_import_service.UserImportError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi trong quá trình xử lý file Excel.",
+        }), 500
+
+
+@user_bp.post("/users/import")
+@permission_required("user.manage")
+def import_users():
+    """
+    Import các dòng người dùng hợp lệ từ file Excel vào cơ sở dữ liệu (SCRUM-119 Activity A4).
+    Yêu cầu quyền user.manage.
+    """
+    if "file" not in request.files:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        return jsonify({
+            "code": "FILE_REQUIRED",
+            "message": "Vui lòng chọn file tải lên.",
+        }), 400
+
+    try:
+        result = user_import_service.execute_user_import(
+            file_stream=file,
+            filename=file.filename,
+        )
+        return jsonify({
+            "status": "success",
+            "message": result.get("message", "Hoàn tất import người dùng."),
+            "data": result,
+        }), 200
+    except user_import_service.UserImportError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 400
+    except Exception:
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi trong quá trình import người dùng.",
+        }), 500
 
 
 @user_bp.route("/users/<user_id>", methods=["PUT", "PATCH"])
