@@ -365,6 +365,9 @@ def get_user_profile_service(user_id: str) -> dict:
 
     profile_data = user.to_profile_dict()
     profile_data["role"] = display_role
+    profile_data["avatar_url"] = (
+        "/api/v1/users/profile/avatar" if user.avatar_path else None
+    )
 
     return profile_data
 

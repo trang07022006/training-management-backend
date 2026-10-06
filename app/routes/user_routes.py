@@ -196,6 +196,61 @@ def delete_user_avatar():
         }), 500
 
 
+@user_bp.route("/v1/users/profile/avatar", methods=["GET"])
+@user_bp.route("/users/profile/avatar", methods=["GET"])
+@session_required
+def get_user_avatar():
+    """
+    Tải ảnh đại diện của chính người dùng đang đăng nhập (SCRUM-121 - Activity A4).
+    - Yêu cầu đăng nhập (@session_required)
+    - Người dùng được xác định từ session: g.login_session.user_id
+    - Tuyệt đối không nhận user_id, filename hay path từ request của client
+    - Trả về binary stream ảnh kèm Content-Type chuẩn (image/jpeg, image/png, image/webp)
+    - Thêm header Cache-Control: no-cache, must-revalidate
+    - Nếu không có avatar hoặc file không tồn tại: trả HTTP 404 AVATAR_NOT_FOUND
+    """
+    user_id = g.login_session.user_id
+
+    try:
+        file_path, mimetype = avatar_service.get_user_avatar_file(user_id=user_id)
+        response = send_file(
+            str(file_path),
+            mimetype=mimetype,
+            as_attachment=False,
+            conditional=True,
+        )
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+    except avatar_service.AvatarNotFoundError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except avatar_service.AvatarError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except user_service.UserNotFoundError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), 404
+    except MySQLError:
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy xuất ảnh đại diện.",
+        }), 500
+    except Exception as err:
+        current_app.logger.error(f"Lỗi hệ thống khi tải avatar: {err}")
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải ảnh đại diện.",
+        }), 500
+
+
+
 
 @user_bp.get("/users")
 @permission_required("user.view")

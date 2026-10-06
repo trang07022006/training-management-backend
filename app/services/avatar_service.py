@@ -66,6 +66,11 @@ class AvatarUploadError(AvatarError):
         super().__init__(code="AVATAR_UPLOAD_FAILED", message=message, status_code=500)
 
 
+class AvatarNotFoundError(AvatarError):
+    def __init__(self, message: str = "Người dùng chưa có ảnh đại diện."):
+        super().__init__(code="AVATAR_NOT_FOUND", message=message, status_code=404)
+
+
 def upload_user_avatar_service(user_id: str, file_storage) -> dict:
     """
     Xử lý tải lên ảnh đại diện cho người dùng đang đăng nhập (SCRUM-121 A2).
@@ -327,4 +332,72 @@ def delete_user_avatar_service(user_id: str) -> dict:
             "avatar_path": None,
         },
     }
+
+
+def get_user_avatar_file(user_id: str) -> tuple[Path, str]:
+    """
+    Truy xuất tệp ảnh đại diện an toàn cho người dùng (SCRUM-121 - Activity A4).
+    - Xác định user từ database
+    - Kiểm tra avatar_path
+    - Xác minh đường dẫn an toàn (nằm strictly trong uploads/avatars/)
+    - Kiểm tra định dạng hợp lệ (jpg/png/webp) và ánh xạ MIME type
+    - Kiểm tra sự tồn tại của file trên đĩa
+    - Trả về (Path, mimetype) hoặc raise AvatarNotFoundError
+    """
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
+
+    user = user_repository.get_user_by_id(user_id.strip())
+    if user is None:
+        raise UserNotFoundError("Không tìm thấy thông tin người dùng.")
+
+    if not user.avatar_path or not isinstance(user.avatar_path, str) or not user.avatar_path.strip():
+        raise AvatarNotFoundError("Người dùng chưa có ảnh đại diện.")
+
+    clean_path = user.avatar_path.strip().replace("\\", "/")
+    if clean_path.startswith("avatars/"):
+        relative_part = clean_path[len("avatars/"):]
+    else:
+        relative_part = clean_path
+
+    # Kiểm tra extension hợp lệ
+    ext = relative_part.rsplit(".", 1)[-1].lower() if "." in relative_part else ""
+    mime_map = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+    }
+    if ext not in mime_map:
+        logger.warning(f"Avatar file có định dạng không được phép: {user.avatar_path}")
+        raise AvatarNotFoundError("Định dạng ảnh đại diện không hợp lệ.")
+
+    upload_folder_str = (
+        current_app.config.get("AVATAR_UPLOAD_FOLDER", AVATAR_UPLOAD_FOLDER)
+        if current_app
+        else AVATAR_UPLOAD_FOLDER
+    )
+    upload_folder = Path(upload_folder_str).resolve()
+    target = (upload_folder / relative_part).resolve()
+
+    # Kiểm tra target không phải là thư mục upload root
+    if target == upload_folder:
+        logger.warning(f"Từ chối serve avatar: target là chính upload root ({target})")
+        raise AvatarNotFoundError("Không tìm thấy ảnh đại diện.")
+
+    # Phải nằm hoàn toàn bên trong upload_folder (ngăn chặn path traversal, absolute external path, symlink escape)
+    try:
+        if not target.is_relative_to(upload_folder):
+            logger.warning(f"Từ chối serve avatar: target nằm ngoài upload root ({target})")
+            raise AvatarNotFoundError("Không tìm thấy ảnh đại diện.")
+    except (ValueError, RuntimeError):
+        raise AvatarNotFoundError("Không tìm thấy ảnh đại diện.")
+
+    # Kiểm tra file có tồn tại trên đĩa và là file thông thường
+    if not target.is_file():
+        logger.warning(f"File avatar trong DB ({user.avatar_path}) không tồn tại trên đĩa: {target}")
+        raise AvatarNotFoundError("Không tìm thấy ảnh đại diện.")
+
+    return target, mime_map[ext]
+
 
