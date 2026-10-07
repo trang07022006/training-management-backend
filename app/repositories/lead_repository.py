@@ -59,10 +59,18 @@ def _row_to_model(row: dict) -> Lead:
         message=str(row["message"]) if row.get("message") is not None else None,
         source=str(row.get("source") or LEAD_SOURCE_PUBLIC_FORM),
         status=str(row.get("status") or LEAD_STATUS_NEW),
+        assigned_to_user_id=(
+            str(row["assigned_to_user_id"])
+            if row.get("assigned_to_user_id") is not None
+            else None
+        ),
+        assigned_at=row.get("assigned_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
         interested_program_code=row.get("interested_program_code"),
         interested_program_name=row.get("interested_program_name"),
+        assigned_to_name=row.get("assigned_to_name"),
+        assigned_to_email=row.get("assigned_to_email"),
     )
 
 
@@ -79,10 +87,12 @@ def insert_lead(lead: Lead) -> Lead:
     sql = """
         INSERT INTO leads (
             id, full_name, phone, email, interested_program_id,
-            message, source, status, created_at, updated_at
+            message, source, status, assigned_to_user_id, assigned_at,
+            created_at, updated_at
         ) VALUES (
             %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s,
+            %s, %s
         )
     """
     params = (
@@ -94,6 +104,8 @@ def insert_lead(lead: Lead) -> Lead:
         lead.message,
         lead.source or LEAD_SOURCE_PUBLIC_FORM,
         lead.status or LEAD_STATUS_NEW,
+        lead.assigned_to_user_id,
+        _to_mysql_datetime(lead.assigned_at),
         _to_mysql_datetime(created_at),
         _to_mysql_datetime(updated_at),
     )
@@ -110,6 +122,8 @@ def insert_lead(lead: Lead) -> Lead:
         message=lead.message,
         source=lead.source or LEAD_SOURCE_PUBLIC_FORM,
         status=lead.status or LEAD_STATUS_NEW,
+        assigned_to_user_id=lead.assigned_to_user_id,
+        assigned_at=lead.assigned_at,
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -117,16 +131,20 @@ def insert_lead(lead: Lead) -> Lead:
 
 def get_lead_by_id(lead_id: str) -> Lead | None:
     """
-    Tra cứu một Lead theo ID (kèm thông tin chương trình đào tạo nếu có).
+    Tra cứu một Lead theo ID (kèm thông tin chương trình đào tạo và nhân sự phụ trách nếu có).
     """
     sql = """
         SELECT
             l.id, l.full_name, l.phone, l.email, l.interested_program_id,
-            l.message, l.source, l.status, l.created_at, l.updated_at,
+            l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
+            l.created_at, l.updated_at,
             tp.code AS interested_program_code,
-            tp.name AS interested_program_name
+            tp.name AS interested_program_name,
+            u.name AS assigned_to_name,
+            u.email AS assigned_to_email
         FROM leads l
         LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+        LEFT JOIN users u ON l.assigned_to_user_id = u.id
         WHERE l.id = %s
     """
     with _database_cursor(write=False) as cursor:
@@ -148,7 +166,7 @@ def count_leads() -> int:
 
 def list_leads(page: int = 1, page_size: int = 20) -> tuple[list[Lead], int]:
     """
-    Lấy danh sách Lead có phân trang (SCRUM-126 - Activity A1).
+    Lấy danh sách Lead có phân trang (SCRUM-126/127).
     Mặc định sắp xếp theo created_at DESC.
     """
     limit = max(1, min(page_size, 100))
@@ -158,11 +176,15 @@ def list_leads(page: int = 1, page_size: int = 20) -> tuple[list[Lead], int]:
     data_sql = """
         SELECT
             l.id, l.full_name, l.phone, l.email, l.interested_program_id,
-            l.message, l.source, l.status, l.created_at, l.updated_at,
+            l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
+            l.created_at, l.updated_at,
             tp.code AS interested_program_code,
-            tp.name AS interested_program_name
+            tp.name AS interested_program_name,
+            u.name AS assigned_to_name,
+            u.email AS assigned_to_email
         FROM leads l
         LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+        LEFT JOIN users u ON l.assigned_to_user_id = u.id
         ORDER BY l.created_at DESC
         LIMIT %s OFFSET %s
     """
@@ -210,10 +232,47 @@ def update_lead_status(
     return get_lead_by_id(lead_id)
 
 
+def assign_lead(
+    lead_id: str,
+    assigned_to_user_id: str | None,
+    assigned_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> Lead | None:
+    """
+    Phân công hoặc gỡ phân công nhân sự quản lý Lead (SCRUM-127 - Activity A1/A2).
+    Nếu assigned_to_user_id là None, gỡ phân công và đặt assigned_at = NULL.
+    """
+    now = datetime.now(timezone.utc)
+    target_updated_at = updated_at or now
+    target_assigned_at = (assigned_at or now) if assigned_to_user_id else None
+
+    sql = """
+        UPDATE leads
+        SET assigned_to_user_id = %s, assigned_at = %s, updated_at = %s
+        WHERE id = %s
+    """
+    params = (
+        assigned_to_user_id,
+        _to_mysql_datetime(target_assigned_at),
+        _to_mysql_datetime(target_updated_at),
+        lead_id,
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, params)
+        if cursor.rowcount == 0:
+            existing = get_lead_by_id(lead_id)
+            if not existing:
+                return None
+
+    return get_lead_by_id(lead_id)
+
+
 def delete_lead_for_testing(lead_id: str) -> bool:
     """Xóa một lead khỏi bảng (chỉ dùng cho cleanup trong testing)."""
     sql = "DELETE FROM leads WHERE id = %s"
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (lead_id,))
         return cursor.rowcount > 0
+
 

@@ -41,12 +41,16 @@ class Lead:
     message: str | None = None
     source: str = LEAD_SOURCE_PUBLIC_FORM
     status: str = LEAD_STATUS_NEW
+    assigned_to_user_id: str | None = None
+    assigned_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
-    # Tùy chọn thông tin mở rộng khi JOIN với training_programs
+    # Tùy chọn thông tin mở rộng khi JOIN với training_programs và users
     interested_program_code: str | None = None
     interested_program_name: str | None = None
+    assigned_to_name: str | None = None
+    assigned_to_email: str | None = None
 
     def validate_status(self) -> None:
         """Kiểm tra trạng thái của Lead có nằm trong danh mục hợp lệ không."""
@@ -72,6 +76,8 @@ class Lead:
             "message": self.message,
             "source": self.source,
             "status": self.status,
+            "assigned_to_user_id": self.assigned_to_user_id,
+            "assigned_at": self.assigned_at.isoformat() if self.assigned_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -79,6 +85,10 @@ class Lead:
             data["interested_program_code"] = self.interested_program_code
         if self.interested_program_name is not None:
             data["interested_program_name"] = self.interested_program_name
+        if self.assigned_to_name is not None:
+            data["assigned_to_name"] = self.assigned_to_name
+        if self.assigned_to_email is not None:
+            data["assigned_to_email"] = self.assigned_to_email
         return data
 
     def to_public_dict(self) -> dict:
