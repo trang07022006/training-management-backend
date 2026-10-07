@@ -70,6 +70,36 @@ class SubjectInUseError(SubjectServiceError):
         super().__init__(code="SUBJECT_IN_USE", message=message, status_code=409)
 
 
+class TotalSessionsInUseError(SubjectServiceError):
+    """Ngoại lệ khi giảm total_sessions thấp hơn số thứ tự buổi học hiện có (409)."""
+
+    def __init__(
+        self,
+        message: str = "Không thể giảm tổng số buổi xuống thấp hơn số thứ tự buổi học hiện có.",
+    ):
+        super().__init__(code="TOTAL_SESSIONS_IN_USE", message=message, status_code=409)
+
+
+def _check_total_sessions_integrity(subject_id: str, new_total_sessions: int | None) -> None:
+    """
+    Kiểm tra toàn vẹn giữa total_sessions của môn học và các buổi học hiện có (SCRUM-129 Activity A5).
+    Nếu new_total_sessions != None và nhỏ hơn max(session_number) hiện có -> 409 TOTAL_SESSIONS_IN_USE.
+    """
+    if new_total_sessions is None:
+        return
+    try:
+        from app.repositories import subject_session_repository
+        max_num = subject_session_repository.get_max_session_number(subject_id)
+        if max_num is not None and new_total_sessions < max_num:
+            raise TotalSessionsInUseError(
+                "Không thể giảm tổng số buổi xuống thấp hơn số thứ tự buổi học hiện có."
+            )
+    except Exception as exc:
+        if isinstance(exc, TotalSessionsInUseError):
+            raise
+        pass
+
+
 def get_subjects_service(
     page_raw: Any = 1,
     page_size_raw: Any = 20,
@@ -407,6 +437,7 @@ def update_subject_service(subject_id: str, data: dict) -> dict:
     cleaned_credits = validate_subject_credits(data.get("credits"))
     cleaned_desc = validate_subject_description(data.get("description"))
     cleaned_sessions = validate_subject_total_sessions(data.get("total_sessions"))
+    _check_total_sessions_integrity(cleaned_id, cleaned_sessions)
     cleaned_status = validate_subject_status(data.get("status"), default=SUBJECT_STATUS_DRAFT)
 
     if cleaned_code != existing.code:
@@ -501,7 +532,9 @@ def patch_subject_service(subject_id: str, data: dict) -> dict:
         fields_to_update["credits"] = validate_subject_credits(data["credits"])
 
     if "total_sessions" in data:
-        fields_to_update["total_sessions"] = validate_subject_total_sessions(data["total_sessions"])
+        new_total = validate_subject_total_sessions(data["total_sessions"])
+        _check_total_sessions_integrity(cleaned_id, new_total)
+        fields_to_update["total_sessions"] = new_total
 
     if "status" in data:
         fields_to_update["status"] = validate_patch_status(data["status"])
