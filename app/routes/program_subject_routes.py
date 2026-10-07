@@ -166,3 +166,94 @@ def update_program_subject(program_id: str, program_subject_id: str):
             }
         }), 500
 
+
+@program_subject_bp.patch("/v1/training-programs/<program_id>/subjects/reorder")
+@program_subject_bp.patch("/training-programs/<program_id>/subjects/reorder")
+@permission_required("course.manage")
+def reorder_program_subjects(program_id: str):
+    """
+    API sắp xếp lại thứ tự học các môn trong chương trình đào tạo (SCRUM-124 - Activity A4).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Body JSON: { "semester": ..., "ordered_ids": [...] } hoặc { "semester": ..., "items": [...] }
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "error": {
+                "code": "INVALID_PARAMS",
+                "message": "Dữ liệu JSON không hợp lệ hoặc bị thiếu",
+            }
+        }), 400
+
+    try:
+        result = program_subject_service.reorder_program_subjects_service(program_id, body)
+        return jsonify(result), 200
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when reordering program subjects: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi sắp xếp lại môn học trong chương trình",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when reordering program subjects: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
+
+@program_subject_bp.delete("/v1/training-programs/<program_id>/subjects/<program_subject_id>")
+@program_subject_bp.delete("/training-programs/<program_id>/subjects/<program_subject_id>")
+@permission_required("course.manage")
+def remove_program_subject(program_id: str, program_subject_id: str):
+    """
+    API gỡ môn học khỏi khung chương trình đào tạo an toàn (SCRUM-124 - Activity A4).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Không xóa master training_programs hay subjects
+    - Chặn nếu môn đang làm prerequisite cho môn khác (409 PROGRAM_SUBJECT_IN_USE)
+    """
+    try:
+        result = program_subject_service.remove_program_subject_service(program_id, program_subject_id)
+        return jsonify(result), 200
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when removing program subject: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi gỡ môn học khỏi chương trình",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when removing program subject: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
+

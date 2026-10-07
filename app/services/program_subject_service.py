@@ -53,6 +53,13 @@ class ProgramSubjectNotFoundError(ProgramSubjectServiceError):
         super().__init__("PROGRAM_SUBJECT_NOT_FOUND", message, status_code=404)
 
 
+class ProgramSubjectInUseError(ProgramSubjectServiceError):
+    """Ngoại lệ khi môn học đang là điều kiện tiên quyết cho môn khác trong chương trình (409)."""
+
+    def __init__(self, message: str = "Không thể gỡ môn học đang là điều kiện tiên quyết của môn khác trong chương trình"):
+        super().__init__("PROGRAM_SUBJECT_IN_USE", message, status_code=409)
+
+
 def get_program_structure_service(
     program_id: str,
     semester_raw: Any = None,
@@ -352,4 +359,127 @@ def update_program_subject_service(
         "created_at": updated.created_at.isoformat() if updated.created_at else None,
         "updated_at": updated.updated_at.isoformat() if updated.updated_at else None,
     }
+
+
+def reorder_program_subjects_service(
+    program_id: str,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Nghiệp vụ sắp xếp lại thứ tự học các môn trong chương trình đào tạo (SCRUM-124 - Activity A4 - PATCH reorder).
+    - Hỗ trợ cả 2 format: `ordered_ids: [...]` hoặc `items: [{program_subject_id: ..., order_index: ...}, ...]`
+    - Kiểm tra tính hợp lệ UUID, chống trùng lặp ID
+    - Kiểm tra tất cả các môn phải thuộc cùng chương trình (và cùng học kỳ nếu có chỉ định)
+    - Thực thi trong transaction nguyên tử (atomic), rollback toàn bộ nếu có lỗi
+    - Chuẩn hóa dãy thứ tự 1..N
+    """
+    if not is_valid_uuid(program_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã chương trình đào tạo không hợp lệ", status_code=400)
+
+    program = training_program_repository.get_training_program_by_id(program_id.strip())
+    if not program:
+        raise ProgramNotFoundError()
+
+    if program.status == "archived":
+        raise ProgramSubjectServiceError(
+            "ARCHIVED_PROGRAM_CANNOT_BE_MODIFIED",
+            "Không thể sắp xếp lại môn học của chương trình đào tạo đã lưu trữ",
+            status_code=400,
+        )
+
+    if not isinstance(data, dict):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Dữ liệu yêu cầu không hợp lệ", status_code=400)
+
+    semester = None
+    if "semester" in data and data["semester"] is not None:
+        try:
+            semester = int(data["semester"])
+            if semester < 1:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ProgramSubjectServiceError("INVALID_PARAMS", "Học kỳ không hợp lệ", status_code=400)
+
+    # Trích xuất danh sách ID
+    if "ordered_ids" in data and isinstance(data["ordered_ids"], list):
+        id_list = data["ordered_ids"]
+    elif "items" in data and isinstance(data["items"], list):
+        sorted_items = sorted(data["items"], key=lambda x: int(x.get("order_index", 0)) if isinstance(x, dict) else 0)
+        id_list = [it.get("program_subject_id") for it in sorted_items if isinstance(it, dict)]
+    else:
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Dữ liệu danh sách sắp xếp không hợp lệ", status_code=400)
+
+    if not id_list or not isinstance(id_list, list):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Danh sách môn học sắp xếp không được để trống", status_code=400)
+
+    # Chống trùng lặp ID
+    if len(id_list) != len(set(id_list)):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Danh sách ID môn học bị trùng lặp", status_code=400)
+
+    # Kiểm tra từng phần tử
+    for ps_id in id_list:
+        if not isinstance(ps_id, str) or not is_valid_uuid(ps_id):
+            raise ProgramSubjectServiceError("INVALID_PARAMS", f"ID môn học không hợp lệ: {ps_id}", status_code=400)
+        ps_obj = program_subject_repository.get_program_subject_by_id(ps_id.strip())
+        if not ps_obj or ps_obj.program_id != program.id:
+            raise ProgramSubjectServiceError("INVALID_PARAMS", f"Môn học {ps_id} không thuộc chương trình đào tạo", status_code=400)
+        if semester is not None and ps_obj.semester != semester:
+            raise ProgramSubjectServiceError(
+                "INVALID_PARAMS",
+                f"Môn học {ps_id} thuộc học kỳ {ps_obj.semester}, không khớp với học kỳ yêu cầu {semester}",
+                status_code=400,
+            )
+
+    program_subject_repository.reorder_program_subjects(program.id, semester, id_list)
+    return get_program_structure_service(program.id, semester_raw=semester)
+
+
+def remove_program_subject_service(
+    program_id: str,
+    program_subject_id: str,
+) -> dict[str, Any]:
+    """
+    Nghiệp vụ gỡ môn học khỏi chương trình đào tạo an toàn (SCRUM-124 - Activity A4 - DELETE).
+    - Chỉ xóa dòng liên kết program_subjects, giữ nguyên môn học và chương trình đào tạo master
+    - Nếu môn học đang làm prerequisite target của môn khác trong chương trình -> chặn (409 PROGRAM_SUBJECT_IN_USE)
+    - Tự động chuẩn hóa lại thứ tự (order_index) trong học kỳ liên quan sau khi gỡ
+    """
+    if not is_valid_uuid(program_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã chương trình đào tạo không hợp lệ", status_code=400)
+    if not is_valid_uuid(program_subject_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã liên kết môn học không hợp lệ", status_code=400)
+
+    program = training_program_repository.get_training_program_by_id(program_id.strip())
+    if not program:
+        raise ProgramNotFoundError()
+
+    if program.status == "archived":
+        raise ProgramSubjectServiceError(
+            "ARCHIVED_PROGRAM_CANNOT_BE_MODIFIED",
+            "Không thể gỡ môn học khỏi chương trình đào tạo đã lưu trữ",
+            status_code=400,
+        )
+
+    ps_obj = program_subject_repository.get_program_subject_by_id(program_subject_id.strip())
+    if not ps_obj or ps_obj.program_id != program.id:
+        raise ProgramSubjectNotFoundError()
+
+    # Kiểm tra xem môn này có đang là môn tiên quyết cho môn khác hay không
+    if program_subject_repository.is_prerequisite_target(ps_obj.id):
+        raise ProgramSubjectInUseError(
+            "Môn học đang là điều kiện tiên quyết của môn khác trong chương trình. Hãy gỡ ràng buộc tiên quyết trước."
+        )
+
+    old_semester = ps_obj.semester
+    removed = program_subject_repository.remove_program_subject(ps_obj.id)
+    if not removed:
+        raise ProgramSubjectNotFoundError()
+
+    # Chuẩn hóa lại thứ tự trong học kỳ
+    program_subject_repository.normalize_order_indices(program.id, old_semester)
+
+    return {
+        "message": "Đã gỡ môn học khỏi chương trình đào tạo thành công",
+        "removed_program_subject_id": ps_obj.id,
+    }
+
 
