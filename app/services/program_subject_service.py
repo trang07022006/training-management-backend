@@ -483,3 +483,173 @@ def remove_program_subject_service(
     }
 
 
+def get_prerequisites_service(
+    program_id: str,
+    program_subject_id: str,
+) -> list[dict[str, Any]]:
+    """Lấy danh sách các môn tiên quyết của môn học chỉ định trong chương trình."""
+    if not is_valid_uuid(program_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã chương trình đào tạo không hợp lệ", status_code=400)
+    if not is_valid_uuid(program_subject_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã liên kết môn học không hợp lệ", status_code=400)
+
+    program = training_program_repository.get_training_program_by_id(program_id.strip())
+    if not program:
+        raise ProgramNotFoundError()
+
+    ps_obj = program_subject_repository.get_program_subject_by_id(program_subject_id.strip())
+    if not ps_obj or ps_obj.program_id != program.id:
+        raise ProgramSubjectNotFoundError()
+
+    prereqs = program_subject_repository.get_prerequisites_by_program_subject_id(ps_obj.id)
+    return [p.to_dict() for p in prereqs]
+
+
+def add_prerequisite_service(
+    program_id: str,
+    program_subject_id: str,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Nghiệp vụ gán môn tiên quyết cho môn học trong chương trình đào tạo (SCRUM-124 - Activity A5 - POST).
+    - Cả hai môn phải tồn tại và thuộc cùng chương trình
+    - Chống tự gán chính mình (Self-reference)
+    - Chống gán trùng lặp (Duplicate)
+    - Kiểm tra thứ tự logic học kỳ/thứ tự học (INVALID_PREREQUISITE_ORDER)
+    - Kiểm tra phát hiện vòng lặp chu trình đồ thị (PREREQUISITE_CYCLE)
+    """
+    if not is_valid_uuid(program_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã chương trình đào tạo không hợp lệ", status_code=400)
+    if not is_valid_uuid(program_subject_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã liên kết môn học không hợp lệ", status_code=400)
+
+    program = training_program_repository.get_training_program_by_id(program_id.strip())
+    if not program:
+        raise ProgramNotFoundError()
+
+    if program.status == "archived":
+        raise ProgramSubjectServiceError(
+            "ARCHIVED_PROGRAM_CANNOT_BE_MODIFIED",
+            "Không thể thêm môn tiên quyết cho chương trình đào tạo đã lưu trữ",
+            status_code=400,
+        )
+
+    dependent_ps = program_subject_repository.get_program_subject_by_id(program_subject_id.strip())
+    if not dependent_ps or dependent_ps.program_id != program.id:
+        raise ProgramSubjectNotFoundError()
+
+    if not isinstance(data, dict):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Dữ liệu yêu cầu không hợp lệ", status_code=400)
+
+    prereq_ps_id = data.get("prerequisite_program_subject_id")
+    if not isinstance(prereq_ps_id, str) or not is_valid_uuid(prereq_ps_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã môn tiên quyết không hợp lệ", status_code=400)
+
+    prereq_ps_id = prereq_ps_id.strip()
+
+    # Chống tự tham chiếu
+    if prereq_ps_id == dependent_ps.id:
+        raise ProgramSubjectServiceError(
+            "INVALID_PARAMS",
+            "Môn học không thể tự làm điều kiện tiên quyết của chính nó",
+            status_code=400,
+        )
+
+    prereq_ps = program_subject_repository.get_program_subject_by_id(prereq_ps_id)
+    if not prereq_ps or prereq_ps.program_id != program.id:
+        raise ProgramSubjectServiceError(
+            "INVALID_PARAMS",
+            "Môn tiên quyết không tồn tại hoặc không thuộc cùng chương trình đào tạo",
+            status_code=400,
+        )
+
+    # Chống trùng lặp
+    if program_subject_repository.exists_prerequisite(program.id, dependent_ps.id, prereq_ps.id):
+        raise ProgramSubjectServiceError(
+            "PREREQUISITE_ALREADY_EXISTS",
+            "Điều kiện tiên quyết đã tồn tại",
+            status_code=409,
+        )
+
+    # Kiểm tra thứ tự lộ trình học tập
+    if prereq_ps.semester is not None and dependent_ps.semester is not None:
+        if prereq_ps.semester > dependent_ps.semester:
+            raise ProgramSubjectServiceError(
+                "INVALID_PREREQUISITE_ORDER",
+                f"Môn tiên quyết (học kỳ {prereq_ps.semester}) không được xếp sau môn học phụ thuộc (học kỳ {dependent_ps.semester})",
+                status_code=400,
+            )
+        if prereq_ps.semester == dependent_ps.semester:
+            if prereq_ps.order_index >= dependent_ps.order_index:
+                raise ProgramSubjectServiceError(
+                    "INVALID_PREREQUISITE_ORDER",
+                    f"Trong cùng học kỳ, môn tiên quyết (thứ tự {prereq_ps.order_index}) phải xếp trước môn học phụ thuộc (thứ tự {dependent_ps.order_index})",
+                    status_code=400,
+                )
+
+    # Phát hiện chu trình (Cycle Detection)
+    if program_subject_repository.would_create_cycle(program.id, prereq_ps.id, dependent_ps.id):
+        raise ProgramSubjectServiceError(
+            "PREREQUISITE_CYCLE",
+            "Phát hiện vòng lặp phụ thuộc môn tiên quyết không hợp lệ",
+            status_code=409,
+        )
+
+    new_pr = ProgramSubjectPrerequisite(
+        id=str(uuid.uuid4()),
+        program_id=program.id,
+        program_subject_id=dependent_ps.id,
+        prerequisite_program_subject_id=prereq_ps.id,
+    )
+    saved = program_subject_repository.insert_prerequisite(new_pr)
+
+    return {
+        "id": saved.id,
+        "program_id": saved.program_id,
+        "program_subject_id": saved.program_subject_id,
+        "prerequisite_program_subject_id": saved.prerequisite_program_subject_id,
+        "created_at": saved.created_at.isoformat() if saved.created_at else None,
+    }
+
+
+def remove_prerequisite_service(
+    program_id: str,
+    program_subject_id: str,
+    prerequisite_program_subject_id: str,
+) -> dict[str, Any]:
+    """Xóa bỏ một điều kiện môn tiên quyết (SCRUM-124 - Activity A5 - DELETE)."""
+    if not is_valid_uuid(program_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã chương trình đào tạo không hợp lệ", status_code=400)
+    if not is_valid_uuid(program_subject_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã liên kết môn học không hợp lệ", status_code=400)
+    if not is_valid_uuid(prerequisite_program_subject_id):
+        raise ProgramSubjectServiceError("INVALID_PARAMS", "Mã môn tiên quyết không hợp lệ", status_code=400)
+
+    program = training_program_repository.get_training_program_by_id(program_id.strip())
+    if not program:
+        raise ProgramNotFoundError()
+
+    if program.status == "archived":
+        raise ProgramSubjectServiceError(
+            "ARCHIVED_PROGRAM_CANNOT_BE_MODIFIED",
+            "Không thể xóa môn tiên quyết của chương trình đào tạo đã lưu trữ",
+            status_code=400,
+        )
+
+    if not program_subject_repository.exists_prerequisite(
+        program.id, program_subject_id.strip(), prerequisite_program_subject_id.strip()
+    ):
+        raise ProgramSubjectServiceError(
+            "PREREQUISITE_NOT_FOUND",
+            "Không tìm thấy điều kiện tiên quyết cần xóa",
+            status_code=404,
+        )
+
+    program_subject_repository.remove_prerequisite_pair(
+        program.id, program_subject_id.strip(), prerequisite_program_subject_id.strip()
+    )
+
+    return {"message": "Đã xóa điều kiện tiên quyết thành công"}
+
+
+

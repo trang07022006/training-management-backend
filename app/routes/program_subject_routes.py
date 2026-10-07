@@ -257,3 +257,133 @@ def remove_program_subject(program_id: str, program_subject_id: str):
         }), 500
 
 
+@program_subject_bp.get("/v1/training-programs/<program_id>/subjects/<program_subject_id>/prerequisites")
+@program_subject_bp.get("/training-programs/<program_id>/subjects/<program_subject_id>/prerequisites")
+@permission_required("course.view")
+def list_prerequisites(program_id: str, program_subject_id: str):
+    """
+    API xem danh sách các môn tiên quyết của môn học chỉ định (SCRUM-124 - Activity A5).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.view'
+    """
+    try:
+        data = program_subject_service.get_prerequisites_service(program_id, program_subject_id)
+        return jsonify(data), 200
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when getting prerequisites: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi tra cứu môn tiên quyết",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when getting prerequisites: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
+
+@program_subject_bp.post("/v1/training-programs/<program_id>/subjects/<program_subject_id>/prerequisites")
+@program_subject_bp.post("/training-programs/<program_id>/subjects/<program_subject_id>/prerequisites")
+@permission_required("course.manage")
+def add_prerequisite(program_id: str, program_subject_id: str):
+    """
+    API gán môn học tiên quyết (SCRUM-124 - Activity A5).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Body JSON: { "prerequisite_program_subject_id": "..." }
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "error": {
+                "code": "INVALID_PARAMS",
+                "message": "Dữ liệu JSON không hợp lệ hoặc bị thiếu",
+            }
+        }), 400
+
+    try:
+        result = program_subject_service.add_prerequisite_service(program_id, program_subject_id, body)
+        return jsonify(result), 201
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when adding prerequisite: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi thêm môn tiên quyết",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when adding prerequisite: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
+
+@program_subject_bp.delete("/v1/training-programs/<program_id>/subjects/<program_subject_id>/prerequisites/<prerequisite_program_subject_id>")
+@program_subject_bp.delete("/training-programs/<program_id>/subjects/<program_subject_id>/prerequisites/<prerequisite_program_subject_id>")
+@permission_required("course.manage")
+def delete_prerequisite(program_id: str, program_subject_id: str, prerequisite_program_subject_id: str):
+    """
+    API xóa bỏ điều kiện tiên quyết (SCRUM-124 - Activity A5).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    """
+    try:
+        result = program_subject_service.remove_prerequisite_service(
+            program_id, program_subject_id, prerequisite_program_subject_id
+        )
+        return jsonify(result), 200
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when removing prerequisite: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi xóa môn tiên quyết",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when removing prerequisite: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
+
+

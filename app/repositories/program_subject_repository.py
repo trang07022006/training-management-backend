@@ -509,6 +509,22 @@ def remove_prerequisite_pair(
         return cursor.rowcount > 0
 
 
+def exists_prerequisite(
+    program_id: str,
+    program_subject_id: str,
+    prerequisite_program_subject_id: str,
+) -> bool:
+    """Kiểm tra xem điều kiện tiên quyết đã tồn tại giữa hai môn học trong chương trình chưa."""
+    sql = """
+        SELECT 1 FROM program_subject_prerequisites
+        WHERE program_id = %s AND program_subject_id = %s AND prerequisite_program_subject_id = %s
+        LIMIT 1
+    """
+    with _database_cursor() as cursor:
+        cursor.execute(sql, (program_id, program_subject_id, prerequisite_program_subject_id))
+        return cursor.fetchone() is not None
+
+
 def get_prerequisites_by_program_subject_id(
     program_subject_id: str,
 ) -> list[ProgramSubjectPrerequisite]:
