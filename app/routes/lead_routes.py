@@ -35,11 +35,29 @@ def list_leads():
     """
     page_raw = request.args.get("page", default=1)
     page_size_raw = request.args.get("page_size", default=20)
+    search = request.args.get("search")
+    status = request.args.get("status")
+    interested_program_id = request.args.get("interested_program_id")
+    assigned_to_user_id = request.args.get("assigned_to_user_id")
+    source = request.args.get("source")
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
+    sort_by = request.args.get("sort_by", default="created_at")
+    sort_order = request.args.get("sort_order", default="DESC")
 
     try:
         result = lead_service.get_leads_service(
             page_raw=page_raw,
             page_size_raw=page_size_raw,
+            search=search,
+            status=status,
+            interested_program_id=interested_program_id,
+            assigned_to_user_id=assigned_to_user_id,
+            source=source,
+            date_from_raw=date_from,
+            date_to_raw=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return jsonify({
             "status": "success",

@@ -164,16 +164,94 @@ def count_leads() -> int:
         return int(row["total"]) if row else 0
 
 
-def list_leads(page: int = 1, page_size: int = 20) -> tuple[list[Lead], int]:
+SAFE_LEAD_SORT_COLUMNS: dict[str, str] = {
+    "created_at": "l.created_at",
+    "updated_at": "l.updated_at",
+    "full_name": "l.full_name",
+    "status": "l.status",
+    "assigned_at": "l.assigned_at",
+}
+
+
+def list_leads(
+    page: int = 1,
+    page_size: int = 20,
+    search: str | None = None,
+    status: str | None = None,
+    interested_program_id: str | None = None,
+    assigned_to_user_id: str | None = None,
+    source: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "DESC",
+) -> tuple[list[Lead], int]:
     """
-    Lấy danh sách Lead có phân trang (SCRUM-126/127).
-    Mặc định sắp xếp theo created_at DESC.
+    Lấy danh sách Lead có phân trang, tìm kiếm và lọc đa điều kiện (SCRUM-126/127/128).
+    - Hỗ trợ tìm kiếm theo họ tên, số điện thoại, email.
+    - Lọc theo status, chương trình quan tâm, người phụ trách, nguồn, khoảng thời gian.
+    - Sắp xếp an toàn theo whitelist SAFE_LEAD_SORT_COLUMNS.
+    - Hoàn toàn dùng parameterized SQL chống tấn công injection.
     """
     limit = max(1, min(page_size, 100))
     offset = max(0, (page - 1) * limit)
 
-    count_sql = "SELECT COUNT(*) AS total FROM leads"
-    data_sql = """
+    where_clauses: list[str] = []
+    params: list = []
+
+    if search and isinstance(search, str):
+        clean_search = search.strip()[:100]
+        if clean_search:
+            pattern = f"%{clean_search}%"
+            where_clauses.append("(l.full_name LIKE %s OR l.phone LIKE %s OR l.email LIKE %s)")
+            params.extend([pattern, pattern, pattern])
+
+    if status and isinstance(status, str):
+        clean_status = status.strip().lower()
+        if clean_status:
+            where_clauses.append("l.status = %s")
+            params.append(clean_status)
+
+    if interested_program_id and isinstance(interested_program_id, str):
+        clean_prog = interested_program_id.strip()
+        if clean_prog:
+            where_clauses.append("l.interested_program_id = %s")
+            params.append(clean_prog)
+
+    if assigned_to_user_id is not None and isinstance(assigned_to_user_id, str):
+        clean_assignee = assigned_to_user_id.strip()
+        if clean_assignee.lower() == "unassigned":
+            where_clauses.append("l.assigned_to_user_id IS NULL")
+        elif clean_assignee:
+            where_clauses.append("l.assigned_to_user_id = %s")
+            params.append(clean_assignee)
+
+    if source and isinstance(source, str):
+        clean_source = source.strip()
+        if clean_source:
+            where_clauses.append("l.source = %s")
+            params.append(clean_source)
+
+    if date_from is not None:
+        where_clauses.append("l.created_at >= %s")
+        params.append(_to_mysql_datetime(date_from))
+
+    if date_to is not None:
+        where_clauses.append("l.created_at <= %s")
+        params.append(_to_mysql_datetime(date_to))
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    sort_col = SAFE_LEAD_SORT_COLUMNS.get(sort_by, "l.created_at")
+    sort_dir = "ASC" if str(sort_order).upper() == "ASC" else "DESC"
+
+    count_sql = f"""
+        SELECT COUNT(*) AS total
+        FROM leads l
+        LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+        LEFT JOIN users u ON l.assigned_to_user_id = u.id
+        {where_sql}
+    """
+    data_sql = f"""
         SELECT
             l.id, l.full_name, l.phone, l.email, l.interested_program_id,
             l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
@@ -185,20 +263,22 @@ def list_leads(page: int = 1, page_size: int = 20) -> tuple[list[Lead], int]:
         FROM leads l
         LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
         LEFT JOIN users u ON l.assigned_to_user_id = u.id
-        ORDER BY l.created_at DESC
+        {where_sql}
+        ORDER BY {sort_col} {sort_dir}, l.id {sort_dir}
         LIMIT %s OFFSET %s
     """
 
     with _database_cursor(write=False) as cursor:
-        cursor.execute(count_sql)
+        cursor.execute(count_sql, tuple(params))
         count_row = cursor.fetchone()
         total = int(count_row["total"]) if count_row else 0
 
-        cursor.execute(data_sql, (limit, offset))
+        cursor.execute(data_sql, tuple(params + [limit, offset]))
         rows = cursor.fetchall() or []
         leads = [_row_to_model(row) for row in rows]
 
     return leads, total
+
 
 
 def update_lead_status(

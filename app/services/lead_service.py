@@ -205,11 +205,52 @@ def get_public_training_programs_service() -> list[dict[str, Any]]:
     return training_program_repository.get_public_active_training_programs()
 
 
-def get_leads_service(page_raw: Any = 1, page_size_raw: Any = 20) -> dict[str, Any]:
+def _parse_iso_date(
+    raw_val: Any, param_name: str, end_of_day: bool = False
+) -> datetime | None:
+    """Chuyển đổi chuỗi ngày ISO thành đối tượng datetime UTC có kiểm tra an toàn."""
+    if raw_val is None:
+        return None
+    if not isinstance(raw_val, str) or not raw_val.strip():
+        return None
+
+    cleaned = raw_val.strip()
+    try:
+        if len(cleaned) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", cleaned):
+            d = datetime.strptime(cleaned, "%Y-%m-%d")
+            if end_of_day:
+                d = d.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return d.replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            f"Định dạng ngày '{param_name}' không hợp lệ. Vui lòng sử dụng định dạng ISO (YYYY-MM-DD hoặc ISO-8601).",
+        )
+
+
+def get_leads_service(
+    page_raw: Any = 1,
+    page_size_raw: Any = 20,
+    search: str | None = None,
+    status: str | None = None,
+    interested_program_id: str | None = None,
+    assigned_to_user_id: str | None = None,
+    source: str | None = None,
+    date_from_raw: str | None = None,
+    date_to_raw: str | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "DESC",
+) -> dict[str, Any]:
     """
-    Lấy danh sách Lead cho người dùng nội bộ có thẩm quyền (SCRUM-126 - Activity A2).
+    Lấy danh sách Lead cho người dùng nội bộ có thẩm quyền (SCRUM-126/127/128).
     - Hỗ trợ phân trang: page >= 1, page_size từ 1 đến 100.
-    - Sắp xếp mặc định: created_at DESC.
+    - Tìm kiếm: search theo họ tên, điện thoại, email.
+    - Bộ lọc: status, interested_program_id, assigned_to_user_id, source, date_from, date_to.
+    - Sắp xếp: sort_by whitelist, sort_order ASC/DESC.
     """
     try:
         page = int(page_raw)
@@ -231,7 +272,94 @@ def get_leads_service(page_raw: Any = 1, page_size_raw: Any = 20) -> dict[str, A
             "Số lượng phần tử trên trang 'page_size' phải từ 1 đến 100.",
         )
 
-    leads, total = lead_repository.list_leads(page=page, page_size=page_size)
+    # Validate search length
+    clean_search: str | None = None
+    if search is not None:
+        if not isinstance(search, str):
+            raise LeadValidationError("INVALID_PARAMS", "Từ khóa tìm kiếm phải là chuỗi ký tự.")
+        clean_search = search.strip()
+        if len(clean_search) > 100:
+            raise LeadValidationError("INVALID_PARAMS", "Từ khóa tìm kiếm không được vượt quá 100 ký tự.")
+
+    # Validate status filter
+    clean_status: str | None = None
+    if status is not None:
+        if not isinstance(status, str):
+            raise LeadValidationError("INVALID_PARAMS", "Trạng thái lọc phải là chuỗi ký tự.")
+        clean_status = status.strip().lower()
+        from app.models.lead import VALID_LEAD_STATUSES
+
+        if clean_status and clean_status not in VALID_LEAD_STATUSES:
+            raise LeadValidationError(
+                "INVALID_PARAMS",
+                f"Trạng thái '{clean_status}' không hợp lệ. Các trạng thái hợp lệ: {', '.join(sorted(VALID_LEAD_STATUSES))}.",
+            )
+
+    # Validate interested_program_id UUID
+    clean_program_id: str | None = None
+    if interested_program_id is not None:
+        if not isinstance(interested_program_id, str):
+            raise LeadValidationError("INVALID_PARAMS", "Mã chương trình đào tạo phải là chuỗi UUID.")
+        clean_program_id = interested_program_id.strip()
+        if clean_program_id and not is_valid_uuid(clean_program_id):
+            raise LeadValidationError("INVALID_PARAMS", "Mã chương trình quan tâm không hợp lệ (phải là UUID).")
+
+    # Validate assigned_to_user_id UUID or 'unassigned'
+    clean_assignee_id: str | None = None
+    if assigned_to_user_id is not None:
+        if not isinstance(assigned_to_user_id, str):
+            raise LeadValidationError("INVALID_PARAMS", "Mã người phụ trách phải là chuỗi ký tự.")
+        clean_assignee_id = assigned_to_user_id.strip()
+        if clean_assignee_id and clean_assignee_id.lower() != "unassigned":
+            if not is_valid_uuid(clean_assignee_id):
+                raise LeadValidationError("INVALID_PARAMS", "Mã người phụ trách không hợp lệ (phải là UUID).")
+
+    # Validate source
+    clean_source: str | None = None
+    if source is not None:
+        if not isinstance(source, str):
+            raise LeadValidationError("INVALID_PARAMS", "Nguồn tiếp nhận phải là chuỗi ký tự.")
+        clean_source = source.strip()
+
+    # Validate date range
+    date_from = _parse_iso_date(date_from_raw, "date_from", end_of_day=False)
+    date_to = _parse_iso_date(date_to_raw, "date_to", end_of_day=True)
+
+    if date_from and date_to and date_from > date_to:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            "Ngày bắt đầu 'date_from' không được lớn hơn ngày kết thúc 'date_to'.",
+        )
+
+    # Validate sort_by
+    clean_sort_by = (sort_by or "created_at").strip().lower()
+    if clean_sort_by not in lead_repository.SAFE_LEAD_SORT_COLUMNS:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            f"Trường sắp xếp '{clean_sort_by}' không hợp lệ. Các trường hợp lệ: {', '.join(sorted(lead_repository.SAFE_LEAD_SORT_COLUMNS.keys()))}.",
+        )
+
+    # Validate sort_order
+    clean_sort_order = (sort_order or "DESC").strip().upper()
+    if clean_sort_order not in {"ASC", "DESC"}:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            "Thứ tự sắp xếp 'sort_order' chỉ chấp nhận 'ASC' hoặc 'DESC'.",
+        )
+
+    leads, total = lead_repository.list_leads(
+        page=page,
+        page_size=page_size,
+        search=clean_search,
+        status=clean_status,
+        interested_program_id=clean_program_id,
+        assigned_to_user_id=clean_assignee_id,
+        source=clean_source,
+        date_from=date_from,
+        date_to=date_to,
+        sort_by=clean_sort_by,
+        sort_order=clean_sort_order,
+    )
     total_pages = math.ceil(total / page_size) if total > 0 else 0
 
     return {
@@ -241,6 +369,7 @@ def get_leads_service(page_raw: Any = 1, page_size_raw: Any = 20) -> dict[str, A
         "page_size": page_size,
         "total_pages": total_pages,
     }
+
 
 
 def get_lead_by_id_service(lead_id: str) -> dict[str, Any]:
