@@ -173,66 +173,72 @@ def exists_by_code(code: str, exclude_id: str | None = None) -> bool:
 
 def get_all_training_programs(
     status: str | None = None,
+    search: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TrainingProgram]:
     """
-    Lấy danh sách các chương trình đào tạo kèm hỗ trợ lọc theo trạng thái và phân trang.
+    Lấy danh sách các chương trình đào tạo kèm hỗ trợ lọc theo trạng thái, tìm kiếm và phân trang.
     """
-    if status is not None:
-        sql = """
-            SELECT
-                id,
-                code,
-                name,
-                description,
-                duration_semesters,
-                status,
-                created_at,
-                updated_at
-            FROM training_programs
-            WHERE status = %s
-            ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-        """
-        params = (status, limit, offset)
-    else:
-        sql = """
-            SELECT
-                id,
-                code,
-                name,
-                description,
-                duration_semesters,
-                status,
-                created_at,
-                updated_at
-            FROM training_programs
-            ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-        """
-        params = (limit, offset)
+    conditions = []
+    params: list = []
+
+    if status is not None and status.strip():
+        conditions.append("status = %s")
+        params.append(status.strip())
+
+    if search is not None and search.strip():
+        search_pattern = f"%{search.strip()}%"
+        conditions.append("(code LIKE %s OR name LIKE %s)")
+        params.extend([search_pattern, search_pattern])
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    sql = f"""
+        SELECT
+            id,
+            code,
+            name,
+            description,
+            duration_semesters,
+            status,
+            created_at,
+            updated_at
+        FROM training_programs
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT %s OFFSET %s
+    """
+    params.extend([limit, offset])
 
     with _database_cursor() as cursor:
-        cursor.execute(sql, params)
+        cursor.execute(sql, tuple(params))
         rows = cursor.fetchall()
 
     return [_row_to_model(row) for row in rows]
 
 
-def count_training_programs(status: str | None = None) -> int:
+def count_training_programs(status: str | None = None, search: str | None = None) -> int:
     """
-    Đếm tổng số chương trình đào tạo trong hệ thống, có thể lọc theo trạng thái.
+    Đếm tổng số chương trình đào tạo trong hệ thống, có thể lọc theo trạng thái và tìm kiếm.
     """
-    if status is not None:
-        sql = "SELECT COUNT(*) AS total FROM training_programs WHERE status = %s"
-        params = (status,)
-    else:
-        sql = "SELECT COUNT(*) AS total FROM training_programs"
-        params = ()
+    conditions = []
+    params: list = []
+
+    if status is not None and status.strip():
+        conditions.append("status = %s")
+        params.append(status.strip())
+
+    if search is not None and search.strip():
+        search_pattern = f"%{search.strip()}%"
+        conditions.append("(code LIKE %s OR name LIKE %s)")
+        params.extend([search_pattern, search_pattern])
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    sql = f"SELECT COUNT(*) AS total FROM training_programs {where_clause}"
 
     with _database_cursor() as cursor:
-        cursor.execute(sql, params)
+        cursor.execute(sql, tuple(params))
         row = cursor.fetchone()
 
     return int(row["total"]) if row else 0
