@@ -357,3 +357,35 @@ def update_training_program_fields(
 
     return get_training_program_by_id(program_id)
 
+
+def get_public_active_training_programs() -> list[dict[str, Any]]:
+    """
+    Lấy danh sách các chương trình đào tạo đang active cho form tư vấn công khai (SCRUM-125 - Activity A3).
+    Chỉ trả về các trường tối thiểu: id, code, name, description.
+    Sắp xếp tất định theo name ASC, code ASC.
+    Tuyệt đối không để lộ created_at, updated_at, status, duration hay draft/archived programs.
+    """
+    sql = """
+        SELECT
+            id,
+            code,
+            name,
+            description
+        FROM training_programs
+        WHERE status = 'active'
+        ORDER BY name ASC, code ASC
+    """
+    with _database_cursor() as cursor:
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+
+    return [
+        {
+            "id": str(r["id"]),
+            "code": str(r["code"]),
+            "name": str(r["name"]),
+            "description": r.get("description"),
+        }
+        for r in rows
+    ]
+

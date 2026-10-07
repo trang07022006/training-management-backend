@@ -167,3 +167,11 @@ def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any
         "message": "Yêu cầu tư vấn của bạn đã được ghi nhận.",
         "data": created_lead.to_public_dict(),
     }
+
+
+def get_public_training_programs_service() -> list[dict[str, Any]]:
+    """
+    Lấy danh sách các chương trình đào tạo đang active cho form tư vấn công khai (SCRUM-125 - Activity A3).
+    Chỉ trả về id, code, name, description.
+    """
+    return training_program_repository.get_public_active_training_programs()

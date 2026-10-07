@@ -78,3 +78,44 @@ def submit_public_consultation():
                 "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
             },
         }), 500
+
+
+@public_consultation_bp.get("/v1/public/training-programs")
+@public_consultation_bp.get("/public/training-programs")
+def get_public_training_programs():
+    """
+    API lấy danh sách chương trình đào tạo mở công khai cho form tư vấn (SCRUM-125 - Activity A3).
+    - Hoàn toàn KHÔNG yêu cầu đăng nhập / token.
+    - Chỉ trả về các chương trình đang 'active'.
+    - Không để lộ thông tin nhạy cảm / quản trị nội bộ.
+    """
+    try:
+        programs = lead_service.get_public_training_programs_service()
+        return jsonify({
+            "status": "success",
+            "data": programs,
+        }), 200
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tải danh sách chương trình công khai: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi tải danh sách chương trình công khai: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
