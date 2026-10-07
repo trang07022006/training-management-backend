@@ -18,7 +18,8 @@ from app.models.lead import (
     LEAD_STATUS_NEW,
     Lead,
 )
-from app.repositories import lead_repository, training_program_repository
+from app.repositories import lead_repository, training_program_repository, user_repository
+
 
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
@@ -309,5 +310,79 @@ def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[st
         "message": "Cập nhật trạng thái Lead thành công.",
         "data": updated.to_dict(),
     }
+
+
+def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Phân công hoặc gỡ phân công Lead (SCRUM-127 - Activity A2/A3).
+    - Kiểm tra ID Lead hợp lệ và Lead tồn tại trong cơ sở dữ liệu.
+    - Chấp nhận:
+        {"user_id": "<uuid>"} -> phân công nhân sự
+        {"user_id": null}     -> gỡ phân công
+    - Nếu payload là None (khi gọi từ DELETE endpoint) -> coi như gỡ phân công.
+    - Kiểm tra user_id hợp lệ: phải tồn tại, đang hoạt động (active), và có vai trò phù hợp (admin, trainer).
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    existing_lead = lead_repository.get_lead_by_id(lead_id)
+    if not existing_lead:
+        raise LeadNotFoundError()
+
+    target_user_id: str | None = None
+
+    if payload is not None:
+        if not isinstance(payload, dict):
+            raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
+
+        disallowed_fields = set(payload.keys()) - {"user_id"}
+        if disallowed_fields:
+            raise LeadValidationError(
+                "INVALID_PARAMS",
+                f"Không được phép truyền các trường ngoài 'user_id': {', '.join(sorted(disallowed_fields))}.",
+            )
+
+        raw_user_id = payload.get("user_id")
+        if raw_user_id is not None:
+            if not isinstance(raw_user_id, str):
+                raise LeadValidationError("INVALID_PARAMS", "Mã người dùng không hợp lệ.")
+            target_user_id = raw_user_id.strip()
+            if not is_valid_uuid(target_user_id):
+                raise LeadValidationError("INVALID_PARAMS", "Mã người dùng không hợp lệ.")
+
+            user = user_repository.get_user_by_id(target_user_id)
+            if not user:
+                raise LeadServiceError("USER_NOT_FOUND", "Người dùng được phân công không tồn tại.", status_code=404)
+
+            if user.status != "active":
+                raise LeadValidationError("INACTIVE_USER", "Người dùng không còn hoạt động, không thể nhận phân công.")
+
+            if user.role not in {"admin", "trainer"}:
+                raise LeadValidationError("INVALID_ASSIGNEE", "Chỉ có thể phân công cho Quản trị viên hoặc Giảng viên.")
+
+    now = datetime.now(timezone.utc)
+    updated = lead_repository.assign_lead(
+        lead_id=lead_id,
+        assigned_to_user_id=target_user_id,
+        assigned_at=now if target_user_id else None,
+        updated_at=now,
+    )
+    if not updated:
+        raise LeadNotFoundError()
+
+    msg = "Phân công Lead thành công." if target_user_id else "Gỡ phân công Lead thành công."
+    return {
+        "status": "success",
+        "message": msg,
+        "data": updated.to_dict(),
+    }
+
+
+def get_assignable_users_service() -> list[dict[str, Any]]:
+    """
+    Lấy danh sách người dùng có thể nhận phân công Lead (SCRUM-127 - Activity A4).
+    """
+    return lead_repository.get_assignable_lead_users()
+
 
 

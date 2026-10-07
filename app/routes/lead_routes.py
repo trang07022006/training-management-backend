@@ -82,6 +82,48 @@ def list_leads():
         }), 500
 
 
+@lead_bp.get("/v1/leads/assignable-users")
+@lead_bp.get("/leads/assignable-users")
+@permission_required("course.manage")
+def list_assignable_users():
+    """
+    API lấy danh sách nhân sự có thể tiếp nhận phân công Lead (SCRUM-127 - Activity A4).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Chỉ trả về danh sách tài khoản active có vai trò admin hoặc trainer.
+    - Không trả về password_hash hoặc dữ liệu nhạy cảm.
+    """
+    try:
+        users = lead_service.get_assignable_users_service()
+        return jsonify({
+            "status": "success",
+            "data": users,
+        }), 200
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy danh sách nhân sự phân công: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi lấy danh sách nhân sự phân công: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
 @lead_bp.get("/v1/leads/<lead_id>")
 @lead_bp.get("/leads/<lead_id>")
 @permission_required("course.manage")
@@ -195,4 +237,114 @@ def update_lead_status_endpoint(lead_id: str):
                 "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
             },
         }), 500
+
+
+@lead_bp.patch("/v1/leads/<lead_id>/assignment")
+@lead_bp.patch("/leads/<lead_id>/assignment")
+@permission_required("course.manage")
+def assign_lead_endpoint(lead_id: str):
+    """
+    API phân công hoặc gỡ phân công Lead (SCRUM-127 - Activity A2).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Body JSON: {"user_id": "<uuid>"} hoặc {"user_id": null}.
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            "error": {
+                "code": "INVALID_JSON",
+                "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            },
+        }), 400
+
+    try:
+        result = lead_service.assign_lead_service(lead_id, body)
+        return jsonify(result), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi phân công Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi phân công Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+@lead_bp.delete("/v1/leads/<lead_id>/assignment")
+@lead_bp.delete("/leads/<lead_id>/assignment")
+@permission_required("course.manage")
+def unassign_lead_endpoint(lead_id: str):
+    """
+    API gỡ phân công Lead bằng phương thức DELETE (SCRUM-127 - Activity A2).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    """
+    try:
+        result = lead_service.assign_lead_service(lead_id, None)
+        return jsonify(result), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi gỡ phân công Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi gỡ phân công Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
 

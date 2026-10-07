@@ -268,11 +268,39 @@ def assign_lead(
     return get_lead_by_id(lead_id)
 
 
+def get_assignable_lead_users() -> list[dict]:
+    """
+    Lấy danh sách người dùng có thể được phân công phụ trách Lead (SCRUM-127 - Activity A4).
+    Chỉ lấy người dùng có trạng thái 'active' và vai trò 'admin' hoặc 'trainer'.
+    Chỉ trả về các thông tin an toàn: id, name, email, role.
+    """
+    sql = """
+        SELECT id, name, email, role
+        FROM users
+        WHERE status = 'active' AND role IN ('admin', 'trainer')
+        ORDER BY name ASC, email ASC
+    """
+    with _database_cursor(write=False) as cursor:
+        cursor.execute(sql)
+        rows = cursor.fetchall() or []
+
+    return [
+        {
+            "id": str(r["id"]),
+            "name": str(r["name"] or ""),
+            "email": str(r["email"] or ""),
+            "role": str(r["role"] or ""),
+        }
+        for r in rows
+    ]
+
+
 def delete_lead_for_testing(lead_id: str) -> bool:
     """Xóa một lead khỏi bảng (chỉ dùng cho cleanup trong testing)."""
     sql = "DELETE FROM leads WHERE id = %s"
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (lead_id,))
         return cursor.rowcount > 0
+
 
 
