@@ -240,6 +240,51 @@ def update_subject(subject: Subject) -> bool:
         return cursor.rowcount > 0
 
 
+ALLOWED_SUBJECT_UPDATE_FIELDS = {
+    "code",
+    "name",
+    "description",
+    "credits",
+    "total_sessions",
+    "status",
+}
+
+
+def update_subject_fields(
+    subject_id: str,
+    fields: dict[str, Any],
+    updated_at: datetime | None = None,
+) -> Subject | None:
+    """
+    Cập nhật các trường được chỉ định của môn học (SCRUM-123 - Activity A4 - PATCH).
+    Chỉ cho phép cập nhật các trường trong whitelist ALLOWED_SUBJECT_UPDATE_FIELDS.
+    Tự động cập nhật updated_at theo UTC.
+    Sử dụng parameterized query an toàn chống SQL Injection.
+    """
+    valid_fields = {k: v for k, v in fields.items() if k in ALLOWED_SUBJECT_UPDATE_FIELDS}
+    if not valid_fields:
+        return get_subject_by_id(subject_id)
+
+    now = updated_at or datetime.now(timezone.utc)
+    set_clauses = [f"{col} = %s" for col in valid_fields.keys()]
+    set_clauses.append("updated_at = %s")
+
+    values = list(valid_fields.values())
+    values.append(_to_mysql_datetime(now))
+    values.append(subject_id)
+
+    sql = f"""
+        UPDATE subjects
+        SET {', '.join(set_clauses)}
+        WHERE id = %s
+    """
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, tuple(values))
+
+    return get_subject_by_id(subject_id)
+
+
 def delete_subject(subject_id: str) -> bool:
     """Xóa một môn học theo ID."""
     sql = "DELETE FROM subjects WHERE id = %s"

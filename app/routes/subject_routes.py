@@ -150,3 +150,91 @@ def create_subject():
             "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
         }), 500
 
+
+@subject_bp.put("/v1/subjects/<subject_id>")
+@subject_bp.put("/subjects/<subject_id>")
+@permission_required("course.manage")
+def update_subject(subject_id: str):
+    """
+    API cập nhật toàn bộ thông tin môn học (SCRUM-123 - Activity A4 - PUT).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - code, name, credits bắt buộc
+    - description, total_sessions, status đặt về mặc định nếu thiếu
+    - Trả về 200 OK khi thành công
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_subject = subject_service.update_subject_service(subject_id, data)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật môn học thành công.",
+            "data": updated_subject,
+        }), 200
+    except SubjectServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật môn học (PUT): %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật môn học.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật môn học (PUT): %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+@subject_bp.patch("/v1/subjects/<subject_id>")
+@subject_bp.patch("/subjects/<subject_id>")
+@permission_required("course.manage")
+def patch_subject(subject_id: str):
+    """
+    API cập nhật từng phần thông tin môn học (SCRUM-123 - Activity A4 - PATCH).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Chỉ cập nhật các trường được gửi
+    - Trả về 200 OK khi thành công
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_subject = subject_service.patch_subject_service(subject_id, data)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật môn học thành công.",
+            "data": updated_subject,
+        }), 200
+    except SubjectServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật môn học (PATCH): %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật môn học.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật môn học (PATCH): %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+

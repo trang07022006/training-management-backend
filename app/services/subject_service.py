@@ -347,3 +347,184 @@ def create_subject_service(data: dict) -> dict:
 
     return created_subject.to_dict()
 
+
+def validate_patch_status(raw_status: Any) -> str:
+    """Kiểm tra trạng thái môn học khi PATCH (bắt buộc phải là giá trị hợp lệ, không cho phép null/rỗng)."""
+    if raw_status is None or isinstance(raw_status, bool) or not isinstance(raw_status, str):
+        raise SubjectValidationError(
+            "Trạng thái môn học không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_status.strip().lower()
+    if not cleaned or cleaned not in VALID_SUBJECT_STATUSES:
+        allowed = ", ".join(sorted(VALID_SUBJECT_STATUSES))
+        raise SubjectValidationError(
+            f"Trạng thái không hợp lệ: '{cleaned}'. Cho phép: {allowed}.",
+            code="INVALID_PARAMS",
+        )
+    return cleaned
+
+
+def update_subject_service(subject_id: str, data: dict) -> dict:
+    """
+    Nghiệp vụ cập nhật toàn bộ thông tin một môn học (SCRUM-123 - Activity A4 - PUT).
+    - Validate subject_id (định dạng UUID, tồn tại trong database).
+    - Validate data (phải là dict).
+    - code, name, credits bắt buộc.
+    - description, total_sessions, status xử lý theo quy tắc chuẩn:
+      nếu không gửi -> description=None, total_sessions=None, status='draft'.
+    - Không cho phép cập nhật id hoặc created_at.
+    - Cập nhật updated_at theo UTC.
+    - Kiểm tra mã code trùng lặp (ngoại trừ chính môn học này).
+    """
+    if not isinstance(subject_id, str) or not subject_id.strip():
+        raise SubjectValidationError(
+            "Mã định danh môn học không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned_id = subject_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise SubjectValidationError(
+            "Mã định danh môn học không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(data, dict):
+        raise SubjectValidationError(
+            "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+            code="INVALID_JSON",
+        )
+
+    existing = subject_repository.get_subject_by_id(cleaned_id)
+    if existing is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học.")
+
+    cleaned_code = validate_subject_code(data.get("code"))
+    cleaned_name = validate_subject_name(data.get("name"))
+    cleaned_credits = validate_subject_credits(data.get("credits"))
+    cleaned_desc = validate_subject_description(data.get("description"))
+    cleaned_sessions = validate_subject_total_sessions(data.get("total_sessions"))
+    cleaned_status = validate_subject_status(data.get("status"), default=SUBJECT_STATUS_DRAFT)
+
+    if cleaned_code != existing.code:
+        if subject_repository.exists_by_code(cleaned_code, exclude_id=cleaned_id):
+            raise DuplicateSubjectCodeError()
+
+    now = datetime.now(timezone.utc)
+    subject_to_update = Subject(
+        id=cleaned_id,
+        code=cleaned_code,
+        name=cleaned_name,
+        credits=cleaned_credits,
+        description=cleaned_desc,
+        total_sessions=cleaned_sessions,
+        status=cleaned_status,
+        created_at=existing.created_at,
+        updated_at=now,
+    )
+
+    try:
+        subject_repository.update_subject(subject_to_update)
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg or "unique" in err_msg:
+            raise DuplicateSubjectCodeError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "duplicate" in err_msg or "1062" in err_msg or "unique" in err_msg:
+            raise DuplicateSubjectCodeError()
+        raise
+
+    return subject_to_update.to_dict()
+
+
+def patch_subject_service(subject_id: str, data: dict) -> dict:
+    """
+    Nghiệp vụ cập nhật từng phần thông tin một môn học (SCRUM-123 - Activity A4 - PATCH).
+    - Validate subject_id (định dạng UUID, tồn tại trong database).
+    - Validate data (phải là dict, không được rỗng).
+    - Chỉ cập nhật các trường được gửi:
+      code, name, description, credits, total_sessions, status.
+    - Các trường không gửi được giữ nguyên tuyệt đối.
+    - Bỏ qua id, created_at, updated_at do client truyền.
+    - Cập nhật updated_at theo UTC.
+    - Kiểm tra mã code trùng lặp (ngoại trừ chính môn học này).
+    """
+    if not isinstance(subject_id, str) or not subject_id.strip():
+        raise SubjectValidationError(
+            "Mã định danh môn học không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned_id = subject_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise SubjectValidationError(
+            "Mã định danh môn học không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(data, dict):
+        raise SubjectValidationError(
+            "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+            code="INVALID_JSON",
+        )
+
+    if not data:
+        raise SubjectValidationError(
+            "Dữ liệu yêu cầu không được để trống.",
+            code="INVALID_PARAMS",
+        )
+
+    existing = subject_repository.get_subject_by_id(cleaned_id)
+    if existing is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học.")
+
+    fields_to_update: dict[str, Any] = {}
+
+    if "code" in data:
+        cleaned_code = validate_subject_code(data["code"])
+        if cleaned_code != existing.code:
+            if subject_repository.exists_by_code(cleaned_code, exclude_id=cleaned_id):
+                raise DuplicateSubjectCodeError()
+        fields_to_update["code"] = cleaned_code
+
+    if "name" in data:
+        fields_to_update["name"] = validate_subject_name(data["name"])
+
+    if "description" in data:
+        fields_to_update["description"] = validate_subject_description(data["description"])
+
+    if "credits" in data:
+        fields_to_update["credits"] = validate_subject_credits(data["credits"])
+
+    if "total_sessions" in data:
+        fields_to_update["total_sessions"] = validate_subject_total_sessions(data["total_sessions"])
+
+    if "status" in data:
+        fields_to_update["status"] = validate_patch_status(data["status"])
+
+    if not fields_to_update:
+        raise SubjectValidationError(
+            "Không có trường dữ liệu nào hợp lệ để cập nhật.",
+            code="INVALID_PARAMS",
+        )
+
+    try:
+        updated = subject_repository.update_subject_fields(cleaned_id, fields_to_update)
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg or "unique" in err_msg:
+            raise DuplicateSubjectCodeError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "duplicate" in err_msg or "1062" in err_msg or "unique" in err_msg:
+            raise DuplicateSubjectCodeError()
+        raise
+
+    if updated is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học.")
+
+    return updated.to_dict()
+
+
