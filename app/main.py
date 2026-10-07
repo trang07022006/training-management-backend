@@ -12,6 +12,7 @@ from app.routes.subject_routes import subject_bp
 from app.routes.training_program_routes import training_program_bp
 from app.routes.user_routes import user_bp
 from app.routes.user_role_routes import user_role_bp
+from app.routes.public_consultation_routes import public_consultation_bp
 
 
 app = Flask(__name__)
@@ -30,6 +31,7 @@ app.register_blueprint(training_program_bp)
 app.register_blueprint(program_subject_bp)
 app.register_blueprint(user_bp)
 app.register_blueprint(user_role_bp)
+app.register_blueprint(public_consultation_bp)
 
 
 @app.route("/api/health", methods=["GET"])
