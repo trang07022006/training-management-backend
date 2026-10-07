@@ -7,6 +7,7 @@ from app.database.connection import get_db_connection
 from app.extensions import jwt
 from app.routes.auth_routes import auth_bp
 from app.routes.session_routes import session_bp
+from app.routes.subject_routes import subject_bp
 from app.routes.training_program_routes import training_program_bp
 from app.routes.user_routes import user_bp
 from app.routes.user_role_routes import user_role_bp
@@ -23,6 +24,7 @@ CORS(app)
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(session_bp)
+app.register_blueprint(subject_bp)
 app.register_blueprint(training_program_bp)
 app.register_blueprint(user_bp)
 app.register_blueprint(user_role_bp)
