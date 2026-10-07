@@ -1,8 +1,15 @@
+from datetime import datetime, timezone
 import math
-import uuid
 from typing import Any
+import uuid
+
+from mysql.connector import IntegrityError
 
 from app.models.subject import (
+    MAX_SUBJECT_CREDITS,
+    MIN_SUBJECT_CREDITS,
+    SUBJECT_STATUS_DRAFT,
+    Subject,
     VALID_SUBJECT_STATUSES,
 )
 from app.repositories import subject_repository
@@ -163,3 +170,180 @@ def get_subject_detail_service(subject_id: str) -> dict:
         raise SubjectNotFoundError("Không tìm thấy môn học.")
 
     return subject.to_dict()
+
+
+def validate_subject_code(raw_code: Any) -> str:
+    """Kiểm tra và chuẩn hóa mã môn học (code)."""
+    if raw_code is None or not isinstance(raw_code, str):
+        raise SubjectValidationError(
+            "Mã môn học (code) là bắt buộc.",
+            code="CODE_REQUIRED",
+        )
+    cleaned = raw_code.strip()
+    if not cleaned:
+        raise SubjectValidationError(
+            "Mã môn học không được để trống.",
+            code="CODE_REQUIRED",
+        )
+    if len(cleaned) > 50:
+        raise SubjectValidationError(
+            "Mã môn học không được vượt quá 50 ký tự.",
+            code="CODE_TOO_LONG",
+        )
+    return cleaned.upper()
+
+
+def validate_subject_name(raw_name: Any) -> str:
+    """Kiểm tra và chuẩn hóa tên môn học (name)."""
+    if raw_name is None or not isinstance(raw_name, str):
+        raise SubjectValidationError(
+            "Tên môn học (name) là bắt buộc.",
+            code="NAME_REQUIRED",
+        )
+    cleaned = raw_name.strip()
+    if not cleaned:
+        raise SubjectValidationError(
+            "Tên môn học không được để trống.",
+            code="NAME_REQUIRED",
+        )
+    if len(cleaned) > 255:
+        raise SubjectValidationError(
+            "Tên môn học không được vượt quá 255 ký tự.",
+            code="NAME_TOO_LONG",
+        )
+    return cleaned
+
+
+def validate_subject_description(raw_desc: Any) -> str | None:
+    """Kiểm tra và chuẩn hóa mô tả môn học (description)."""
+    if raw_desc is None:
+        return None
+    if isinstance(raw_desc, bool) or not isinstance(raw_desc, str):
+        raise SubjectValidationError(
+            "Mô tả môn học phải là chuỗi ký tự.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_desc.strip()
+    return cleaned if cleaned else None
+
+
+def validate_subject_credits(raw_credits: Any) -> int:
+    """Kiểm tra và chuẩn hóa số tín chỉ (credits)."""
+    if raw_credits is None:
+        raise SubjectValidationError(
+            "Số tín chỉ (credits) là bắt buộc.",
+            code="INVALID_PARAMS",
+        )
+    if isinstance(raw_credits, bool) or not isinstance(raw_credits, int):
+        raise SubjectValidationError(
+            "Số tín chỉ (credits) phải là số nguyên từ 1 đến 30.",
+            code="INVALID_PARAMS",
+        )
+    if raw_credits < MIN_SUBJECT_CREDITS or raw_credits > MAX_SUBJECT_CREDITS:
+        raise SubjectValidationError(
+            f"Số tín chỉ (credits) phải nằm trong khoảng từ {MIN_SUBJECT_CREDITS} đến {MAX_SUBJECT_CREDITS}.",
+            code="INVALID_PARAMS",
+        )
+    return raw_credits
+
+
+def validate_subject_total_sessions(raw_sessions: Any) -> int | None:
+    """Kiểm tra và chuẩn hóa tổng số tiết/buổi học (total_sessions)."""
+    if raw_sessions is None:
+        return None
+    if isinstance(raw_sessions, bool) or not isinstance(raw_sessions, int):
+        raise SubjectValidationError(
+            "Tổng số tiết/buổi học (total_sessions) phải là số nguyên không âm.",
+            code="INVALID_PARAMS",
+        )
+    if raw_sessions < 0 or raw_sessions > 65535:
+        raise SubjectValidationError(
+            "Tổng số tiết/buổi học (total_sessions) phải nằm trong khoảng từ 0 đến 65535.",
+            code="INVALID_PARAMS",
+        )
+    return raw_sessions
+
+
+def validate_subject_status(raw_status: Any, default: str = SUBJECT_STATUS_DRAFT) -> str:
+    """Kiểm tra và chuẩn hóa trạng thái môn học (status)."""
+    if raw_status is None:
+        return default
+    if isinstance(raw_status, bool) or not isinstance(raw_status, str):
+        raise SubjectValidationError(
+            "Trạng thái môn học không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_status.strip().lower()
+    if not cleaned:
+        return default
+    if cleaned not in VALID_SUBJECT_STATUSES:
+        allowed = ", ".join(sorted(VALID_SUBJECT_STATUSES))
+        raise SubjectValidationError(
+            f"Trạng thái không hợp lệ: '{cleaned}'. Cho phép: {allowed}.",
+            code="INVALID_PARAMS",
+        )
+    return cleaned
+
+
+def create_subject_service(data: dict) -> dict:
+    """
+    Nghiệp vụ tạo mới một môn học/học phần (SCRUM-123 - Activity A3).
+    Quy tắc nghiệp vụ & validation:
+    1. data phải là dict hợp lệ.
+    2. code: Bắt buộc, không rỗng, tối đa 50 ký tự, chuẩn hóa uppercase, không trùng trong database.
+    3. name: Bắt buộc, không rỗng, tối đa 255 ký tự.
+    4. description: Tùy chọn, chuỗi ký tự hoặc None.
+    5. credits: Bắt buộc, số nguyên từ 1 đến 30.
+    6. total_sessions: Tùy chọn, số nguyên không âm (0-65535) hoặc None.
+    7. status: Tùy chọn, mặc định 'draft', nhận: draft, active, archived.
+    8. id, created_at, updated_at: Backend tự sinh UUID v4 & UTC timestamp, bỏ qua dữ liệu client truyền.
+    """
+    if not isinstance(data, dict):
+        raise SubjectValidationError(
+            "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+            code="INVALID_JSON",
+        )
+
+    cleaned_code = validate_subject_code(data.get("code"))
+    cleaned_name = validate_subject_name(data.get("name"))
+    cleaned_desc = validate_subject_description(data.get("description"))
+    cleaned_credits = validate_subject_credits(data.get("credits"))
+    cleaned_sessions = validate_subject_total_sessions(data.get("total_sessions"))
+    cleaned_status = validate_subject_status(data.get("status"), default=SUBJECT_STATUS_DRAFT)
+
+    # 1. Kiểm tra trùng mã môn học ở tầng service
+    if subject_repository.exists_by_code(cleaned_code):
+        raise DuplicateSubjectCodeError()
+
+    # 2. Khởi tạo đối tượng với UUID v4 và UTC timestamp do server tự sinh
+    subject_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    subject = Subject(
+        id=subject_id,
+        code=cleaned_code,
+        name=cleaned_name,
+        credits=cleaned_credits,
+        description=cleaned_desc,
+        total_sessions=cleaned_sessions,
+        status=cleaned_status,
+        created_at=now,
+        updated_at=now,
+    )
+
+    # 3. Lưu vào database và bắt IntegrityError để chống race condition
+    try:
+        created_subject = subject_repository.insert_subject(subject)
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg or "unique" in err_msg:
+            raise DuplicateSubjectCodeError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "duplicate" in err_msg or "1062" in err_msg or "unique" in err_msg:
+            raise DuplicateSubjectCodeError()
+        raise
+
+    return created_subject.to_dict()
+

@@ -101,3 +101,52 @@ def get_subject_detail(subject_id: str):
             "code": "INTERNAL_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
         }), 500
+
+
+@subject_bp.post("/v1/subjects")
+@subject_bp.post("/subjects")
+@permission_required("course.manage")
+def create_subject():
+    """
+    API tạo mới môn học / học phần (SCRUM-123 - Activity A3).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Request body: JSON chứa code, name, credits, description, total_sessions, status
+    - Trả về 201 Created khi thành công kèm Location header
+    - Trả về 400 nếu dữ liệu không hợp lệ
+    - Trả về 409 nếu trùng mã môn học
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        created_subject = subject_service.create_subject_service(data)
+        response = jsonify({
+            "status": "success",
+            "message": "Tạo môn học thành công.",
+            "data": created_subject,
+        })
+        response.status_code = 201
+        response.headers["Location"] = f"/api/v1/subjects/{created_subject['id']}"
+        return response
+    except SubjectServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tạo môn học: %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi tạo môn học.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi tạo môn học: %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
