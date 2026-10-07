@@ -245,6 +245,29 @@ def count_training_programs(status: str | None = None, search: str | None = None
     return int(row["total"]) if row else 0
 
 
+def is_program_in_use(program_id: str) -> bool:
+    """
+    Kiểm tra xem chương trình đào tạo có đang được sử dụng bởi dữ liệu phụ thuộc hay không (SCRUM-122 - Activity A5).
+    Truy vấn kiểm tra an toàn schema; tương thích tương lai khi tích hợp SCRUM-124 (program_subjects).
+    """
+    sql = """
+        SELECT COUNT(*) as cnt
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'program_subjects'
+    """
+    with _database_cursor() as cursor:
+        cursor.execute(sql)
+        row = cursor.fetchone()
+        has_table = row and row.get("cnt", 0) > 0
+
+        if not has_table:
+            return False
+
+        check_sql = "SELECT 1 FROM program_subjects WHERE program_id = %s LIMIT 1"
+        cursor.execute(check_sql, (program_id,))
+        return cursor.fetchone() is not None
+
+
 def delete_training_program(program_id: str) -> bool:
     """
     Xóa một chương trình đào tạo theo ID (phục vụ dọn dẹp dữ liệu test và quản trị).

@@ -2,14 +2,15 @@
 Các endpoint quản lý chương trình đào tạo (SCRUM-122).
 Bảo vệ bằng RBAC decorator @permission_required:
 - 'course.view' cho các API đọc (Activity A2)
-- 'course.manage' cho API tạo mới (Activity A3) và cập nhật (Activity A4)
+- 'course.manage' cho API tạo mới (Activity A3), cập nhật (Activity A4), xóa (Activity A5)
 
 Endpoints:
-- GET   /api/v1/training-programs               : Lấy danh sách chương trình đào tạo (hỗ trợ phân trang, lọc, tìm kiếm)
-- GET   /api/v1/training-programs/<id>          : Lấy chi tiết một chương trình đào tạo
-- POST  /api/v1/training-programs               : Tạo mới một chương trình đào tạo (yêu cầu quyền course.manage)
-- PUT   /api/v1/training-programs/<program_id>  : Cập nhật toàn bộ thông tin chương trình đào tạo (yêu cầu quyền course.manage)
-- PATCH /api/v1/training-programs/<program_id>  : Cập nhật từng phần thông tin chương trình đào tạo (yêu cầu quyền course.manage)
+- GET    /api/v1/training-programs               : Lấy danh sách chương trình đào tạo (hỗ trợ phân trang, lọc, tìm kiếm)
+- GET    /api/v1/training-programs/<id>          : Lấy chi tiết một chương trình đào tạo
+- POST   /api/v1/training-programs               : Tạo mới một chương trình đào tạo (yêu cầu quyền course.manage)
+- PUT    /api/v1/training-programs/<program_id>  : Cập nhật toàn bộ thông tin chương trình đào tạo (yêu cầu quyền course.manage)
+- PATCH  /api/v1/training-programs/<program_id>  : Cập nhật từng phần thông tin chương trình đào tạo (yêu cầu quyền course.manage)
+- DELETE /api/v1/training-programs/<program_id>  : Xóa chương trình đào tạo an toàn (yêu cầu quyền course.manage)
 """
 
 import logging
@@ -244,4 +245,43 @@ def patch_training_program(program_id: str):
             "code": "INTERNAL_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
         }), 500
+
+
+@training_program_bp.delete("/v1/training-programs/<program_id>")
+@training_program_bp.delete("/training-programs/<program_id>")
+@permission_required("course.manage")
+def delete_training_program(program_id: str):
+    """
+    API xóa một chương trình đào tạo (SCRUM-122 - Activity A5).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Trả về 200 OK khi xóa thành công
+    - Trả về 400 nếu program_id sai định dạng UUID
+    - Trả về 404 nếu không tìm thấy chương trình
+    - Trả về 409 nếu chương trình đang có dữ liệu phụ thuộc không được phép xóa
+    """
+    try:
+        result = training_program_service.delete_training_program_service(program_id)
+        return jsonify({
+            "status": "success",
+            "message": "Xóa chương trình đào tạo thành công.",
+            "data": result,
+        }), 200
+    except TrainingProgramServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi xóa chương trình đào tạo: %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi xóa chương trình đào tạo.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi xóa chương trình đào tạo: %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
 

@@ -54,6 +54,17 @@ class DuplicateProgramCodeError(TrainingProgramServiceError):
         super().__init__(code="DUPLICATE_CODE", message=message, status_code=409)
 
 
+class ProgramInUseError(TrainingProgramServiceError):
+    """Ngoại lệ khi chương trình đào tạo đang có dữ liệu phụ thuộc không thể xóa (409)."""
+
+    def __init__(
+        self,
+        message: str = "Không thể xóa chương trình đào tạo vì đang có dữ liệu liên kết hoặc phụ thuộc trong hệ thống.",
+    ):
+        super().__init__(code="PROGRAM_IN_USE", message=message, status_code=409)
+
+
+
 def get_training_programs_service(
     page_raw: Any = 1,
     page_size_raw: Any = 20,
@@ -485,4 +496,55 @@ def patch_training_program_service(program_id: str, data: dict) -> dict:
         raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
 
     return updated.to_dict()
+
+
+def delete_training_program_service(program_id: str) -> dict:
+    """
+    Nghiệp vụ xóa an toàn một chương trình đào tạo (SCRUM-122 - Activity A5).
+    Quy tắc nghiệp vụ:
+    1. program_id phải là định dạng UUID hợp lệ (36 ký tự).
+    2. Chương trình phải tồn tại trong database (nếu không -> 404 PROGRAM_NOT_FOUND).
+    3. Kiểm tra xem chương trình có đang được sử dụng / liên kết dữ liệu hay không
+       (nếu có -> 409 PROGRAM_IN_USE).
+    4. Xóa bản ghi trong database, xử lý an toàn các lỗi Foreign Key IntegrityError
+       (nếu vi phạm FK constraint -> 409 PROGRAM_IN_USE).
+    5. Trả về thông tin ID chương trình đã xóa thành công.
+    """
+    if not isinstance(program_id, str) or not program_id.strip():
+        raise TrainingProgramValidationError(
+            "Mã định danh chương trình đào tạo không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned_id = program_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise TrainingProgramValidationError(
+            "Mã định danh chương trình đào tạo không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    existing = training_program_repository.get_training_program_by_id(cleaned_id)
+    if existing is None:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    # Kiểm tra ràng buộc nghiệp vụ: chương trình đang được sử dụng
+    if training_program_repository.is_program_in_use(cleaned_id):
+        raise ProgramInUseError()
+
+    try:
+        deleted = training_program_repository.delete_training_program(cleaned_id)
+        if not deleted:
+            raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) in (1451, 1217) or "foreign key" in err_msg or "constraint" in err_msg:
+            raise ProgramInUseError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "foreign key" in err_msg or "1451" in err_msg or "1217" in err_msg:
+            raise ProgramInUseError()
+        raise
+
+    return {"id": cleaned_id}
+
 
