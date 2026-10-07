@@ -238,3 +238,42 @@ def patch_subject(subject_id: str):
         }), 500
 
 
+@subject_bp.delete("/v1/subjects/<subject_id>")
+@subject_bp.delete("/subjects/<subject_id>")
+@permission_required("course.manage")
+def delete_subject(subject_id: str):
+    """
+    API xóa một môn học / học phần (SCRUM-123 - Activity A5).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Trả về 200 OK khi xóa thành công
+    - Trả về 400 nếu subject_id sai định dạng UUID
+    - Trả về 404 nếu không tìm thấy môn học
+    - Trả về 409 nếu môn học đang có dữ liệu phụ thuộc không được phép xóa
+    """
+    try:
+        result = subject_service.delete_subject_service(subject_id)
+        return jsonify({
+            "status": "success",
+            "message": "Xóa môn học thành công.",
+            "data": result,
+        }), 200
+    except SubjectServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi xóa môn học: %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi xóa môn học.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi xóa môn học: %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+

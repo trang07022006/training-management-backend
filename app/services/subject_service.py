@@ -62,7 +62,10 @@ class SubjectInUseError(SubjectServiceError):
 
     def __init__(
         self,
-        message: str = "Không thể xóa môn học vì đang có dữ liệu liên kết trong hệ thống.",
+        message: str = (
+            "Không thể xóa môn học vì đang có dữ liệu liên quan. "
+            "Hãy chuyển môn học sang trạng thái Đã lưu trữ nếu không còn sử dụng."
+        ),
     ):
         super().__init__(code="SUBJECT_IN_USE", message=message, status_code=409)
 
@@ -526,5 +529,57 @@ def patch_subject_service(subject_id: str, data: dict) -> dict:
         raise SubjectNotFoundError("Không tìm thấy môn học.")
 
     return updated.to_dict()
+
+
+def delete_subject_service(subject_id: str) -> dict:
+    """
+    Nghiệp vụ xóa an toàn một môn học (SCRUM-123 - Activity A5).
+    Quy tắc nghiệp vụ:
+    1. subject_id phải là định dạng UUID hợp lệ (36 ký tự).
+    2. Môn học phải tồn tại trong database (nếu không -> 404 SUBJECT_NOT_FOUND).
+    3. Kiểm tra xem môn học có đang được sử dụng / liên kết dữ liệu hay không
+       (nếu có -> 409 SUBJECT_IN_USE).
+    4. Xóa bản ghi trong database, xử lý an toàn các lỗi Foreign Key IntegrityError
+       (nếu vi phạm FK constraint -> 409 SUBJECT_IN_USE).
+    5. Trả về thông tin ID môn học đã xóa thành công: {"id": subject_id}.
+    """
+    if not isinstance(subject_id, str) or not subject_id.strip():
+        raise SubjectValidationError(
+            "Mã định danh môn học không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned_id = subject_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise SubjectValidationError(
+            "Mã định danh môn học không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    existing = subject_repository.get_subject_by_id(cleaned_id)
+    if existing is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học.")
+
+    # 1. Kiểm tra ràng buộc nghiệp vụ: môn học đang được sử dụng
+    if subject_repository.is_subject_in_use(cleaned_id):
+        raise SubjectInUseError()
+
+    # 2. Xóa môn học và xử lý Foreign Key IntegrityError phòng ngừa race condition
+    try:
+        deleted = subject_repository.delete_subject(cleaned_id)
+        if not deleted:
+            raise SubjectNotFoundError("Không tìm thấy môn học.")
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) in (1451, 1217) or "foreign key" in err_msg or "constraint" in err_msg:
+            raise SubjectInUseError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "foreign key" in err_msg or "1451" in err_msg or "1217" in err_msg:
+            raise SubjectInUseError()
+        raise
+
+    return {"id": cleaned_id}
+
 
 

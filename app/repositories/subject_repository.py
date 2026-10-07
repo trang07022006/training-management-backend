@@ -296,21 +296,30 @@ def delete_subject(subject_id: str) -> bool:
 def is_subject_in_use(subject_id: str) -> bool:
     """
     Kiểm tra xem môn học có đang được sử dụng ở bảng liên kết hay không.
-    Tương thích tương lai khi triển khai SCRUM-124 (program_subjects).
+    Tương thích tương lai khi triển khai SCRUM-124 (program_subjects) và SCRUM-129 (subject_sessions).
+    Sử dụng danh sách bảng whitelist được định nghĩa nội bộ, không nhận input từ client.
     """
-    sql = """
-        SELECT COUNT(*) as cnt
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'program_subjects'
-    """
+    dependency_specs = [
+        ("program_subjects", "subject_id"),
+        ("subject_sessions", "subject_id"),
+    ]
     with _database_cursor() as cursor:
-        cursor.execute(sql)
-        row = cursor.fetchone()
-        has_table = row and row.get("cnt", 0) > 0
-
-        if not has_table:
-            return False
-
-        check_sql = "SELECT 1 FROM program_subjects WHERE subject_id = %s LIMIT 1"
-        cursor.execute(check_sql, (subject_id,))
-        return cursor.fetchone() is not None
+        for table_name, col_name in dependency_specs:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                """,
+                (table_name,),
+            )
+            row = cursor.fetchone()
+            if row and row.get("cnt", 0) > 0:
+                # Bảng tồn tại, kiểm tra xem subject_id có đang được tham chiếu không
+                cursor.execute(
+                    f"SELECT 1 FROM {table_name} WHERE {col_name} = %s LIMIT 1",
+                    (subject_id,),
+                )
+                if cursor.fetchone() is not None:
+                    return True
+    return False
