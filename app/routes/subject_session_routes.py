@@ -6,7 +6,7 @@ Bao gồm:
 """
 
 import logging
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from mysql.connector import Error as MySQLError
 
 from app.services import subject_session_service
@@ -119,3 +119,64 @@ def get_subject_session_detail(subject_id: str, session_id: str):
                 "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
             },
         }), 500
+
+
+@subject_session_bp.post("/v1/subjects/<subject_id>/sessions")
+@subject_session_bp.post("/subjects/<subject_id>/sessions")
+@permission_required("course.manage")
+def create_subject_session(subject_id: str):
+    """
+    API thêm một buổi học mới cho môn học (SCRUM-129 - Activity A3 / SCRUM-175).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Trả về 201 Created cùng Header Location khi thành công.
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+
+    try:
+        created_session = subject_session_service.create_subject_session_service(
+            subject_id=subject_id,
+            payload=payload,
+        )
+        location_header = f"/api/v1/subjects/{subject_id}/sessions/{created_session['id']}"
+        response = jsonify({
+            "status": "success",
+            "data": created_session,
+        })
+        response.status_code = 201
+        response.headers["Location"] = location_header
+        return response
+
+    except SubjectSessionServiceError as exc:
+        return jsonify({
+            "code": exc.code,
+            "message": exc.message,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            },
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when creating subject session: %s", exc)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi tạo buổi học.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi tạo buổi học.",
+            },
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when creating subject session: %s", exc)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+

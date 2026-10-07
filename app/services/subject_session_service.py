@@ -140,3 +140,141 @@ def get_subject_session_detail_service(subject_id: str, session_id: str) -> dict
         raise SubjectSessionNotFoundError("Không tìm thấy buổi học của môn học.")
 
     return session.to_dict()
+
+
+def create_subject_session_service(subject_id: str, payload: Any) -> dict:
+    """
+    Thêm một buổi học mới cho môn học (SCRUM-129 - Activity A3 / SCRUM-175).
+    - Validate subject_id đúng UUID (400 INVALID_PARAMS).
+    - Môn học phải tồn tại (404 SUBJECT_NOT_FOUND).
+    - Môn học ở trạng thái archived -> từ chối (400 SUBJECT_ARCHIVED).
+    - session_number: bắt buộc, số nguyên, >= 1.
+    - session_number <= total_sessions (nếu total_sessions != None).
+    - topic: bắt buộc, string, 1..255 ký tự.
+    - objective: bắt buộc, string, 1..5000 ký tự.
+    - Trùng (subject_id, session_number) -> 409 DUPLICATE_SESSION_NUMBER.
+    - Sinh UUID cho id, server-controlled timestamps UTC.
+    """
+    if not isinstance(subject_id, str) or not is_valid_uuid(subject_id):
+        raise SubjectSessionValidationError(
+            "Mã định danh môn học không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(payload, dict):
+        raise SubjectSessionValidationError(
+            "Dữ liệu yêu cầu phải là đối tượng JSON.",
+            code="INVALID_PARAMS",
+        )
+
+    cleaned_subject_id = subject_id.strip().lower()
+    subject = subject_repository.get_subject_by_id(cleaned_subject_id)
+    if subject is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học.")
+
+    # Kiểm tra trạng thái archived
+    if subject.status == SUBJECT_STATUS_ARCHIVED:
+        raise SubjectArchivedError("Môn học đã lưu trữ, không thể thêm buổi học.")
+
+    # 1. Validate session_number
+    if "session_number" not in payload or payload["session_number"] is None:
+        raise SubjectSessionValidationError(
+            "Số thứ tự buổi học (session_number) là bắt buộc.",
+            code="INVALID_PARAMS",
+        )
+
+    raw_num = payload["session_number"]
+    if isinstance(raw_num, bool) or not isinstance(raw_num, int):
+        raise SubjectSessionValidationError(
+            "Số thứ tự buổi học phải là số nguyên hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+
+    session_number = int(raw_num)
+    if session_number < 1:
+        raise SubjectSessionValidationError(
+            "Số thứ tự buổi học phải lớn hơn hoặc bằng 1.",
+            code="INVALID_PARAMS",
+        )
+
+    if subject.total_sessions is not None:
+        if session_number > subject.total_sessions:
+            raise TotalSessionsExceededError(
+                f"Số thứ tự buổi học vượt quá tổng số buổi của môn học (tối đa {subject.total_sessions})."
+            )
+
+    # 2. Validate topic
+    if "topic" not in payload or payload["topic"] is None:
+        raise SubjectSessionValidationError(
+            "Chủ đề buổi học (topic) là bắt buộc.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(payload["topic"], str):
+        raise SubjectSessionValidationError(
+            "Chủ đề buổi học phải là chuỗi ký tự.",
+            code="INVALID_PARAMS",
+        )
+
+    topic = payload["topic"].strip()
+    if not topic:
+        raise SubjectSessionValidationError(
+            "Chủ đề buổi học không được để trống.",
+            code="INVALID_PARAMS",
+        )
+
+    if len(topic) > 255:
+        raise SubjectSessionValidationError(
+            "Chủ đề buổi học không được vượt quá 255 ký tự.",
+            code="INVALID_PARAMS",
+        )
+
+    # 3. Validate objective
+    if "objective" not in payload or payload["objective"] is None:
+        raise SubjectSessionValidationError(
+            "Mục tiêu buổi học (objective) là bắt buộc.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(payload["objective"], str):
+        raise SubjectSessionValidationError(
+            "Mục tiêu buổi học phải là chuỗi ký tự.",
+            code="INVALID_PARAMS",
+        )
+
+    objective = payload["objective"].strip()
+    if not objective:
+        raise SubjectSessionValidationError(
+            "Mục tiêu buổi học không được để trống.",
+            code="INVALID_PARAMS",
+        )
+
+    if len(objective) > 5000:
+        raise SubjectSessionValidationError(
+            "Mục tiêu buổi học không được vượt quá 5000 ký tự.",
+            code="INVALID_PARAMS",
+        )
+
+    # 4. Check duplicate
+    if subject_session_repository.exists_session_number(cleaned_subject_id, session_number):
+        raise DuplicateSessionNumberError("Số thứ tự buổi học đã tồn tại trong môn học.")
+
+    # 5. Insert
+    new_id = str(uuid.uuid4())
+    session = SubjectSession(
+        id=new_id,
+        subject_id=cleaned_subject_id,
+        session_number=session_number,
+        topic=topic,
+        objective=objective,
+    )
+
+    try:
+        inserted = subject_session_repository.insert_subject_session(session)
+        return inserted.to_dict()
+    except Exception as exc:
+        # Bắt trường hợp race condition khi 2 request cùng insert cùng session_number
+        from mysql.connector.errors import IntegrityError
+        if isinstance(exc, IntegrityError) and (1062 in exc.args or "1062" in str(exc) or "Duplicate entry" in str(exc)):
+            raise DuplicateSessionNumberError("Số thứ tự buổi học đã tồn tại trong môn học.")
+        raise
