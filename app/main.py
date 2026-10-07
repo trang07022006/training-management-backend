@@ -13,6 +13,7 @@ from app.routes.training_program_routes import training_program_bp
 from app.routes.user_routes import user_bp
 from app.routes.user_role_routes import user_role_bp
 from app.routes.public_consultation_routes import public_consultation_bp
+from app.routes.subject_session_routes import subject_session_bp
 
 
 app = Flask(__name__)
@@ -27,6 +28,7 @@ CORS(app)
 app.register_blueprint(auth_bp)
 app.register_blueprint(session_bp)
 app.register_blueprint(subject_bp)
+app.register_blueprint(subject_session_bp)
 app.register_blueprint(training_program_bp)
 app.register_blueprint(program_subject_bp)
 app.register_blueprint(user_bp)
