@@ -7,6 +7,7 @@ Bảo đảm:
 4. Trả về kết quả tối thiểu để bảo vệ quyền riêng tư (PII privacy).
 """
 
+from datetime import datetime, timezone
 import math
 import re
 import uuid
@@ -255,4 +256,58 @@ def get_lead_by_id_service(lead_id: str) -> dict[str, Any]:
         raise LeadNotFoundError()
 
     return lead.to_dict()
+
+
+def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Cập nhật trạng thái của một Lead (SCRUM-126 - Activity A3).
+    - Chỉ cho phép sửa trường 'status'.
+    - Chặn mọi nỗ lực can thiệp các trường hệ thống (id, created_at, source, v.v.).
+    - Xác thực trạng thái nằm trong danh mục VALID_LEAD_STATUSES.
+    - Cập nhật thời gian updated_at theo UTC server.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    if not isinstance(payload, dict):
+        raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
+
+    disallowed_fields = set(payload.keys()) - {"status"}
+    if disallowed_fields:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            f"Không được phép sửa đổi các trường: {', '.join(sorted(disallowed_fields))}. Chỉ cho phép cập nhật 'status'.",
+        )
+
+    raw_status = payload.get("status")
+    if raw_status is None:
+        raise LeadValidationError("STATUS_REQUIRED", "Trường 'status' là bắt buộc.")
+
+    if not isinstance(raw_status, str):
+        raise LeadValidationError("INVALID_STATUS", "Trạng thái phải là chuỗi văn bản.")
+
+    status = raw_status.strip().lower()
+    from app.models.lead import VALID_LEAD_STATUSES
+
+    if status not in VALID_LEAD_STATUSES:
+        raise LeadValidationError(
+            "INVALID_STATUS",
+            f"Trạng thái '{status}' không hợp lệ. Các trạng thái hợp lệ: {', '.join(sorted(VALID_LEAD_STATUSES))}.",
+        )
+
+    existing = lead_repository.get_lead_by_id(lead_id)
+    if not existing:
+        raise LeadNotFoundError()
+
+    now = datetime.now(timezone.utc)
+    updated = lead_repository.update_lead_status(lead_id, status, updated_at=now)
+    if not updated:
+        raise LeadNotFoundError()
+
+    return {
+        "status": "success",
+        "message": "Cập nhật trạng thái Lead thành công.",
+        "data": updated.to_dict(),
+    }
+
 

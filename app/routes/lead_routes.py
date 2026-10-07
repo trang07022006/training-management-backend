@@ -133,3 +133,66 @@ def get_lead_detail(lead_id: str):
                 "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
             },
         }), 500
+
+
+@lead_bp.patch("/v1/leads/<lead_id>")
+@lead_bp.patch("/leads/<lead_id>")
+@permission_required("course.manage")
+def update_lead_status_endpoint(lead_id: str):
+    """
+    API cập nhật trạng thái của một Lead (SCRUM-126 - Activity A3).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Chỉ cho phép cập nhật trường 'status'.
+    - Kiểm tra trạng thái hợp lệ, cập nhật updated_at.
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            "error": {
+                "code": "INVALID_JSON",
+                "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            },
+        }), 400
+
+    try:
+        result = lead_service.update_lead_status_service(lead_id, body)
+        return jsonify(result), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật trạng thái Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật trạng thái Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
