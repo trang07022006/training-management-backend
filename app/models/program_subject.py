@@ -23,6 +23,7 @@ class ProgramSubject:
     subject_code: str | None = None
     subject_name: str | None = None
     subject_credits: int | None = None
+    subject_total_sessions: int | None = None
     subject_status: str | None = None
 
     # Danh sách điều kiện tiên quyết (danh sách ID hoặc dict chi tiết)
@@ -46,6 +47,8 @@ class ProgramSubject:
             data["subject_name"] = self.subject_name
         if self.subject_credits is not None:
             data["subject_credits"] = self.subject_credits
+        if self.subject_total_sessions is not None:
+            data["total_sessions"] = self.subject_total_sessions
         if self.subject_status is not None:
             data["subject_status"] = self.subject_status
         if self.prerequisites:

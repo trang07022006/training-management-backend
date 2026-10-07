@@ -50,6 +50,7 @@ def _row_to_program_subject(row: dict) -> ProgramSubject:
         subject_code=row.get("subject_code"),
         subject_name=row.get("subject_name"),
         subject_credits=int(row["subject_credits"]) if row.get("subject_credits") is not None else None,
+        subject_total_sessions=int(row["subject_total_sessions"]) if row.get("subject_total_sessions") is not None else None,
         subject_status=row.get("subject_status"),
     )
 
@@ -118,13 +119,35 @@ def get_program_subject_by_id(program_subject_id: str) -> ProgramSubject | None:
             ps.id, ps.program_id, ps.subject_id, ps.semester, ps.is_mandatory,
             ps.order_index, ps.created_at, ps.updated_at,
             s.code AS subject_code, s.name AS subject_name,
-            s.credits AS subject_credits, s.status AS subject_status
+            s.credits AS subject_credits, s.total_sessions AS subject_total_sessions,
+            s.status AS subject_status
         FROM program_subjects ps
         JOIN subjects s ON ps.subject_id = s.id
         WHERE ps.id = %s
     """
     with _database_cursor() as cursor:
         cursor.execute(sql, (program_subject_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return _row_to_program_subject(row)
+
+
+def get_program_subject_by_program_and_subject(program_id: str, subject_id: str) -> ProgramSubject | None:
+    """Lấy thông tin quan hệ giữa program và subject nếu tồn tại."""
+    sql = """
+        SELECT
+            ps.id, ps.program_id, ps.subject_id, ps.semester, ps.is_mandatory,
+            ps.order_index, ps.created_at, ps.updated_at,
+            s.code AS subject_code, s.name AS subject_name,
+            s.credits AS subject_credits, s.total_sessions AS subject_total_sessions,
+            s.status AS subject_status
+        FROM program_subjects ps
+        JOIN subjects s ON ps.subject_id = s.id
+        WHERE ps.program_id = %s AND ps.subject_id = %s
+    """
+    with _database_cursor() as cursor:
+        cursor.execute(sql, (program_id, subject_id))
         row = cursor.fetchone()
         if not row:
             return None
@@ -150,7 +173,8 @@ def get_program_structure(program_id: str) -> list[ProgramSubject]:
             ps.id, ps.program_id, ps.subject_id, ps.semester, ps.is_mandatory,
             ps.order_index, ps.created_at, ps.updated_at,
             s.code AS subject_code, s.name AS subject_name,
-            s.credits AS subject_credits, s.status AS subject_status
+            s.credits AS subject_credits, s.total_sessions AS subject_total_sessions,
+            s.status AS subject_status
         FROM program_subjects ps
         JOIN subjects s ON ps.subject_id = s.id
         WHERE ps.program_id = %s
