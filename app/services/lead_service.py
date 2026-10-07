@@ -7,6 +7,7 @@ Bảo đảm:
 4. Trả về kết quả tối thiểu để bảo vệ quyền riêng tư (PII privacy).
 """
 
+import math
 import re
 import uuid
 from typing import Any
@@ -67,6 +68,13 @@ class LeadProgramNotFoundError(LeadServiceError):
 
     def __init__(self, message: str = "Không tìm thấy chương trình đào tạo quan tâm."):
         super().__init__(code="PROGRAM_NOT_FOUND", message=message, status_code=404)
+
+
+class LeadNotFoundError(LeadServiceError):
+    """Lỗi không tìm thấy Lead (404)."""
+
+    def __init__(self, message: str = "Không tìm thấy thông tin Lead."):
+        super().__init__(code="LEAD_NOT_FOUND", message=message, status_code=404)
 
 
 ALLOWED_SUBMISSION_FIELDS = {
@@ -193,3 +201,58 @@ def get_public_training_programs_service() -> list[dict[str, Any]]:
     Chỉ trả về id, code, name, description.
     """
     return training_program_repository.get_public_active_training_programs()
+
+
+def get_leads_service(page_raw: Any = 1, page_size_raw: Any = 20) -> dict[str, Any]:
+    """
+    Lấy danh sách Lead cho người dùng nội bộ có thẩm quyền (SCRUM-126 - Activity A2).
+    - Hỗ trợ phân trang: page >= 1, page_size từ 1 đến 100.
+    - Sắp xếp mặc định: created_at DESC.
+    """
+    try:
+        page = int(page_raw)
+        if page < 1:
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            "Số trang 'page' phải là số nguyên dương lớn hơn hoặc bằng 1.",
+        )
+
+    try:
+        page_size = int(page_size_raw)
+        if page_size < 1 or page_size > 100:
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            "Số lượng phần tử trên trang 'page_size' phải từ 1 đến 100.",
+        )
+
+    leads, total = lead_repository.list_leads(page=page, page_size=page_size)
+    total_pages = math.ceil(total / page_size) if total > 0 else 0
+
+    return {
+        "items": [lead.to_dict() for lead in leads],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+def get_lead_by_id_service(lead_id: str) -> dict[str, Any]:
+    """
+    Lấy chi tiết một Lead theo ID (SCRUM-126 - Activity A2).
+    - Kiểm tra định dạng UUID 36 ký tự.
+    - Ném LeadNotFoundError (404) nếu không tìm thấy.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    return lead.to_dict()
+
