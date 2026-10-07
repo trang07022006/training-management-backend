@@ -69,37 +69,55 @@ class LeadProgramNotFoundError(LeadServiceError):
         super().__init__(code="PROGRAM_NOT_FOUND", message=message, status_code=404)
 
 
+ALLOWED_SUBMISSION_FIELDS = {
+    "full_name",
+    "phone",
+    "email",
+    "interested_program_id",
+    "message",
+}
+
+
 def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Xử lý tạo yêu cầu tư vấn công khai từ form website (SCRUM-125 - Activity A2).
+    Xử lý tạo yêu cầu tư vấn công khai từ form website (SCRUM-125 - Activity A2/A4).
     - Không yêu cầu đăng nhập.
     - Validate nghiêm ngặt full_name, phone, email, message, interested_program_id.
-    - Chặn các trường can thiệp hệ thống.
+    - Chặn các trường lạ và trường can thiệp hệ thống.
+    - Chuẩn hóa khoảng trắng, line endings, chữ thường cho email.
     """
     if not isinstance(payload, dict):
         raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
 
-    # 1. Chặn các trường do hệ thống quản lý
-    for field in SYSTEM_CONTROLLED_FIELDS:
-        if field in payload:
-            raise LeadValidationError(
-                "INVALID_PARAMS",
-                f"Không được phép gửi trường quản trị hệ thống '{field}'.",
-            )
+    # 1. Chặn các trường không thuộc danh sách cho phép (unknown / system-controlled)
+    unexpected = set(payload.keys()) - ALLOWED_SUBMISSION_FIELDS
+    if unexpected:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            f"Không được phép gửi các trường không hợp lệ: {', '.join(sorted(unexpected))}.",
+        )
 
     # 2. Validate Họ và tên (full_name) - bắt buộc
     raw_name = payload.get("full_name")
-    if raw_name is None or not isinstance(raw_name, str) or not raw_name.strip():
+    if raw_name is None:
         raise LeadValidationError("NAME_REQUIRED", "Họ và tên là bắt buộc.")
+    if not isinstance(raw_name, str):
+        raise LeadValidationError("INVALID_PARAMS", "Họ và tên phải là chuỗi văn bản.")
     full_name = raw_name.strip()
+    if not full_name:
+        raise LeadValidationError("NAME_REQUIRED", "Họ và tên là bắt buộc.")
     if len(full_name) > 255:
         raise LeadValidationError("INVALID_PARAMS", "Họ và tên không được vượt quá 255 ký tự.")
 
     # 3. Validate Số điện thoại (phone) - bắt buộc
     raw_phone = payload.get("phone")
-    if raw_phone is None or not isinstance(raw_phone, str) or not raw_phone.strip():
+    if raw_phone is None:
         raise LeadValidationError("PHONE_REQUIRED", "Số điện thoại là bắt buộc.")
+    if not isinstance(raw_phone, str):
+        raise LeadValidationError("INVALID_PARAMS", "Số điện thoại phải là chuỗi văn bản.")
     phone = raw_phone.strip()
+    if not phone:
+        raise LeadValidationError("PHONE_REQUIRED", "Số điện thoại là bắt buộc.")
     if len(phone) > 30 or not PHONE_CHARS_REGEX.match(phone):
         raise LeadValidationError("INVALID_PARAMS", "Số điện thoại không đúng định dạng hợp lệ.")
 
@@ -109,7 +127,7 @@ def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any
     if raw_email is not None:
         if not isinstance(raw_email, str):
             raise LeadValidationError("INVALID_EMAIL", "Định dạng email không hợp lệ.")
-        trimmed_email = raw_email.strip()
+        trimmed_email = raw_email.strip().lower()
         if trimmed_email:
             if len(trimmed_email) > 255 or not EMAIL_REGEX.match(trimmed_email):
                 raise LeadValidationError("INVALID_EMAIL", "Định dạng email không hợp lệ.")
@@ -142,11 +160,11 @@ def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any
     if raw_message is not None:
         if not isinstance(raw_message, str):
             raise LeadValidationError("INVALID_PARAMS", "Nội dung tin nhắn không hợp lệ.")
-        trimmed_msg = raw_message.strip()
-        if trimmed_msg:
-            if len(trimmed_msg) > 5000:
+        normalized_msg = raw_message.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if normalized_msg:
+            if len(normalized_msg) > 5000:
                 raise LeadValidationError("INVALID_PARAMS", "Nội dung tư vấn không được vượt quá 5000 ký tự.")
-            message = trimmed_msg
+            message = normalized_msg
 
     # 7. Khởi tạo thực thể Lead an toàn
     new_lead = Lead(
