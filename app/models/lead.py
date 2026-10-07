@@ -10,13 +10,17 @@ from datetime import datetime
 
 LEAD_STATUS_NEW = "new"
 LEAD_STATUS_CONTACTED = "contacted"
+LEAD_STATUS_QUALIFIED = "qualified"
 LEAD_STATUS_CONVERTED = "converted"
+LEAD_STATUS_LOST = "lost"
 LEAD_STATUS_CANCELLED = "cancelled"
 
 VALID_LEAD_STATUSES = {
     LEAD_STATUS_NEW,
     LEAD_STATUS_CONTACTED,
+    LEAD_STATUS_QUALIFIED,
     LEAD_STATUS_CONVERTED,
+    LEAD_STATUS_LOST,
     LEAD_STATUS_CANCELLED,
 }
 
@@ -43,6 +47,17 @@ class Lead:
     # Tùy chọn thông tin mở rộng khi JOIN với training_programs
     interested_program_code: str | None = None
     interested_program_name: str | None = None
+
+    def validate_status(self) -> None:
+        """Kiểm tra trạng thái của Lead có nằm trong danh mục hợp lệ không."""
+        if self.status not in VALID_LEAD_STATUSES:
+            raise ValueError(f"Trạng thái Lead không hợp lệ: {self.status}")
+
+    def update_status(self, new_status: str) -> None:
+        """Cập nhật trạng thái mới cho Lead."""
+        if new_status not in VALID_LEAD_STATUSES:
+            raise ValueError(f"Trạng thái Lead không hợp lệ: {new_status}")
+        self.status = new_status
 
     def to_dict(self) -> dict:
         """

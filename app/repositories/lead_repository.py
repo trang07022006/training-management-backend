@@ -146,9 +146,74 @@ def count_leads() -> int:
         return int(row["total"]) if row else 0
 
 
+def list_leads(page: int = 1, page_size: int = 20) -> tuple[list[Lead], int]:
+    """
+    Lấy danh sách Lead có phân trang (SCRUM-126 - Activity A1).
+    Mặc định sắp xếp theo created_at DESC.
+    """
+    limit = max(1, min(page_size, 100))
+    offset = max(0, (page - 1) * limit)
+
+    count_sql = "SELECT COUNT(*) AS total FROM leads"
+    data_sql = """
+        SELECT
+            l.id, l.full_name, l.phone, l.email, l.interested_program_id,
+            l.message, l.source, l.status, l.created_at, l.updated_at,
+            tp.code AS interested_program_code,
+            tp.name AS interested_program_name
+        FROM leads l
+        LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+        ORDER BY l.created_at DESC
+        LIMIT %s OFFSET %s
+    """
+
+    with _database_cursor(write=False) as cursor:
+        cursor.execute(count_sql)
+        count_row = cursor.fetchone()
+        total = int(count_row["total"]) if count_row else 0
+
+        cursor.execute(data_sql, (limit, offset))
+        rows = cursor.fetchall() or []
+        leads = [_row_to_model(row) for row in rows]
+
+    return leads, total
+
+
+def update_lead_status(
+    lead_id: str, new_status: str, updated_at: datetime | None = None
+) -> Lead | None:
+    """
+    Cập nhật trạng thái của một Lead (SCRUM-126 - Activity A1/A3).
+    """
+    now = datetime.now(timezone.utc)
+    target_updated_at = updated_at or now
+
+    sql = """
+        UPDATE leads
+        SET status = %s, updated_at = %s
+        WHERE id = %s
+    """
+    params = (
+        new_status,
+        _to_mysql_datetime(target_updated_at),
+        lead_id,
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, params)
+        if cursor.rowcount == 0:
+            existing = get_lead_by_id(lead_id)
+            if not existing:
+                return None
+            return existing
+
+    return get_lead_by_id(lead_id)
+
+
 def delete_lead_for_testing(lead_id: str) -> bool:
     """Xóa một lead khỏi bảng (chỉ dùng cho cleanup trong testing)."""
     sql = "DELETE FROM leads WHERE id = %s"
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (lead_id,))
         return cursor.rowcount > 0
+
