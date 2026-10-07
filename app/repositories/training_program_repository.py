@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from typing import Any
 
 from app.database.connection import get_db_connection
 from app.models.training_program import (
@@ -253,3 +254,83 @@ def delete_training_program(program_id: str) -> bool:
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (program_id,))
         return cursor.rowcount > 0
+
+
+ALLOWED_UPDATE_FIELDS = {
+    "code",
+    "name",
+    "description",
+    "duration_semesters",
+    "status",
+}
+
+
+def update_training_program(program: TrainingProgram) -> TrainingProgram:
+    """
+    Cập nhật toàn bộ các trường nghiệp vụ của chương trình đào tạo (SCRUM-122 - Activity A4 - PUT).
+    Sử dụng hoàn toàn parameterized query để chống SQL injection.
+    """
+    now = datetime.now(timezone.utc)
+    updated_at = program.updated_at or now
+
+    sql = """
+        UPDATE training_programs
+        SET
+            code = %s,
+            name = %s,
+            description = %s,
+            duration_semesters = %s,
+            status = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        program.code,
+        program.name,
+        program.description,
+        program.duration_semesters,
+        program.status,
+        _to_mysql_datetime(updated_at),
+        program.id,
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+
+    updated = get_training_program_by_id(program.id)
+    return updated or program
+
+
+def update_training_program_fields(
+    program_id: str,
+    fields: dict[str, Any],
+) -> TrainingProgram | None:
+    """
+    Cập nhật các trường được chỉ định của chương trình đào tạo (SCRUM-122 - Activity A4 - PATCH).
+    Chỉ cho phép cập nhật các trường trong whitelist ALLOWED_UPDATE_FIELDS.
+    Tự động cập nhật updated_at theo UTC.
+    Sử dụng parameterized query an toàn chống SQL Injection.
+    """
+    valid_fields = {k: v for k, v in fields.items() if k in ALLOWED_UPDATE_FIELDS}
+    if not valid_fields:
+        return get_training_program_by_id(program_id)
+
+    now = datetime.now(timezone.utc)
+    set_clauses = [f"{col} = %s" for col in valid_fields.keys()]
+    set_clauses.append("updated_at = %s")
+
+    values = list(valid_fields.values())
+    values.append(_to_mysql_datetime(now))
+    values.append(program_id)
+
+    sql = f"""
+        UPDATE training_programs
+        SET {', '.join(set_clauses)}
+        WHERE id = %s
+    """
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, tuple(values))
+
+    return get_training_program_by_id(program_id)
+

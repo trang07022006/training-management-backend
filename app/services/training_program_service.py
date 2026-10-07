@@ -159,6 +159,116 @@ def get_training_program_detail_service(program_id: str) -> dict:
     return program.to_dict()
 
 
+def validate_program_code(raw_code: Any) -> str:
+    """Kiểm tra và chuẩn hóa mã chương trình (code)."""
+    if raw_code is None or not isinstance(raw_code, str):
+        raise TrainingProgramValidationError(
+            "Mã chương trình (code) là bắt buộc.",
+            code="CODE_REQUIRED",
+        )
+    cleaned = raw_code.strip()
+    if not cleaned:
+        raise TrainingProgramValidationError(
+            "Mã chương trình không được để trống.",
+            code="CODE_REQUIRED",
+        )
+    if len(cleaned) > 50:
+        raise TrainingProgramValidationError(
+            "Mã chương trình không được vượt quá 50 ký tự.",
+            code="CODE_TOO_LONG",
+        )
+    return cleaned
+
+
+def validate_program_name(raw_name: Any) -> str:
+    """Kiểm tra và chuẩn hóa tên chương trình (name)."""
+    if raw_name is None or not isinstance(raw_name, str):
+        raise TrainingProgramValidationError(
+            "Tên chương trình (name) là bắt buộc.",
+            code="NAME_REQUIRED",
+        )
+    cleaned = raw_name.strip()
+    if not cleaned:
+        raise TrainingProgramValidationError(
+            "Tên chương trình không được để trống.",
+            code="NAME_REQUIRED",
+        )
+    if len(cleaned) > 255:
+        raise TrainingProgramValidationError(
+            "Tên chương trình không được vượt quá 255 ký tự.",
+            code="NAME_TOO_LONG",
+        )
+    return cleaned
+
+
+def validate_program_description(raw_desc: Any) -> str | None:
+    """Kiểm tra và chuẩn hóa mô tả chương trình (description)."""
+    if raw_desc is None:
+        return None
+    if not isinstance(raw_desc, str):
+        raise TrainingProgramValidationError(
+            "Mô tả chương trình phải là chuỗi ký tự.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_desc.strip()
+    return cleaned if cleaned else None
+
+
+def validate_program_duration(raw_duration: Any) -> int | None:
+    """Kiểm tra và chuẩn hóa thời lượng học kỳ (duration_semesters)."""
+    if raw_duration is None:
+        return None
+    if isinstance(raw_duration, bool) or not isinstance(raw_duration, int):
+        raise TrainingProgramValidationError(
+            "Thời lượng học kỳ (duration_semesters) phải là số nguyên dương.",
+            code="INVALID_PARAMS",
+        )
+    if raw_duration <= 0 or raw_duration > 65535:
+        raise TrainingProgramValidationError(
+            "Thời lượng học kỳ (duration_semesters) phải là số nguyên dương từ 1 đến 65535.",
+            code="INVALID_PARAMS",
+        )
+    return raw_duration
+
+
+def validate_program_status(raw_status: Any, default: str = PROGRAM_STATUS_DRAFT) -> str:
+    """Kiểm tra và chuẩn hóa trạng thái chương trình (status)."""
+    if raw_status is None:
+        return default
+    if isinstance(raw_status, bool) or not isinstance(raw_status, str):
+        raise TrainingProgramValidationError(
+            "Trạng thái chương trình không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_status.strip().lower()
+    if not cleaned:
+        return default
+    if cleaned not in VALID_PROGRAM_STATUSES:
+        allowed = ", ".join(sorted(VALID_PROGRAM_STATUSES))
+        raise TrainingProgramValidationError(
+            f"Trạng thái không hợp lệ: '{cleaned}'. Cho phép: {allowed}.",
+            code="INVALID_PARAMS",
+        )
+    return cleaned
+
+
+def validate_patch_status(raw_status: Any) -> str:
+    """Kiểm tra trạng thái chương trình khi PATCH (bắt buộc phải là giá trị hợp lệ, không cho phép null/rỗng)."""
+    if raw_status is None or isinstance(raw_status, bool) or not isinstance(raw_status, str):
+        raise TrainingProgramValidationError(
+            "Trạng thái chương trình không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_status.strip().lower()
+    if not cleaned or cleaned not in VALID_PROGRAM_STATUSES:
+        allowed = ", ".join(sorted(VALID_PROGRAM_STATUSES))
+        raise TrainingProgramValidationError(
+            f"Trạng thái không hợp lệ: '{cleaned}'. Cho phép: {allowed}.",
+            code="INVALID_PARAMS",
+        )
+    return cleaned
+
+
 def create_training_program_service(data: dict) -> dict:
     """
     Nghiệp vụ tạo mới một chương trình đào tạo (SCRUM-122 - Activity A3).
@@ -177,89 +287,17 @@ def create_training_program_service(data: dict) -> dict:
             code="INVALID_JSON",
         )
 
-    # 1. Validate code
-    raw_code = data.get("code")
-    if raw_code is None or not isinstance(raw_code, str):
-        raise TrainingProgramValidationError(
-            "Mã chương trình (code) là bắt buộc.",
-            code="CODE_REQUIRED",
-        )
-    cleaned_code = raw_code.strip()
-    if not cleaned_code:
-        raise TrainingProgramValidationError(
-            "Mã chương trình không được để trống.",
-            code="CODE_REQUIRED",
-        )
-    if len(cleaned_code) > 50:
-        raise TrainingProgramValidationError(
-            "Mã chương trình không được vượt quá 50 ký tự.",
-            code="CODE_TOO_LONG",
-        )
+    cleaned_code = validate_program_code(data.get("code"))
+    cleaned_name = validate_program_name(data.get("name"))
+    cleaned_desc = validate_program_description(data.get("description"))
+    cleaned_duration = validate_program_duration(data.get("duration_semesters"))
+    cleaned_status = validate_program_status(data.get("status"), default=PROGRAM_STATUS_DRAFT)
 
-    # 2. Validate name
-    raw_name = data.get("name")
-    if raw_name is None or not isinstance(raw_name, str):
-        raise TrainingProgramValidationError(
-            "Tên chương trình (name) là bắt buộc.",
-            code="NAME_REQUIRED",
-        )
-    cleaned_name = raw_name.strip()
-    if not cleaned_name:
-        raise TrainingProgramValidationError(
-            "Tên chương trình không được để trống.",
-            code="NAME_REQUIRED",
-        )
-    if len(cleaned_name) > 255:
-        raise TrainingProgramValidationError(
-            "Tên chương trình không được vượt quá 255 ký tự.",
-            code="NAME_TOO_LONG",
-        )
-
-    # 3. Validate description (tùy chọn)
-    raw_desc = data.get("description")
-    cleaned_desc = None
-    if raw_desc is not None:
-        if not isinstance(raw_desc, str):
-            raise TrainingProgramValidationError(
-                "Mô tả chương trình phải là chuỗi ký tự.",
-                code="INVALID_PARAMS",
-            )
-        cleaned_desc = raw_desc.strip() if raw_desc.strip() else None
-
-    # 4. Validate duration_semesters (tùy chọn)
-    raw_duration = data.get("duration_semesters")
-    cleaned_duration = None
-    if raw_duration is not None:
-        if isinstance(raw_duration, bool) or not isinstance(raw_duration, int):
-            raise TrainingProgramValidationError(
-                "Thời lượng học kỳ (duration_semesters) phải là số nguyên dương.",
-                code="INVALID_PARAMS",
-            )
-        if raw_duration <= 0 or raw_duration > 65535:
-            raise TrainingProgramValidationError(
-                "Thời lượng học kỳ (duration_semesters) phải là số nguyên dương từ 1 đến 65535.",
-                code="INVALID_PARAMS",
-            )
-        cleaned_duration = raw_duration
-
-    # 5. Validate status (tùy chọn, mặc định 'draft')
-    raw_status = data.get("status")
-    cleaned_status = PROGRAM_STATUS_DRAFT
-    if raw_status is not None and str(raw_status).strip():
-        val = str(raw_status).strip().lower()
-        if val not in VALID_PROGRAM_STATUSES:
-            allowed = ", ".join(sorted(VALID_PROGRAM_STATUSES))
-            raise TrainingProgramValidationError(
-                f"Trạng thái không hợp lệ: '{val}'. Cho phép: {allowed}.",
-                code="INVALID_PARAMS",
-            )
-        cleaned_status = val
-
-    # 6. Kiểm tra trùng mã code ở tầng service
+    # Kiểm tra trùng mã code ở tầng service
     if training_program_repository.exists_by_code(cleaned_code):
         raise DuplicateProgramCodeError()
 
-    # 7. Khởi tạo đối tượng với UUID v4 và UTC timestamp do backend sinh
+    # Khởi tạo đối tượng với UUID v4 và UTC timestamp do backend sinh
     program_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
@@ -274,12 +312,12 @@ def create_training_program_service(data: dict) -> dict:
         updated_at=now,
     )
 
-    # 8. Lưu vào database và bắt lỗi IntegrityError phòng ngừa race condition
+    # Lưu vào database và bắt lỗi IntegrityError phòng ngừa race condition
     try:
         created_program = training_program_repository.insert_training_program(program)
     except IntegrityError as err:
         err_msg = str(err).lower()
-        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg:
+        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg or "unique" in err_msg:
             raise DuplicateProgramCodeError()
         raise
     except Exception as err:
@@ -289,3 +327,162 @@ def create_training_program_service(data: dict) -> dict:
         raise
 
     return created_program.to_dict()
+
+
+def update_training_program_service(program_id: str, data: dict) -> dict:
+    """
+    Nghiệp vụ cập nhật toàn bộ thông tin một chương trình đào tạo (SCRUM-122 - Activity A4 - PUT).
+    - Validate program_id (định dạng UUID, tồn tại trong database).
+    - Validate data (phải là dict).
+    - code và name bắt buộc.
+    - description, duration_semesters, status xử lý theo quy tắc chuẩn:
+      nếu không gửi -> description=None, duration_semesters=None, status='draft'.
+    - Không cho phép cập nhật id hoặc created_at.
+    - Cập nhật updated_at theo UTC.
+    - Kiểm tra mã code trùng lặp (ngoại trừ chính chương trình này).
+    """
+    if not isinstance(program_id, str) or not program_id.strip():
+        raise TrainingProgramValidationError(
+            "Mã định danh chương trình đào tạo không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned_id = program_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise TrainingProgramValidationError(
+            "Mã định danh chương trình đào tạo không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(data, dict):
+        raise TrainingProgramValidationError(
+            "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+            code="INVALID_JSON",
+        )
+
+    existing = training_program_repository.get_training_program_by_id(cleaned_id)
+    if existing is None:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    cleaned_code = validate_program_code(data.get("code"))
+    cleaned_name = validate_program_name(data.get("name"))
+    cleaned_desc = validate_program_description(data.get("description"))
+    cleaned_duration = validate_program_duration(data.get("duration_semesters"))
+    cleaned_status = validate_program_status(data.get("status"), default=PROGRAM_STATUS_DRAFT)
+
+    if cleaned_code != existing.code:
+        if training_program_repository.exists_by_code(cleaned_code, exclude_id=cleaned_id):
+            raise DuplicateProgramCodeError()
+
+    now = datetime.now(timezone.utc)
+    program_to_update = TrainingProgram(
+        id=cleaned_id,
+        code=cleaned_code,
+        name=cleaned_name,
+        description=cleaned_desc,
+        duration_semesters=cleaned_duration,
+        status=cleaned_status,
+        created_at=existing.created_at,
+        updated_at=now,
+    )
+
+    try:
+        updated = training_program_repository.update_training_program(program_to_update)
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg or "unique" in err_msg:
+            raise DuplicateProgramCodeError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "duplicate" in err_msg or "1062" in err_msg or "unique" in err_msg:
+            raise DuplicateProgramCodeError()
+        raise
+
+    return updated.to_dict()
+
+
+def patch_training_program_service(program_id: str, data: dict) -> dict:
+    """
+    Nghiệp vụ cập nhật từng phần thông tin một chương trình đào tạo (SCRUM-122 - Activity A4 - PATCH).
+    - Validate program_id (định dạng UUID, tồn tại trong database).
+    - Validate data (phải là dict, không được rỗng).
+    - Chỉ cập nhật các trường được gửi:
+      code, name, description, duration_semesters, status.
+    - Các trường không gửi được giữ nguyên tuyệt đối.
+    - Bỏ qua id, created_at, updated_at do client truyền.
+    - Cập nhật updated_at theo UTC.
+    - Kiểm tra mã code trùng lặp (ngoại trừ chính chương trình này).
+    """
+    if not isinstance(program_id, str) or not program_id.strip():
+        raise TrainingProgramValidationError(
+            "Mã định danh chương trình đào tạo không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+    cleaned_id = program_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise TrainingProgramValidationError(
+            "Mã định danh chương trình đào tạo không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(data, dict):
+        raise TrainingProgramValidationError(
+            "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+            code="INVALID_JSON",
+        )
+
+    if not data:
+        raise TrainingProgramValidationError(
+            "Dữ liệu yêu cầu không được để trống.",
+            code="INVALID_PARAMS",
+        )
+
+    existing = training_program_repository.get_training_program_by_id(cleaned_id)
+    if existing is None:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    fields_to_update: dict[str, Any] = {}
+
+    if "code" in data:
+        cleaned_code = validate_program_code(data["code"])
+        if cleaned_code != existing.code:
+            if training_program_repository.exists_by_code(cleaned_code, exclude_id=cleaned_id):
+                raise DuplicateProgramCodeError()
+        fields_to_update["code"] = cleaned_code
+
+    if "name" in data:
+        fields_to_update["name"] = validate_program_name(data["name"])
+
+    if "description" in data:
+        fields_to_update["description"] = validate_program_description(data["description"])
+
+    if "duration_semesters" in data:
+        fields_to_update["duration_semesters"] = validate_program_duration(data["duration_semesters"])
+
+    if "status" in data:
+        fields_to_update["status"] = validate_patch_status(data["status"])
+
+    if not fields_to_update:
+        raise TrainingProgramValidationError(
+            "Không có trường dữ liệu nào hợp lệ để cập nhật.",
+            code="INVALID_PARAMS",
+        )
+
+    try:
+        updated = training_program_repository.update_training_program_fields(cleaned_id, fields_to_update)
+    except IntegrityError as err:
+        err_msg = str(err).lower()
+        if getattr(err, "errno", None) == 1062 or "duplicate" in err_msg or "code" in err_msg or "unique" in err_msg:
+            raise DuplicateProgramCodeError()
+        raise
+    except Exception as err:
+        err_msg = str(err).lower()
+        if "duplicate" in err_msg or "1062" in err_msg or "unique" in err_msg:
+            raise DuplicateProgramCodeError()
+        raise
+
+    if updated is None:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    return updated.to_dict()
+

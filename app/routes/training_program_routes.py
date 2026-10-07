@@ -2,12 +2,14 @@
 Các endpoint quản lý chương trình đào tạo (SCRUM-122).
 Bảo vệ bằng RBAC decorator @permission_required:
 - 'course.view' cho các API đọc (Activity A2)
-- 'course.manage' cho API tạo mới (Activity A3)
+- 'course.manage' cho API tạo mới (Activity A3) và cập nhật (Activity A4)
 
 Endpoints:
-- GET  /api/v1/training-programs       : Lấy danh sách chương trình đào tạo (hỗ trợ phân trang, lọc, tìm kiếm)
-- GET  /api/v1/training-programs/<id>  : Lấy chi tiết một chương trình đào tạo
-- POST /api/v1/training-programs       : Tạo mới một chương trình đào tạo (yêu cầu quyền course.manage)
+- GET   /api/v1/training-programs               : Lấy danh sách chương trình đào tạo (hỗ trợ phân trang, lọc, tìm kiếm)
+- GET   /api/v1/training-programs/<id>          : Lấy chi tiết một chương trình đào tạo
+- POST  /api/v1/training-programs               : Tạo mới một chương trình đào tạo (yêu cầu quyền course.manage)
+- PUT   /api/v1/training-programs/<program_id>  : Cập nhật toàn bộ thông tin chương trình đào tạo (yêu cầu quyền course.manage)
+- PATCH /api/v1/training-programs/<program_id>  : Cập nhật từng phần thông tin chương trình đào tạo (yêu cầu quyền course.manage)
 """
 
 import logging
@@ -150,3 +152,96 @@ def create_training_program():
             "code": "INTERNAL_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
         }), 500
+
+
+@training_program_bp.put("/v1/training-programs/<program_id>")
+@training_program_bp.put("/training-programs/<program_id>")
+@permission_required("course.manage")
+def update_training_program(program_id: str):
+    """
+    API cập nhật toàn bộ thông tin chương trình đào tạo (SCRUM-122 - Activity A4 - PUT).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Request body: JSON chứa code, name, description, duration_semesters, status
+    - Trả về 200 OK khi thành công kèm thông tin chương trình
+    - Trả về 400 nếu dữ liệu không hợp lệ hoặc program_id sai định dạng
+    - Trả về 404 nếu không tìm thấy chương trình
+    - Trả về 409 nếu trùng mã chương trình
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_program = training_program_service.update_training_program_service(program_id, data)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật chương trình đào tạo thành công.",
+            "data": updated_program,
+        }), 200
+    except TrainingProgramServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật chương trình đào tạo (PUT): %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật chương trình đào tạo.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật chương trình đào tạo (PUT): %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+@training_program_bp.patch("/v1/training-programs/<program_id>")
+@training_program_bp.patch("/training-programs/<program_id>")
+@permission_required("course.manage")
+def patch_training_program(program_id: str):
+    """
+    API cập nhật từng phần thông tin chương trình đào tạo (SCRUM-122 - Activity A4 - PATCH).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Request body: JSON chứa ít nhất một trường cần cập nhật
+    - Trả về 200 OK khi thành công kèm thông tin chương trình
+    - Trả về 400 nếu dữ liệu không hợp lệ, rỗng hoặc program_id sai định dạng
+    - Trả về 404 nếu không tìm thấy chương trình
+    - Trả về 409 nếu trùng mã chương trình
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        updated_program = training_program_service.patch_training_program_service(program_id, data)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật chương trình đào tạo thành công.",
+            "data": updated_program,
+        }), 200
+    except TrainingProgramServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật chương trình đào tạo (PATCH): %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật chương trình đào tạo.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật chương trình đào tạo (PATCH): %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
