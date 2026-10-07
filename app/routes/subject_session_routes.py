@@ -180,3 +180,172 @@ def create_subject_session(subject_id: str):
             },
         }), 500
 
+
+@subject_session_bp.patch("/v1/subjects/<subject_id>/sessions/reorder")
+@subject_session_bp.patch("/subjects/<subject_id>/sessions/reorder")
+@permission_required("course.manage")
+def reorder_subject_sessions(subject_id: str):
+    """
+    API sắp xếp lại thứ tự các buổi học của một môn học (SCRUM-129 - Activity A4).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Cập nhật số thứ tự 1..N theo mảng session_ids
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+
+    try:
+        reordered = subject_session_service.reorder_subject_sessions_service(
+            subject_id=subject_id,
+            payload=payload,
+        )
+        return jsonify({
+            "status": "success",
+            "message": "Sắp xếp lại thứ tự buổi học thành công.",
+            "data": reordered,
+        }), 200
+
+    except SubjectSessionServiceError as exc:
+        return jsonify({
+            "code": exc.code,
+            "message": exc.message,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            },
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when reordering subject sessions: %s", exc)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi sắp xếp lại buổi học.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi sắp xếp lại buổi học.",
+            },
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when reordering subject sessions: %s", exc)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+@subject_session_bp.patch("/v1/subjects/<subject_id>/sessions/<session_id>")
+@subject_session_bp.patch("/subjects/<subject_id>/sessions/<session_id>")
+@permission_required("course.manage")
+def update_subject_session(subject_id: str, session_id: str):
+    """
+    API cập nhật thông tin buổi học (SCRUM-129 - Activity A4 / SCRUM-175).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Cập nhật topic, objective
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+
+    try:
+        updated = subject_session_service.update_subject_session_service(
+            subject_id=subject_id,
+            session_id=session_id,
+            payload=payload,
+        )
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật buổi học thành công.",
+            "data": updated,
+        }), 200
+
+    except SubjectSessionServiceError as exc:
+        return jsonify({
+            "code": exc.code,
+            "message": exc.message,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            },
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when updating subject session: %s", exc)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật buổi học.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi cập nhật buổi học.",
+            },
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when updating subject session: %s", exc)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+@subject_session_bp.delete("/v1/subjects/<subject_id>/sessions/<session_id>")
+@subject_session_bp.delete("/subjects/<subject_id>/sessions/<session_id>")
+@permission_required("course.manage")
+def delete_subject_session(subject_id: str, session_id: str):
+    """
+    API xóa một buổi học của môn học (SCRUM-129 - Activity A4 / SCRUM-175).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Xóa buổi học và chuẩn hóa lại session_number 1..N
+    """
+    try:
+        result = subject_session_service.delete_subject_session_service(
+            subject_id=subject_id,
+            session_id=session_id,
+        )
+        return jsonify({
+            "status": "success",
+            "message": result["message"],
+            "data": result,
+        }), 200
+
+    except SubjectSessionServiceError as exc:
+        return jsonify({
+            "code": exc.code,
+            "message": exc.message,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            },
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when deleting subject session: %s", exc)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi xóa buổi học.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi xóa buổi học.",
+            },
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when deleting subject session: %s", exc)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
