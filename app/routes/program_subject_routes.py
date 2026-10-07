@@ -67,3 +67,102 @@ def get_program_structure(program_id: str):
                 "message": "Lỗi hệ thống máy chủ nội bộ",
             }
         }), 500
+
+
+@program_subject_bp.post("/v1/training-programs/<program_id>/subjects")
+@program_subject_bp.post("/training-programs/<program_id>/subjects")
+@permission_required("course.manage")
+def add_subject_to_program(program_id: str):
+    """
+    API gắn môn học vào chương trình đào tạo (SCRUM-124 - Activity A3).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Body JSON: subject_id (bắt buộc), semester (tùy chọn), is_mandatory (tùy chọn), order_index (tùy chọn)
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "error": {
+                "code": "INVALID_PARAMS",
+                "message": "Dữ liệu JSON không hợp lệ hoặc bị thiếu",
+            }
+        }), 400
+
+    try:
+        result = program_subject_service.add_subject_to_program_service(program_id, body)
+        return jsonify(result), 201
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when adding subject to program: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi gắn môn học vào chương trình",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when adding subject to program: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
+
+@program_subject_bp.patch("/v1/training-programs/<program_id>/subjects/<program_subject_id>")
+@program_subject_bp.patch("/training-programs/<program_id>/subjects/<program_subject_id>")
+@permission_required("course.manage")
+def update_program_subject(program_id: str, program_subject_id: str):
+    """
+    API cập nhật metadata của môn học trong chương trình đào tạo (SCRUM-124 - Activity A3).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Body JSON: semester, is_mandatory, order_index
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "error": {
+                "code": "INVALID_PARAMS",
+                "message": "Dữ liệu JSON không hợp lệ hoặc bị thiếu",
+            }
+        }), 400
+
+    try:
+        result = program_subject_service.update_program_subject_service(program_id, program_subject_id, body)
+        return jsonify(result), 200
+
+    except ProgramSubjectServiceError as exc:
+        return jsonify({
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            }
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when updating program subject: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi cập nhật môn học trong chương trình",
+            }
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when updating program subject: %s", exc)
+        return jsonify({
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Lỗi hệ thống máy chủ nội bộ",
+            }
+        }), 500
+
