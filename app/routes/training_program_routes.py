@@ -1,10 +1,13 @@
 """
-Các endpoint quản lý chương trình đào tạo (SCRUM-122 - Activity A2).
-Bảo vệ bằng RBAC decorator @permission_required('course.view').
+Các endpoint quản lý chương trình đào tạo (SCRUM-122).
+Bảo vệ bằng RBAC decorator @permission_required:
+- 'course.view' cho các API đọc (Activity A2)
+- 'course.manage' cho API tạo mới (Activity A3)
 
 Endpoints:
-- GET /api/v1/training-programs       : Lấy danh sách chương trình đào tạo (hỗ trợ phân trang, lọc, tìm kiếm)
-- GET /api/v1/training-programs/<id>  : Lấy chi tiết một chương trình đào tạo
+- GET  /api/v1/training-programs       : Lấy danh sách chương trình đào tạo (hỗ trợ phân trang, lọc, tìm kiếm)
+- GET  /api/v1/training-programs/<id>  : Lấy chi tiết một chương trình đào tạo
+- POST /api/v1/training-programs       : Tạo mới một chương trình đào tạo (yêu cầu quyền course.manage)
 """
 
 import logging
@@ -73,6 +76,7 @@ def get_training_program_detail(program_id: str):
     """
     API xem chi tiết một chương trình đào tạo theo ID (SCRUM-122 - Activity A2).
     - Yêu cầu xác thực đăng nhập và quyền 'course.view'
+    - Trả về 400 nếu ID sai định dạng UUID
     - Trả về 404 nếu không tìm thấy chương trình
     """
     try:
@@ -94,6 +98,54 @@ def get_training_program_detail(program_id: str):
         }), 500
     except Exception as err:
         logger.exception("Lỗi không mong muốn khi đọc chi tiết chương trình đào tạo: %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+@training_program_bp.post("/v1/training-programs")
+@training_program_bp.post("/training-programs")
+@permission_required("course.manage")
+def create_training_program():
+    """
+    API tạo mới chương trình đào tạo (SCRUM-122 - Activity A3).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Request body: JSON chứa code, name, description, duration_semesters, status
+    - Trả về 201 Created khi thành công kèm thông tin chương trình
+    - Trả về 400 nếu dữ liệu không hợp lệ
+    - Trả về 409 nếu trùng mã chương trình
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    try:
+        created_program = training_program_service.create_training_program_service(data)
+        response = jsonify({
+            "status": "success",
+            "message": "Tạo chương trình đào tạo thành công.",
+            "data": created_program,
+        })
+        response.status_code = 201
+        response.headers["Location"] = f"/api/v1/training-programs/{created_program['id']}"
+        return response
+    except TrainingProgramServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tạo chương trình đào tạo: %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi tạo chương trình đào tạo.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi tạo chương trình đào tạo: %s", err)
         return jsonify({
             "code": "INTERNAL_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",

@@ -292,8 +292,9 @@ class Scrum122ProgramReadApiUnitTests(unittest.TestCase):
         mock_get_session.return_value = self.authorized_session
         mock_has_perm.return_value = True
 
+        prog_id = str(uuid.uuid4())
         mock_get_by_id.return_value = TrainingProgram(
-            id="prog-uuid-detail",
+            id=prog_id,
             code="AI-ICTU",
             name="Trí tuệ nhân tạo ICTU",
             description="Chương trình đào tạo AI chuyên sâu",
@@ -303,13 +304,13 @@ class Scrum122ProgramReadApiUnitTests(unittest.TestCase):
             updated_at=self.now,
         )
 
-        res = self.client.get("/api/v1/training-programs/prog-uuid-detail", headers=self.auth_headers)
+        res = self.client.get(f"/api/v1/training-programs/{prog_id}", headers=self.auth_headers)
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data.get("status"), "success")
 
         item = data.get("data", {})
-        self.assertEqual(item["id"], "prog-uuid-detail")
+        self.assertEqual(item["id"], prog_id)
         self.assertEqual(item["code"], "AI-ICTU")
         self.assertEqual(item["name"], "Trí tuệ nhân tạo ICTU")
         self.assertEqual(item["description"], "Chương trình đào tạo AI chuyên sâu")
@@ -328,7 +329,8 @@ class Scrum122ProgramReadApiUnitTests(unittest.TestCase):
         mock_has_perm.return_value = True
         mock_get_by_id.return_value = None
 
-        res = self.client.get("/api/v1/training-programs/non-existent-id", headers=self.auth_headers)
+        valid_but_non_existent_id = str(uuid.uuid4())
+        res = self.client.get(f"/api/v1/training-programs/{valid_but_non_existent_id}", headers=self.auth_headers)
         self.assertEqual(res.status_code, 404)
         data = res.get_json()
         self.assertEqual(data.get("code"), "PROGRAM_NOT_FOUND")
@@ -339,10 +341,15 @@ class Scrum122ProgramReadApiUnitTests(unittest.TestCase):
         mock_get_session.return_value = self.authorized_session
         mock_has_perm.return_value = True
 
-        res = self.client.get("/api/v1/training-programs/%20", headers=self.auth_headers)
-        self.assertEqual(res.status_code, 400)
-        data = res.get_json()
-        self.assertEqual(data.get("code"), "INVALID_PARAMS")
+        # ID chỉ chứa khoảng trắng
+        res_ws = self.client.get("/api/v1/training-programs/%20", headers=self.auth_headers)
+        self.assertEqual(res_ws.status_code, 400)
+        self.assertEqual(res_ws.get_json().get("code"), "INVALID_PARAMS")
+
+        # ID sai định dạng (không phải UUID v4 36 ký tự)
+        res_malformed = self.client.get("/api/v1/training-programs/non-existent-id", headers=self.auth_headers)
+        self.assertEqual(res_malformed.status_code, 400)
+        self.assertEqual(res_malformed.get_json().get("code"), "INVALID_PARAMS")
 
     # =========================================================================
     # 4. ERROR HANDLING (500 DATABASE ERROR)
@@ -374,7 +381,8 @@ class Scrum122ProgramReadApiUnitTests(unittest.TestCase):
         mock_has_perm.return_value = True
         mock_get_by_id.side_effect = MySQLError("Disk read error")
 
-        res = self.client.get("/api/v1/training-programs/prog-123", headers=self.auth_headers)
+        valid_id = str(uuid.uuid4())
+        res = self.client.get(f"/api/v1/training-programs/{valid_id}", headers=self.auth_headers)
         self.assertEqual(res.status_code, 500)
         data = res.get_json()
         self.assertEqual(data.get("code"), "DATABASE_ERROR")
