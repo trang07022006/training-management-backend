@@ -103,6 +103,7 @@ def get_subject_sessions_service(subject_id: str) -> dict:
             "id": subject.id,
             "code": subject.code,
             "name": subject.name,
+            "status": subject.status,
             "total_sessions": subject.total_sessions,
         },
         "items": [sess.to_dict() for sess in sessions],
