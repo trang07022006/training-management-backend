@@ -510,8 +510,10 @@ def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[st
 def get_assignable_users_service() -> list[dict[str, Any]]:
     """
     Lấy danh sách người dùng có thể nhận phân công Lead (SCRUM-127 - Activity A4).
+    Đảm bảo 100% users trả về có UUID hợp lệ để phân công không bị lỗi INVALID_PARAMS.
     """
-    return lead_repository.get_assignable_lead_users()
+    users = lead_repository.get_assignable_lead_users()
+    return [u for u in users if is_valid_uuid(str(u.get("id", "")))]
 
 
 

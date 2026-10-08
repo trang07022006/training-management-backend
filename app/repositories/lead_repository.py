@@ -348,10 +348,21 @@ def assign_lead(
     return get_lead_by_id(lead_id)
 
 
+def _is_valid_user_uuid(val: str) -> bool:
+    if not isinstance(val, str) or len(val.strip()) != 36:
+        return False
+    try:
+        parsed = uuid.UUID(val.strip())
+        return str(parsed) == val.strip().lower()
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def get_assignable_lead_users() -> list[dict]:
     """
     Lấy danh sách người dùng có thể được phân công phụ trách Lead (SCRUM-127 - Activity A4).
-    Chỉ lấy người dùng có trạng thái 'active' và vai trò 'admin' hoặc 'trainer'.
+    Chỉ lấy người dùng có trạng thái 'active', vai trò 'admin' hoặc 'trainer',
+    và có UUID hợp lệ (loại trừ các tài khoản demo không thể phân công).
     Chỉ trả về các thông tin an toàn: id, name, email, role.
     """
     sql = """
@@ -372,6 +383,7 @@ def get_assignable_lead_users() -> list[dict]:
             "role": str(r["role"] or ""),
         }
         for r in rows
+        if _is_valid_user_uuid(str(r["id"]))
     ]
 
 

@@ -455,3 +455,25 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
             self.assertNotIn("password_hash", u)
             self.assertNotIn("date_of_birth", u)
             self.assertNotIn("address", u)
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_get_assignable_users_excludes_demo_and_non_uuid_accounts(
+        self, mock_get_session, mock_has_perm
+    ):
+        """GET /api/v1/leads/assignable-users phải loại trừ các tài khoản demo và không có UUID hợp lệ."""
+        mock_get_session.return_value = self.authorized_session
+        mock_has_perm.return_value = True
+
+        res = self.client.get(
+            "/api/v1/leads/assignable-users",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        ids = [u["id"] for u in body["data"]]
+        self.assertNotIn("demo-user-trainer", ids)
+        self.assertNotIn("demo-user-admin", ids)
+        for u in body["data"]:
+            self.assertEqual(len(u["id"]), 36)
+
