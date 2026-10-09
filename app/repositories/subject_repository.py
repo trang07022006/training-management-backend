@@ -342,3 +342,104 @@ def is_subject_in_use(subject_id: str) -> bool:
                 if cursor.fetchone() is not None:
                     return True
     return False
+
+
+def get_subject_usage_info(subject_id: str) -> dict | None:
+    """
+    Xác định chi tiết lý do môn học đang được sử dụng ở các bảng liên kết thực tế.
+    Phân loại theo các trường hợp:
+    - CLASS_EXISTS: Đã có lớp học phát sinh (classes, course_classes, class_sections, subject_classes).
+    - PREREQUISITE_EXISTS: Đang được dùng làm điều kiện tiên quyết trong program_subject_prerequisites.
+    - PROGRAM_ASSOCIATION: Đang được sử dụng trong chương trình đào tạo (program_subjects).
+    - SESSION_EXISTS: Đang có các buổi học trong môn học (subject_sessions).
+    """
+    with _database_cursor() as cursor:
+        # 1. Kiểm tra lớp học
+        class_tables = ["classes", "course_classes", "class_sections", "subject_classes"]
+        for table_name in class_tables:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                """,
+                (table_name,),
+            )
+            row = cursor.fetchone()
+            if row and row.get("cnt", 0) > 0:
+                cursor.execute(
+                    f"SELECT 1 FROM {table_name} WHERE subject_id = %s LIMIT 1",
+                    (subject_id,),
+                )
+                if cursor.fetchone() is not None:
+                    return {"reason": "CLASS_EXISTS", "table": table_name}
+
+        # 2. Kiểm tra môn tiên quyết trong chương trình đào tạo
+        cursor.execute(
+            """
+            SELECT COUNT(*) as cnt
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('program_subject_prerequisites', 'program_subjects')
+            """,
+        )
+        row = cursor.fetchone()
+        if row and row.get("cnt", 0) == 2:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM program_subject_prerequisites psp
+                JOIN program_subjects ps ON psp.prerequisite_program_subject_id = ps.id
+                WHERE ps.subject_id = %s
+                """,
+                (subject_id,),
+            )
+            prereq_row = cursor.fetchone()
+            if prereq_row and prereq_row.get("cnt", 0) > 0:
+                return {"reason": "PREREQUISITE_EXISTS", "prerequisite_count": prereq_row["cnt"]}
+
+        # 3. Kiểm tra môn học trong chương trình đào tạo (program_subjects)
+        cursor.execute(
+            """
+            SELECT COUNT(*) as cnt
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'program_subjects'
+            """,
+        )
+        row = cursor.fetchone()
+        if row and row.get("cnt", 0) > 0:
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT program_id) as cnt
+                FROM program_subjects
+                WHERE subject_id = %s
+                """,
+                (subject_id,),
+            )
+            prog_row = cursor.fetchone()
+            if prog_row and prog_row.get("cnt", 0) > 0:
+                return {"reason": "PROGRAM_ASSOCIATION", "program_count": prog_row["cnt"]}
+
+        # 4. Kiểm tra buổi học (subject_sessions)
+        cursor.execute(
+            """
+            SELECT COUNT(*) as cnt
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subject_sessions'
+            """,
+        )
+        row = cursor.fetchone()
+        if row and row.get("cnt", 0) > 0:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as cnt
+                FROM subject_sessions
+                WHERE subject_id = %s
+                """,
+                (subject_id,),
+            )
+            sess_row = cursor.fetchone()
+            if sess_row and sess_row.get("cnt", 0) > 0:
+                return {"reason": "SESSION_EXISTS", "session_count": sess_row["cnt"]}
+
+    return None
+

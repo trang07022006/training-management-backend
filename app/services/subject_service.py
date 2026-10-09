@@ -39,7 +39,7 @@ class SubjectServiceError(Exception):
 class SubjectNotFoundError(SubjectServiceError):
     """Ngoại lệ khi không tìm thấy môn học (404)."""
 
-    def __init__(self, message: str = "Không tìm thấy môn học."):
+    def __init__(self, message: str = "Không tìm thấy môn học. Dữ liệu có thể đã được thay đổi hoặc xóa."):
         super().__init__(code="SUBJECT_NOT_FOUND", message=message, status_code=404)
 
 
@@ -53,7 +53,7 @@ class SubjectValidationError(SubjectServiceError):
 class DuplicateSubjectCodeError(SubjectServiceError):
     """Ngoại lệ khi mã môn học bị trùng lặp (409)."""
 
-    def __init__(self, message: str = "Mã môn học đã tồn tại trong hệ thống."):
+    def __init__(self, message: str = "Mã môn học này đã tồn tại. Vui lòng sử dụng mã khác."):
         super().__init__(code="DUPLICATE_CODE", message=message, status_code=409)
 
 
@@ -66,8 +66,12 @@ class SubjectInUseError(SubjectServiceError):
             "Không thể xóa môn học vì đang có dữ liệu liên quan. "
             "Hãy chuyển môn học sang trạng thái Đã lưu trữ nếu không còn sử dụng."
         ),
+        reason: str | None = None,
+        details: dict | None = None,
     ):
         super().__init__(code="SUBJECT_IN_USE", message=message, status_code=409)
+        self.reason = reason
+        self.details = details or {}
 
 
 class TotalSessionsInUseError(SubjectServiceError):
@@ -286,12 +290,12 @@ def validate_subject_total_sessions(raw_sessions: Any) -> int | None:
         return None
     if isinstance(raw_sessions, bool) or not isinstance(raw_sessions, int):
         raise SubjectValidationError(
-            "Tổng số tiết/buổi học (total_sessions) phải là số nguyên không âm.",
+            "Tổng số buổi phải là số hợp lệ.",
             code="INVALID_PARAMS",
         )
     if raw_sessions < 0 or raw_sessions > 65535:
         raise SubjectValidationError(
-            "Tổng số tiết/buổi học (total_sessions) phải nằm trong khoảng từ 0 đến 65535.",
+            "Tổng số buổi phải là số hợp lệ.",
             code="INVALID_PARAMS",
         )
     return raw_sessions
@@ -313,7 +317,7 @@ def validate_subject_weight(raw_weight: Any, required: bool = False) -> float | 
 
     if isinstance(raw_weight, bool):
         raise SubjectValidationError(
-            "Trọng số môn học phải là số hợp lệ.",
+            "Trọng số phải là giá trị số hợp lệ.",
             code="INVALID_PARAMS",
         )
 
@@ -324,7 +328,7 @@ def validate_subject_weight(raw_weight: Any, required: bool = False) -> float | 
         return round(val, 2)
     except (ValueError, TypeError):
         raise SubjectValidationError(
-            "Trọng số môn học phải là số hợp lệ.",
+            "Trọng số phải là giá trị số hợp lệ.",
             code="INVALID_PARAMS",
         )
 
@@ -654,7 +658,7 @@ def delete_subject_service(subject_id: str) -> dict:
 
     # 1. Kiểm tra ràng buộc nghiệp vụ: môn học đang được sử dụng
     if subject_repository.is_subject_in_use(cleaned_id):
-        raise SubjectInUseError()
+        _raise_subject_in_use_with_reason(cleaned_id)
 
     # 2. Xóa môn học và xử lý Foreign Key IntegrityError phòng ngừa race condition
     try:
@@ -664,15 +668,73 @@ def delete_subject_service(subject_id: str) -> dict:
     except IntegrityError as err:
         err_msg = str(err).lower()
         if getattr(err, "errno", None) in (1451, 1217) or "foreign key" in err_msg or "constraint" in err_msg:
-            raise SubjectInUseError()
+            _raise_subject_in_use_with_reason(cleaned_id)
         raise
     except Exception as err:
         err_msg = str(err).lower()
         if "foreign key" in err_msg or "1451" in err_msg or "1217" in err_msg:
-            raise SubjectInUseError()
+            _raise_subject_in_use_with_reason(cleaned_id)
         raise
 
     return {"id": cleaned_id}
+
+
+def _raise_subject_in_use_with_reason(subject_id: str) -> None:
+    """Xác định chi tiết lý do phụ thuộc và ném ngoại lệ SubjectInUseError với thông báo cụ thể."""
+    try:
+        usage_info = subject_repository.get_subject_usage_info(subject_id)
+        if usage_info:
+            reason = usage_info.get("reason")
+            if reason == "CLASS_EXISTS":
+                raise SubjectInUseError(
+                    message=(
+                        "Không thể xóa môn học vì môn đã có lớp học. "
+                        "Để bảo toàn dữ liệu đào tạo, môn học đã phát sinh lớp học không được phép xóa. "
+                        "Hãy chuyển môn học sang trạng thái Đã lưu trữ nếu không còn sử dụng."
+                    ),
+                    reason="CLASS_EXISTS",
+                    details=usage_info,
+                )
+            elif reason == "PREREQUISITE_EXISTS":
+                raise SubjectInUseError(
+                    message=(
+                        "Không thể xóa môn học vì môn đang được sử dụng làm môn tiên quyết. "
+                        "Hãy gỡ các quan hệ tiên quyết liên quan trước khi xóa."
+                    ),
+                    reason="PREREQUISITE_EXISTS",
+                    details=usage_info,
+                )
+            elif reason == "PROGRAM_ASSOCIATION":
+                prog_count = usage_info.get("program_count", 0)
+                if prog_count > 0:
+                    msg = (
+                        f"Không thể xóa môn học vì môn đang được sử dụng trong {prog_count} chương trình đào tạo. "
+                        "Hãy gỡ môn khỏi các chương trình liên quan trước khi xóa."
+                    )
+                else:
+                    msg = (
+                        "Không thể xóa môn học vì môn đang được sử dụng trong chương trình đào tạo. "
+                        "Hãy gỡ môn khỏi các chương trình liên quan trước khi xóa."
+                    )
+                raise SubjectInUseError(
+                    message=msg,
+                    reason="PROGRAM_ASSOCIATION",
+                    details=usage_info,
+                )
+            elif reason == "SESSION_EXISTS":
+                raise SubjectInUseError(
+                    message=(
+                        "Không thể xóa môn học vì môn vẫn còn các buổi học. "
+                        "Hãy xử lý các buổi học liên quan trước khi xóa."
+                    ),
+                    reason="SESSION_EXISTS",
+                    details=usage_info,
+                )
+    except SubjectInUseError:
+        raise
+    except Exception:
+        pass
+    raise SubjectInUseError()
 
 
 

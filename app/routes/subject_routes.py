@@ -258,10 +258,15 @@ def delete_subject(subject_id: str):
             "data": result,
         }), 200
     except SubjectServiceError as err:
-        return jsonify({
+        err_body = {
             "code": err.code,
             "message": err.message,
-        }), err.status_code
+        }
+        if getattr(err, "reason", None):
+            err_body["reason"] = err.reason
+        if getattr(err, "details", None):
+            err_body["details"] = err.details
+        return jsonify(err_body), err.status_code
     except MySQLError as err:
         logger.error("Lỗi cơ sở dữ liệu khi xóa môn học: %s", err)
         return jsonify({
