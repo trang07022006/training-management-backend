@@ -29,6 +29,8 @@ class Subject:
     credits: int
     description: str | None = None
     total_sessions: int | None = None
+    weight: float | None = None
+    learning_outcomes: str | None = None
     status: str = SUBJECT_STATUS_DRAFT
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -42,6 +44,8 @@ class Subject:
             "credits": self.credits,
             "description": self.description,
             "total_sessions": self.total_sessions,
+            "weight": self.weight,
+            "learning_outcomes": self.learning_outcomes,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

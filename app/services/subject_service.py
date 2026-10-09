@@ -297,6 +297,52 @@ def validate_subject_total_sessions(raw_sessions: Any) -> int | None:
     return raw_sessions
 
 
+def validate_subject_weight(raw_weight: Any, required: bool = False) -> float | None:
+    """
+    Kiểm tra và chuẩn hóa trọng số môn học (weight).
+    Jira SCRUM-123 chưa quy định range/đơn vị của trọng số (hệ số hay phần trăm hay min/max).
+    Không tự ý áp đặt ràng buộc khoảng giá trị (range), chỉ kiểm tra đúng kiểu dữ liệu số hợp lệ.
+    """
+    if raw_weight is None or raw_weight == "":
+        if required:
+            raise SubjectValidationError(
+                "Trọng số môn học là bắt buộc.",
+                code="WEIGHT_REQUIRED",
+            )
+        return None
+
+    if isinstance(raw_weight, bool):
+        raise SubjectValidationError(
+            "Trọng số môn học phải là số hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+
+    try:
+        val = float(raw_weight)
+        if math.isnan(val) or math.isinf(val):
+            raise ValueError()
+        return round(val, 2)
+    except (ValueError, TypeError):
+        raise SubjectValidationError(
+            "Trọng số môn học phải là số hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+
+
+def validate_subject_learning_outcomes(raw_outcomes: Any) -> str | None:
+    """Kiểm tra và chuẩn hóa mô tả chuẩn đầu ra (learning_outcomes)."""
+    if raw_outcomes is None:
+        return None
+    if isinstance(raw_outcomes, bool) or not isinstance(raw_outcomes, str):
+        raise SubjectValidationError(
+            "Mô tả chuẩn đầu ra phải là chuỗi ký tự.",
+            code="INVALID_PARAMS",
+        )
+    cleaned = raw_outcomes.strip()
+    return cleaned if cleaned else None
+
+
+
 def validate_subject_status(raw_status: Any, default: str = SUBJECT_STATUS_DRAFT) -> str:
     """Kiểm tra và chuẩn hóa trạng thái môn học (status)."""
     if raw_status is None:
@@ -342,6 +388,8 @@ def create_subject_service(data: dict) -> dict:
     cleaned_desc = validate_subject_description(data.get("description"))
     cleaned_credits = validate_subject_credits(data.get("credits"))
     cleaned_sessions = validate_subject_total_sessions(data.get("total_sessions"))
+    cleaned_weight = validate_subject_weight(data.get("weight"))
+    cleaned_outcomes = validate_subject_learning_outcomes(data.get("learning_outcomes"))
     cleaned_status = validate_subject_status(data.get("status"), default=SUBJECT_STATUS_DRAFT)
 
     # 1. Kiểm tra trùng mã môn học ở tầng service
@@ -359,6 +407,8 @@ def create_subject_service(data: dict) -> dict:
         credits=cleaned_credits,
         description=cleaned_desc,
         total_sessions=cleaned_sessions,
+        weight=cleaned_weight,
+        learning_outcomes=cleaned_outcomes,
         status=cleaned_status,
         created_at=now,
         updated_at=now,
@@ -437,6 +487,8 @@ def update_subject_service(subject_id: str, data: dict) -> dict:
     cleaned_credits = validate_subject_credits(data.get("credits"))
     cleaned_desc = validate_subject_description(data.get("description"))
     cleaned_sessions = validate_subject_total_sessions(data.get("total_sessions"))
+    cleaned_weight = validate_subject_weight(data.get("weight"))
+    cleaned_outcomes = validate_subject_learning_outcomes(data.get("learning_outcomes"))
     _check_total_sessions_integrity(cleaned_id, cleaned_sessions)
     cleaned_status = validate_subject_status(data.get("status"), default=SUBJECT_STATUS_DRAFT)
 
@@ -452,6 +504,8 @@ def update_subject_service(subject_id: str, data: dict) -> dict:
         credits=cleaned_credits,
         description=cleaned_desc,
         total_sessions=cleaned_sessions,
+        weight=cleaned_weight,
+        learning_outcomes=cleaned_outcomes,
         status=cleaned_status,
         created_at=existing.created_at,
         updated_at=now,
@@ -535,6 +589,12 @@ def patch_subject_service(subject_id: str, data: dict) -> dict:
         new_total = validate_subject_total_sessions(data["total_sessions"])
         _check_total_sessions_integrity(cleaned_id, new_total)
         fields_to_update["total_sessions"] = new_total
+
+    if "weight" in data:
+        fields_to_update["weight"] = validate_subject_weight(data["weight"])
+
+    if "learning_outcomes" in data:
+        fields_to_update["learning_outcomes"] = validate_subject_learning_outcomes(data["learning_outcomes"])
 
     if "status" in data:
         fields_to_update["status"] = validate_patch_status(data["status"])

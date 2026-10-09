@@ -38,6 +38,7 @@ def _database_cursor(write: bool = False):
 def _row_to_model(row: dict) -> Subject:
     """Chuyển đổi dictionary row từ MySQL thành đối tượng Subject."""
     sessions = row.get("total_sessions")
+    weight_val = row.get("weight")
     return Subject(
         id=str(row["id"]),
         code=str(row["code"]),
@@ -45,6 +46,8 @@ def _row_to_model(row: dict) -> Subject:
         credits=int(row["credits"]),
         description=row.get("description"),
         total_sessions=int(sessions) if sessions is not None else None,
+        weight=float(weight_val) if weight_val is not None else None,
+        learning_outcomes=row.get("learning_outcomes"),
         status=str(row.get("status") or SUBJECT_STATUS_DRAFT),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
@@ -69,9 +72,11 @@ def insert_subject(subject: Subject) -> Subject:
             total_sessions,
             status,
             created_at,
-            updated_at
+            updated_at,
+            weight,
+            learning_outcomes
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     values = (
         subject.id,
@@ -83,6 +88,8 @@ def insert_subject(subject: Subject) -> Subject:
         subject.status,
         _to_mysql_datetime(created_at),
         _to_mysql_datetime(updated_at),
+        subject.weight,
+        subject.learning_outcomes,
     )
 
     with _database_cursor(write=True) as cursor:
@@ -95,6 +102,8 @@ def insert_subject(subject: Subject) -> Subject:
         credits=subject.credits,
         description=subject.description,
         total_sessions=subject.total_sessions,
+        weight=subject.weight,
+        learning_outcomes=subject.learning_outcomes,
         status=subject.status,
         created_at=created_at,
         updated_at=updated_at,
@@ -104,7 +113,7 @@ def insert_subject(subject: Subject) -> Subject:
 def get_subject_by_id(subject_id: str) -> Subject | None:
     """Lấy thông tin môn học theo UUID."""
     sql = """
-        SELECT id, code, name, credits, description, total_sessions, status, created_at, updated_at
+        SELECT id, code, name, credits, description, total_sessions, weight, learning_outcomes, status, created_at, updated_at
         FROM subjects
         WHERE id = %s
         LIMIT 1
@@ -119,7 +128,7 @@ def get_subject_by_id(subject_id: str) -> Subject | None:
 def get_subject_by_code(code: str) -> Subject | None:
     """Lấy thông tin môn học theo mã môn học."""
     sql = """
-        SELECT id, code, name, credits, description, total_sessions, status, created_at, updated_at
+        SELECT id, code, name, credits, description, total_sessions, weight, learning_outcomes, status, created_at, updated_at
         FROM subjects
         WHERE code = %s
         LIMIT 1
@@ -158,7 +167,7 @@ def get_all_subjects(
     Lấy danh sách các môn học, hỗ trợ tìm kiếm theo mã/tên và lọc trạng thái.
     """
     sql = """
-        SELECT id, code, name, credits, description, total_sessions, status, created_at, updated_at
+        SELECT id, code, name, credits, description, total_sessions, weight, learning_outcomes, status, created_at, updated_at
         FROM subjects
         WHERE 1=1
     """
@@ -220,6 +229,8 @@ def update_subject(subject: Subject) -> bool:
             credits = %s,
             description = %s,
             total_sessions = %s,
+            weight = %s,
+            learning_outcomes = %s,
             status = %s,
             updated_at = %s
         WHERE id = %s
@@ -230,6 +241,8 @@ def update_subject(subject: Subject) -> bool:
         subject.credits,
         subject.description,
         subject.total_sessions,
+        subject.weight,
+        subject.learning_outcomes,
         subject.status,
         _to_mysql_datetime(updated_at),
         subject.id,
@@ -246,6 +259,8 @@ ALLOWED_SUBJECT_UPDATE_FIELDS = {
     "description",
     "credits",
     "total_sessions",
+    "weight",
+    "learning_outcomes",
     "status",
 }
 
@@ -300,6 +315,10 @@ def is_subject_in_use(subject_id: str) -> bool:
     Sử dụng danh sách bảng whitelist được định nghĩa nội bộ, không nhận input từ client.
     """
     dependency_specs = [
+        ("classes", "subject_id"),
+        ("course_classes", "subject_id"),
+        ("class_sections", "subject_id"),
+        ("subject_classes", "subject_id"),
         ("program_subjects", "subject_id"),
         ("subject_sessions", "subject_id"),
     ]
