@@ -5,7 +5,7 @@ Làm nền tảng cho SCRUM-125 (Public Consultation) và các story quản lý 
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 LEAD_STATUS_NEW = "new"
@@ -25,6 +25,20 @@ VALID_LEAD_STATUSES = {
 }
 
 LEAD_SOURCE_PUBLIC_FORM = "public_form"
+
+
+def format_datetime_utc_iso(dt: datetime | None) -> str | None:
+    """
+    Chuyển đổi datetime sang chuẩn ISO 8601 UTC có timezone rõ ràng với hậu tố 'Z'.
+    Ví dụ: 2026-10-10T15:27:00Z
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
@@ -66,6 +80,7 @@ class Lead:
     def to_dict(self) -> dict:
         """
         Chuyển đổi thực thể Lead thành dictionary đầy đủ cho tầng nội bộ / quản trị.
+        Các trường thời gian được chuẩn hóa ISO 8601 UTC (hậu tố Z).
         """
         data = {
             "id": self.id,
@@ -77,9 +92,9 @@ class Lead:
             "source": self.source,
             "status": self.status,
             "assigned_to_user_id": self.assigned_to_user_id,
-            "assigned_at": self.assigned_at.isoformat() if self.assigned_at else None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "assigned_at": format_datetime_utc_iso(self.assigned_at),
+            "created_at": format_datetime_utc_iso(self.created_at),
+            "updated_at": format_datetime_utc_iso(self.updated_at),
         }
         if self.interested_program_code is not None:
             data["interested_program_code"] = self.interested_program_code
@@ -94,8 +109,9 @@ class Lead:
     def to_public_dict(self) -> dict:
         """
         Chuyển đổi dữ liệu trả về cho public client (tối thiểu thông tin, bảo mật PII).
+        Các trường thời gian được chuẩn hóa ISO 8601 UTC (hậu tố Z).
         """
         return {
             "id": self.id,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": format_datetime_utc_iso(self.created_at),
         }

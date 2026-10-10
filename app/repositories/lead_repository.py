@@ -44,6 +44,15 @@ def _database_cursor(write: bool = False):
         connection.close()
 
 
+def _ensure_utc_datetime(value: datetime | None) -> datetime | None:
+    """Đảm bảo datetime từ MySQL (lưu theo UTC) luôn có tzinfo là timezone.utc."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _row_to_model(row: dict) -> Lead:
     """Chuyển đổi dictionary row từ MySQL thành đối tượng Lead."""
     return Lead(
@@ -64,9 +73,9 @@ def _row_to_model(row: dict) -> Lead:
             if row.get("assigned_to_user_id") is not None
             else None
         ),
-        assigned_at=row.get("assigned_at"),
-        created_at=row.get("created_at"),
-        updated_at=row.get("updated_at"),
+        assigned_at=_ensure_utc_datetime(row.get("assigned_at")),
+        created_at=_ensure_utc_datetime(row.get("created_at")),
+        updated_at=_ensure_utc_datetime(row.get("updated_at")),
         interested_program_code=row.get("interested_program_code"),
         interested_program_name=row.get("interested_program_name"),
         assigned_to_name=row.get("assigned_to_name"),
@@ -123,9 +132,9 @@ def insert_lead(lead: Lead) -> Lead:
         source=lead.source or LEAD_SOURCE_PUBLIC_FORM,
         status=lead.status or LEAD_STATUS_NEW,
         assigned_to_user_id=lead.assigned_to_user_id,
-        assigned_at=lead.assigned_at,
-        created_at=created_at,
-        updated_at=updated_at,
+        assigned_at=_ensure_utc_datetime(lead.assigned_at),
+        created_at=_ensure_utc_datetime(created_at),
+        updated_at=_ensure_utc_datetime(updated_at),
     )
 
 
@@ -149,6 +158,66 @@ def get_lead_by_id(lead_id: str) -> Lead | None:
     """
     with _database_cursor(write=False) as cursor:
         cursor.execute(sql, (lead_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return _row_to_model(row)
+
+
+def get_recent_lead_by_phone_or_email(
+    phone: str,
+    email: str | None,
+    since: datetime,
+) -> Lead | None:
+    """
+    Tra cứu Lead gần nhất có cùng số điện thoại hoặc email được tạo từ thời điểm `since` (SCRUM-125 Anti-Spam Rate Limit).
+    Sử dụng hoàn toàn thời gian UTC, parameterized query chống SQL injection.
+    """
+    clean_phone = phone.strip()
+    clean_email = email.strip().lower() if email else None
+    since_mysql = _to_mysql_datetime(since)
+
+    if clean_email:
+        sql = """
+            SELECT
+                l.id, l.full_name, l.phone, l.email, l.interested_program_id,
+                l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
+                l.created_at, l.updated_at,
+                tp.code AS interested_program_code,
+                tp.name AS interested_program_name,
+                u.name AS assigned_to_name,
+                u.email AS assigned_to_email
+            FROM leads l
+            LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+            LEFT JOIN users u ON l.assigned_to_user_id = u.id
+            WHERE (l.phone = %s OR l.email = %s)
+              AND l.created_at >= %s
+            ORDER BY l.created_at DESC
+            LIMIT 1
+        """
+        params = (clean_phone, clean_email, since_mysql)
+    else:
+        sql = """
+            SELECT
+                l.id, l.full_name, l.phone, l.email, l.interested_program_id,
+                l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
+                l.created_at, l.updated_at,
+                tp.code AS interested_program_code,
+                tp.name AS interested_program_name,
+                u.name AS assigned_to_name,
+                u.email AS assigned_to_email
+            FROM leads l
+            LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+            LEFT JOIN users u ON l.assigned_to_user_id = u.id
+            WHERE l.phone = %s
+              AND l.created_at >= %s
+            ORDER BY l.created_at DESC
+            LIMIT 1
+        """
+        params = (clean_phone, since_mysql)
+
+    with _database_cursor(write=False) as cursor:
+        cursor.execute(sql, params)
         row = cursor.fetchone()
         if not row:
             return None

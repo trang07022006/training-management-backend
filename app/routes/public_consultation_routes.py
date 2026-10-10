@@ -12,11 +12,24 @@ from flask import Blueprint, jsonify, request
 from mysql.connector import Error as MySQLError
 
 from app.services import lead_service
-from app.services.lead_service import LeadServiceError
+from app.services.lead_service import LeadServiceError, LeadRateLimitError
 
 logger = logging.getLogger(__name__)
 
 public_consultation_bp = Blueprint("public_consultation", __name__, url_prefix="/api")
+
+
+def _get_client_ip() -> str:
+    """Lấy địa chỉ IP của client từ request (hỗ trợ reverse proxy headers X-Forwarded-For)."""
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
+        if parts:
+            return parts[0]
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
+    return request.remote_addr or "127.0.0.1"
 
 
 @public_consultation_bp.post("/v1/public/consultations")
@@ -26,6 +39,7 @@ def submit_public_consultation():
     API gửi yêu cầu tư vấn công khai (SCRUM-125 - Activity A2).
     - Dành cho khách vãng lai, thí sinh, phụ huynh (không cần đăng nhập).
     - Yêu cầu tối thiểu: Họ tên và Số điện thoại.
+    - Chống spam / rate limit theo Phone, Email, IP (429 Too Many Requests).
     - Lưu vào cơ sở dữ liệu với trạng thái 'new' và nguồn 'public_form'.
     """
     body = request.get_json(silent=True)
@@ -40,9 +54,26 @@ def submit_public_consultation():
             },
         }), 400
 
+    client_ip = _get_client_ip()
+
     try:
-        result = lead_service.create_public_consultation_service(body)
+        result = lead_service.create_public_consultation_service(body, client_ip=client_ip)
         return jsonify(result), 201
+
+    except LeadRateLimitError as err:
+        response = jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+            "retry_after_seconds": err.retry_after_seconds,
+        })
+        response.status_code = 429
+        response.headers["Retry-After"] = str(err.retry_after_seconds)
+        return response
 
     except LeadServiceError as err:
         return jsonify({

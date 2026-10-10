@@ -163,6 +163,8 @@ class Scrum126LeadReadApiUnitTests(unittest.TestCase):
         self.assertEqual(data["data"]["total"], 1)
         self.assertEqual(len(data["data"]["items"]), 1)
         self.assertEqual(data["data"]["items"][0]["full_name"], "Nguyễn Văn A")
+        self.assertTrue(data["data"]["items"][0]["created_at"].endswith("Z"))
+        self.assertEqual(data["data"]["items"][0]["created_at"], self.now.strftime("%Y-%m-%dT%H:%M:%SZ"))
 
     @patch("app.utils.rbac_auth.has_permission")
     @patch("app.utils.rbac_auth.get_session_by_id")

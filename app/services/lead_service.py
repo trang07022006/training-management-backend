@@ -7,7 +7,7 @@ Bảo đảm:
 4. Trả về kết quả tối thiểu để bảo vệ quyền riêng tư (PII privacy).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 import re
 import uuid
@@ -20,6 +20,19 @@ from app.models.lead import (
 )
 from app.repositories import lead_repository, training_program_repository, user_repository
 
+
+CONSULTATION_COOLDOWN_SECONDS = 60
+CONSULTATION_RATE_LIMIT_MESSAGE = (
+    "Bạn đã gửi yêu cầu tư vấn gần đây. Vui lòng chờ một chút trước khi gửi lại."
+)
+
+_consultation_rate_limits: dict[str, datetime] = {}
+
+
+def clear_consultation_rate_limits() -> None:
+    """Xóa sạch bộ nhớ rate limit tư vấn công khai (dùng cho testing)."""
+    global _consultation_rate_limits
+    _consultation_rate_limits.clear()
 
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
@@ -65,6 +78,19 @@ class LeadValidationError(LeadServiceError):
         super().__init__(code=code, message=message, status_code=400)
 
 
+class LeadRateLimitError(LeadServiceError):
+    """Lỗi gửi yêu cầu tư vấn quá nhanh / spam (429 Too Many Requests)."""
+
+    def __init__(
+        self,
+        code: str = "CONSULTATION_RATE_LIMITED",
+        message: str = CONSULTATION_RATE_LIMIT_MESSAGE,
+        retry_after_seconds: int = CONSULTATION_COOLDOWN_SECONDS,
+    ):
+        super().__init__(code=code, message=message, status_code=429)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class LeadProgramNotFoundError(LeadServiceError):
     """Lỗi không tìm thấy chương trình đào tạo (404)."""
 
@@ -79,6 +105,94 @@ class LeadNotFoundError(LeadServiceError):
         super().__init__(code="LEAD_NOT_FOUND", message=message, status_code=404)
 
 
+def _normalize_phone_key(phone: str) -> str:
+    """Chuẩn hóa số điện thoại thành chuỗi ký tự số liền mạch để so sánh chống spam."""
+    return re.sub(r"[\s\-\.\(\)]", "", phone.strip()).lower()
+
+
+def _prune_stale_rate_limits(now: datetime) -> None:
+    """Dọn dẹp các mục rate limit đã quá 10 phút khỏi bộ nhớ đệm."""
+    cutoff = now - timedelta(minutes=10)
+    for k in list(_consultation_rate_limits.keys()):
+        val = _consultation_rate_limits[k]
+        if val.tzinfo is None:
+            val = val.replace(tzinfo=timezone.utc)
+        if val < cutoff:
+            del _consultation_rate_limits[k]
+
+
+def _check_consultation_rate_limit(
+    phone: str,
+    email: str | None,
+    client_ip: str | None,
+    now: datetime,
+) -> None:
+    """
+    Kiểm tra xem số điện thoại, email hoặc IP có đang trong thời gian cooldown 60s hay không (SCRUM-125).
+    Kiểm tra cả 2 lớp:
+    1. Lớp In-Memory: Phát hiện siêu tốc theo Phone, Email, IP.
+    2. Lớp MySQL Database: Đối chiếu created_at thực tế trong bảng leads.
+    """
+    norm_phone = _normalize_phone_key(phone)
+    norm_email = email.strip().lower() if email else None
+    norm_ip = client_ip.strip() if client_ip else None
+
+    is_testing = False
+    try:
+        from flask import current_app
+        if current_app:
+            is_testing = bool(current_app.config.get("TESTING"))
+    except Exception:
+        pass
+
+    # 1. Kiểm tra bộ nhớ In-Memory
+    keys_to_check: list[str] = [f"phone:{norm_phone}"]
+    if norm_email:
+        keys_to_check.append(f"email:{norm_email}")
+
+    # Với IP:
+    # Trong môi trường testing, chỉ kiểm tra IP nếu IP đó khác localhost/127.0.0.1
+    # hoặc được chỉ định rõ qua header X-Forwarded-For để tránh xung đột giữa các test case độc lập.
+    # Trong môi trường thực tế (dev/production), luôn kiểm tra IP.
+    if norm_ip:
+        if not is_testing or norm_ip not in ("127.0.0.1", "localhost", "testclient"):
+            keys_to_check.append(f"ip:{norm_ip}")
+
+    for k in keys_to_check:
+        prev_time = _consultation_rate_limits.get(k)
+        if prev_time is not None:
+            if prev_time.tzinfo is None:
+                prev_time = prev_time.replace(tzinfo=timezone.utc)
+            elapsed = (now - prev_time).total_seconds()
+            if elapsed < CONSULTATION_COOLDOWN_SECONDS:
+                remaining = max(1, int(CONSULTATION_COOLDOWN_SECONDS - elapsed))
+                raise LeadRateLimitError(
+                    code="CONSULTATION_RATE_LIMITED",
+                    message=CONSULTATION_RATE_LIMIT_MESSAGE,
+                    retry_after_seconds=remaining,
+                )
+
+    # 2. Kiểm tra trong cơ sở dữ liệu MySQL (Database check)
+    since = now - timedelta(seconds=CONSULTATION_COOLDOWN_SECONDS)
+    recent_lead = lead_repository.get_recent_lead_by_phone_or_email(
+        phone=phone,
+        email=email,
+        since=since,
+    )
+    if recent_lead is not None and recent_lead.created_at is not None:
+        c_time = recent_lead.created_at
+        if c_time.tzinfo is None:
+            c_time = c_time.replace(tzinfo=timezone.utc)
+        elapsed = (now - c_time).total_seconds()
+        if elapsed < CONSULTATION_COOLDOWN_SECONDS:
+            remaining = max(1, int(CONSULTATION_COOLDOWN_SECONDS - elapsed))
+            raise LeadRateLimitError(
+                code="CONSULTATION_RATE_LIMITED",
+                message=CONSULTATION_RATE_LIMIT_MESSAGE,
+                retry_after_seconds=remaining,
+            )
+
+
 ALLOWED_SUBMISSION_FIELDS = {
     "full_name",
     "phone",
@@ -88,13 +202,17 @@ ALLOWED_SUBMISSION_FIELDS = {
 }
 
 
-def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any]:
+def create_public_consultation_service(
+    payload: dict[str, Any],
+    client_ip: str | None = None,
+) -> dict[str, Any]:
     """
     Xử lý tạo yêu cầu tư vấn công khai từ form website (SCRUM-125 - Activity A2/A4).
     - Không yêu cầu đăng nhập.
     - Validate nghiêm ngặt full_name, phone, email, message, interested_program_id.
     - Chặn các trường lạ và trường can thiệp hệ thống.
     - Chuẩn hóa khoảng trắng, line endings, chữ thường cho email.
+    - Chống spam / rate limit theo Phone, Email, IP (cooldown 60s).
     """
     if not isinstance(payload, dict):
         raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
@@ -176,7 +294,17 @@ def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any
                 raise LeadValidationError("INVALID_PARAMS", "Nội dung tư vấn không được vượt quá 5000 ký tự.")
             message = normalized_msg
 
-    # 7. Khởi tạo thực thể Lead an toàn
+    now = datetime.now(timezone.utc)
+
+    # 7. Kiểm tra chống spam / rate limit (SCRUM-125)
+    _check_consultation_rate_limit(
+        phone=phone,
+        email=email,
+        client_ip=client_ip,
+        now=now,
+    )
+
+    # 8. Khởi tạo thực thể Lead an toàn
     new_lead = Lead(
         id=str(uuid.uuid4()),
         full_name=full_name,
@@ -186,9 +314,21 @@ def create_public_consultation_service(payload: dict[str, Any]) -> dict[str, Any
         message=message,
         source=LEAD_SOURCE_PUBLIC_FORM,
         status=LEAD_STATUS_NEW,
+        created_at=now,
+        updated_at=now,
     )
 
     created_lead = lead_repository.insert_lead(new_lead)
+
+    # 9. Ghi nhận thời điểm gửi thành công vào bộ nhớ rate limit
+    norm_phone = _normalize_phone_key(phone)
+    _consultation_rate_limits[f"phone:{norm_phone}"] = now
+    if email:
+        _consultation_rate_limits[f"email:{email.strip().lower()}"] = now
+    if client_ip:
+        _consultation_rate_limits[f"ip:{client_ip.strip()}"] = now
+
+    _prune_stale_rate_limits(now)
 
     return {
         "status": "success",

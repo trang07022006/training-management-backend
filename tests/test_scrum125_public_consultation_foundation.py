@@ -93,7 +93,7 @@ class TestLeadModel:
         assert data["message"] == "Tôi muốn tìm hiểu khóa học"
         assert data["source"] == "public_form"
         assert data["status"] == "new"
-        assert data["created_at"] == now.isoformat()
+        assert data["created_at"] == now.strftime("%Y-%m-%dT%H:%M:%SZ")
         assert data["interested_program_code"] == "CNTT-K21"
         assert data["interested_program_name"] == "Công nghệ thông tin"
 
@@ -110,7 +110,7 @@ class TestLeadModel:
 
         public_data = lead.to_public_dict()
         assert public_data["id"] == "lead-safe-id"
-        assert public_data["created_at"] == now.isoformat()
+        assert public_data["created_at"] == now.strftime("%Y-%m-%dT%H:%M:%SZ")
         assert "phone" not in public_data
         assert "email" not in public_data
         assert "full_name" not in public_data

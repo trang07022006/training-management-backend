@@ -52,7 +52,7 @@ class TestLeadAssignmentModelFoundation:
         )
         data = lead.to_dict()
         assert data["assigned_to_user_id"] == uid
-        assert data["assigned_at"] == now.isoformat()
+        assert data["assigned_at"] == now.strftime("%Y-%m-%dT%H:%M:%SZ")
         assert data["assigned_to_name"] == "Cán bộ Tư vấn"
         assert data["assigned_to_email"] == "tuvan@ictu.edu.vn"
 
