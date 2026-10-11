@@ -52,6 +52,7 @@ def _row_to_user(row: dict) -> User:
         phone=row.get("phone"),
         date_of_birth=row.get("date_of_birth"),
         address=row.get("address"),
+        avatar_path=row.get("avatar_path"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -128,6 +129,7 @@ def list_users(
             phone,
             date_of_birth,
             address,
+            avatar_path,
             created_at,
             updated_at
         FROM users
@@ -166,6 +168,7 @@ def get_user_by_email(email: str) -> User | None:
             phone,
             date_of_birth,
             address,
+            avatar_path,
             created_at,
             updated_at
         FROM users
@@ -215,6 +218,7 @@ def get_user_by_id(user_id: str) -> User | None:
             phone,
             date_of_birth,
             address,
+            avatar_path,
             created_at,
             updated_at
         FROM users
@@ -410,5 +414,55 @@ def update_user_profile(
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, values)
         return cursor.rowcount >= 0
+
+
+def update_user_avatar(user_id: str, avatar_path: str) -> bool:
+    """
+    Cập nhật đường dẫn ảnh đại diện của người dùng (SCRUM-121 - Activity A2).
+    Chỉ UPDATE: avatar_path, updated_at.
+    Tuyệt đối không update email, role, status, mật khẩu hoặc các trường khác.
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    sql = """
+        UPDATE users
+        SET
+            avatar_path = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        avatar_path,
+        _to_mysql_datetime(now),
+        user_id,
+    )
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        return cursor.rowcount >= 0
+
+
+def clear_user_avatar(user_id: str) -> bool:
+    """
+    Xóa đường dẫn ảnh đại diện của người dùng (avatar_path = NULL) (SCRUM-121 - Activity A3).
+    Chỉ UPDATE: avatar_path = NULL, updated_at = %s WHERE id = %s.
+    Tuyệt đối không thay đổi email, role, status, mật khẩu hoặc các trường khác.
+    Sử dụng hoàn toàn parameterized query để chống SQL Injection.
+    """
+    now = datetime.now(timezone.utc)
+    sql = """
+        UPDATE users
+        SET
+            avatar_path = NULL,
+            updated_at = %s
+        WHERE id = %s
+    """
+    values = (
+        _to_mysql_datetime(now),
+        user_id,
+    )
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, values)
+        return cursor.rowcount >= 0
+
 
 
