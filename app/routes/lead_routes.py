@@ -150,6 +150,62 @@ def list_assignable_users():
         }), 500
 
 
+@lead_bp.get("/v1/leads/pipeline")
+@lead_bp.get("/leads/pipeline")
+@permission_required("course.manage")
+def get_lead_pipeline_endpoint():
+    """
+    API xem bảng phễu Lead (Kanban) theo 6 trạng thái chuẩn (SCRUM-213).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Tư vấn tuyển sinh chỉ thấy Lead được phân công cho mình.
+    - Quản lý đào tạo và Admin xem toàn bộ dữ liệu Lead trong pipeline.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        result = lead_service.get_lead_pipeline_service(actor_id=actor_id)
+        return jsonify(result), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tải bảng phễu Lead: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi tải bảng phễu Lead: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
 @lead_bp.get("/v1/leads/<lead_id>")
 @lead_bp.get("/leads/<lead_id>")
 @permission_required("course.manage")
@@ -231,8 +287,14 @@ def update_lead_status_endpoint(lead_id: str):
             },
         }), 400
 
+    actor_id = None
     try:
-        result = lead_service.update_lead_status_service(lead_id, body)
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        result = lead_service.update_lead_status_service(lead_id, body, actor_id=actor_id)
         return jsonify(result), 200
 
     except LeadServiceError as err:
@@ -514,6 +576,64 @@ def get_lead_history_endpoint(lead_id: str):
                 "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
             },
         }), 500
+
+
+@lead_bp.get("/v1/leads/<lead_id>/status-history")
+@lead_bp.get("/leads/<lead_id>/status-history")
+@permission_required("course.manage")
+def get_lead_status_history_endpoint(lead_id: str):
+    """
+    API xem lịch sử thay đổi trạng thái của một Lead (SCRUM-213).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        history = lead_service.get_lead_status_history_service(lead_id, actor_id=actor_id)
+        return jsonify({
+            "status": "success",
+            "data": history,
+        }), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy lịch sử trạng thái Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi lấy lịch sử trạng thái Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
 
 
 
