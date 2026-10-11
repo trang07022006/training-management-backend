@@ -21,3 +21,7 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Uploads (SCRUM-121)
+uploads/avatars/*
+!uploads/avatars/.gitkeep
