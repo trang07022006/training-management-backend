@@ -59,6 +59,23 @@ VALID_REJECTION_REASONS = [
     REJECTION_REASON_OTHER,
 ]
 
+# SCRUM-214: Loại tương tác chăm sóc Lead chuẩn (Gọi, Nhắn, Gặp)
+INTERACTION_TYPE_CALL = "call"
+INTERACTION_TYPE_MESSAGE = "message"
+INTERACTION_TYPE_MEETING = "meeting"
+
+VALID_INTERACTION_TYPES = (
+    INTERACTION_TYPE_CALL,
+    INTERACTION_TYPE_MESSAGE,
+    INTERACTION_TYPE_MEETING,
+)
+
+INTERACTION_TYPE_LABELS = {
+    INTERACTION_TYPE_CALL: "Gọi",
+    INTERACTION_TYPE_MESSAGE: "Nhắn",
+    INTERACTION_TYPE_MEETING: "Gặp",
+}
+
 LEAD_SOURCE_PUBLIC_FORM = "public_form"
 LEAD_SOURCE_DIRECT = "direct"
 LEAD_SOURCE_HOTLINE = "hotline"
@@ -109,6 +126,7 @@ class Lead:
     assigned_to_user_id: str | None = None
     assigned_at: datetime | None = None
     rejection_reason: str | None = None
+    callback_date: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -144,6 +162,7 @@ class Lead:
             "source": self.source,
             "status": self.status,
             "rejection_reason": self.rejection_reason,
+            "callback_date": self.callback_date,
             "assigned_to_user_id": self.assigned_to_user_id,
             "assigned_at": format_datetime_utc_iso(self.assigned_at),
             "created_at": format_datetime_utc_iso(self.created_at),
@@ -166,5 +185,47 @@ class Lead:
         """
         return {
             "id": self.id,
+            "created_at": format_datetime_utc_iso(self.created_at),
+        }
+
+
+@dataclass
+class LeadCareLog:
+    """
+    Thực thể lưu nhật ký tương tác chăm sóc khách hàng (SCRUM-214 - Activity A1).
+    Bao gồm loại tương tác (Gọi, Nhắn, Gặp), nội dung, thời điểm và người thực hiện.
+    """
+
+    id: str
+    lead_id: str
+    interaction_type: str
+    content: str
+    interaction_at: datetime
+    performed_by_user_id: str | None = None
+    performed_by_name: str | None = None
+    created_at: datetime | None = None
+
+    def validate(self) -> None:
+        """Kiểm tra tính hợp lệ của nhật ký chăm sóc."""
+        if self.interaction_type not in VALID_INTERACTION_TYPES:
+            raise ValueError(
+                f"Loại tương tác không hợp lệ: {self.interaction_type}. Chỉ chấp nhận 'call', 'message', hoặc 'meeting'."
+            )
+        if not self.content or not self.content.strip():
+            raise ValueError("Nội dung tương tác không được để trống.")
+
+    def to_dict(self) -> dict:
+        """Chuyển đổi thực thể thành dictionary cho response API."""
+        return {
+            "id": self.id,
+            "lead_id": self.lead_id,
+            "interaction_type": self.interaction_type,
+            "interaction_type_label": INTERACTION_TYPE_LABELS.get(
+                self.interaction_type, self.interaction_type
+            ),
+            "content": self.content,
+            "interaction_at": format_datetime_utc_iso(self.interaction_at),
+            "performed_by_user_id": self.performed_by_user_id,
+            "performed_by_name": self.performed_by_name,
             "created_at": format_datetime_utc_iso(self.created_at),
         }
