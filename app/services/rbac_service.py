@@ -35,6 +35,22 @@ INITIAL_ROLE_PERMISSIONS_MAP = {
     "user": ["session.view"],
 }
 
+# Danh mục định nghĩa các vai trò nghiệp vụ mở rộng (SCRUM-126)
+BUSINESS_ROLES = [
+    Role(id="role-id-consultant", code="consultant", name="Tư vấn tuyển sinh", description="Tư vấn tuyển sinh và quản lý khách hàng tiềm năng"),
+    Role(id="role-id-training-manager", code="training_manager", name="Quản lý đào tạo", description="Quản lý chương trình đào tạo và khách hàng tiềm năng"),
+]
+
+BUSINESS_PERMISSIONS = [
+    Permission(id="perm-id-lead-delete", code="lead.delete", name="Xóa khách hàng tiềm năng", description="Quyền xóa khách hàng tiềm năng trong hệ thống (chỉ dành cho Quản lý đào tạo)"),
+]
+
+BUSINESS_ROLE_PERMISSIONS_MAP = {
+    "training_manager": ["course.view", "course.manage", "session.view", "lead.delete"],
+    "consultant": ["course.view", "course.manage", "session.view"],
+    "admin": ["lead.delete"],
+}
+
 
 def sync_initial_rbac_data() -> dict:
     """
@@ -112,3 +128,52 @@ def user_has_permission(user_id: str, permission_code: str) -> bool:
     """
     permissions = get_user_permissions(user_id)
     return permission_code in permissions
+
+
+def sync_business_rbac_data() -> dict:
+    """
+    Khởi tạo và đồng bộ các vai trò và quyền hạn nghiệp vụ mới (SCRUM-126).
+    Đảm bảo tính idempotent, an toàn khi chạy nhiều lần.
+    """
+    now = datetime.now(timezone.utc)
+    roles_created = 0
+    permissions_created = 0
+    mappings_created = 0
+
+    # 1. Đồng bộ Business Roles
+    for role in BUSINESS_ROLES:
+        existing = role_repository.get_role_by_code(role.code)
+        if not existing:
+            role.created_at = now
+            role.updated_at = now
+            role_repository.insert_role(role)
+            roles_created += 1
+
+    # 2. Đồng bộ Business Permissions
+    for perm in BUSINESS_PERMISSIONS:
+        existing = permission_repository.get_permission_by_code(perm.code)
+        if not existing:
+            perm.created_at = now
+            perm.updated_at = now
+            permission_repository.insert_permission(perm)
+            permissions_created += 1
+
+    # 3. Đồng bộ Mapping Business Role - Permissions
+    for role_code, perm_codes in BUSINESS_ROLE_PERMISSIONS_MAP.items():
+        role = role_repository.get_role_by_code(role_code)
+        if not role:
+            continue
+        existing_perm_codes = set(role_permission_repository.get_permission_codes_by_role_id(role.id))
+        for p_code in perm_codes:
+            if p_code not in existing_perm_codes:
+                perm = permission_repository.get_permission_by_code(p_code)
+                if perm:
+                    role_permission_repository.assign_permission_to_role(role.id, perm.id)
+                    mappings_created += 1
+
+    return {
+        "roles_created": roles_created,
+        "permissions_created": permissions_created,
+        "mappings_created": mappings_created,
+    }
+
