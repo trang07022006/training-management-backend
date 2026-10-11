@@ -495,3 +495,94 @@ def delete_subject_session_service(subject_id: str, session_id: str) -> dict:
         "id": cleaned_session_id,
         "subject_id": cleaned_subject_id,
     }
+
+
+def clone_subject_sessions_service(target_subject_id: str, payload: Any) -> dict:
+    """
+    Nhân bản danh sách buổi học từ môn học khác sang môn học đích (SCRUM-129 - Clone Sessions).
+    - Validate UUID cho target_subject_id và source_subject_id.
+    - Chặn clone từ chính môn học đích (source != target).
+    - Kiểm tra môn đích tồn tại và chưa bị archived.
+    - Kiểm tra môn nguồn tồn tại và có ít nhất 1 buổi học.
+    - Kiểm tra ràng buộc giới hạn tổng số buổi:
+      + Nếu target chưa có buổi nào và số buổi nguồn > total_sessions:
+        raise TotalSessionsExceededError("Không thể nhân bản. Môn học này chỉ được khai báo tối đa {X} buổi.")
+      + Nếu tổng số buổi hiện có + số buổi nguồn > total_sessions:
+        raise TotalSessionsExceededError("Không thể nhân bản vì số buổi sau khi nhân bản sẽ vượt quá giới hạn của môn học.")
+    - Nguyên tắc ALL OR NOTHING (không clone một phần).
+    - Thực hiện lưu trữ trong 1 transaction an toàn, gán session_number liên tiếp.
+    """
+    if not isinstance(target_subject_id, str) or not is_valid_uuid(target_subject_id):
+        raise SubjectSessionValidationError(
+            "Mã định danh môn học không đúng định dạng UUID.",
+            code="INVALID_PARAMS",
+        )
+
+    if not isinstance(payload, dict):
+        raise SubjectSessionValidationError(
+            "Dữ liệu yêu cầu phải là đối tượng JSON.",
+            code="INVALID_PARAMS",
+        )
+
+    source_subject_id = payload.get("source_subject_id") or payload.get("source_id")
+    if not source_subject_id or not isinstance(source_subject_id, str) or not is_valid_uuid(source_subject_id):
+        raise SubjectSessionValidationError(
+            "Mã định danh môn học nguồn không hợp lệ.",
+            code="INVALID_PARAMS",
+        )
+
+    cleaned_target_id = target_subject_id.strip().lower()
+    cleaned_source_id = source_subject_id.strip().lower()
+
+    if cleaned_target_id == cleaned_source_id:
+        raise SubjectSessionValidationError(
+            "Không thể nhân bản từ chính môn học này.",
+            code="INVALID_PARAMS",
+        )
+
+    target_subject = subject_repository.get_subject_by_id(cleaned_target_id)
+    if target_subject is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học đích.")
+
+    if target_subject.status == SUBJECT_STATUS_ARCHIVED:
+        raise SubjectArchivedError("Môn học đã lưu trữ, không thể thay đổi buổi học.")
+
+    source_subject = subject_repository.get_subject_by_id(cleaned_source_id)
+    if source_subject is None:
+        raise SubjectNotFoundError("Không tìm thấy môn học nguồn.")
+
+    source_sessions = subject_session_repository.list_subject_sessions_by_subject(cleaned_source_id)
+    if not source_sessions:
+        raise SubjectSessionValidationError(
+            "Không có buổi học để nhân bản.",
+            code="INVALID_PARAMS",
+        )
+
+    existing_count = subject_session_repository.count_subject_sessions(cleaned_target_id)
+    source_count = len(source_sessions)
+
+    if target_subject.total_sessions is not None:
+        if existing_count == 0 and source_count > target_subject.total_sessions:
+            raise TotalSessionsExceededError(
+                f"Không thể nhân bản. Môn học này chỉ được khai báo tối đa {target_subject.total_sessions} buổi."
+            )
+        if existing_count + source_count > target_subject.total_sessions:
+            raise TotalSessionsExceededError(
+                "Không thể nhân bản vì số buổi sau khi nhân bản sẽ vượt quá giới hạn của môn học."
+            )
+
+    max_num = subject_session_repository.get_max_session_number(cleaned_target_id)
+    start_session_number = max_num + 1
+
+    cloned = subject_session_repository.clone_subject_sessions(
+        target_subject_id=cleaned_target_id,
+        source_sessions=source_sessions,
+        start_session_number=start_session_number,
+    )
+
+    return {
+        "message": f"Đã nhân bản {len(cloned)} buổi học thành công.",
+        "cloned_count": len(cloned),
+        "total_sessions": existing_count + len(cloned),
+        "items": [s.to_dict() for s in cloned],
+    }

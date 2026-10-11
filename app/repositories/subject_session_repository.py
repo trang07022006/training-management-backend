@@ -9,6 +9,7 @@ Repository truy cập dữ liệu cho SubjectSession (Buổi học của môn h�
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 from app.database.connection import get_db_connection
 from app.models.subject_session import SubjectSession
@@ -361,3 +362,63 @@ def bulk_update_session_numbers(
         conn.close()
 
     return list_subject_sessions_by_subject(subject_id)
+
+
+def clone_subject_sessions(
+    target_subject_id: str,
+    source_sessions: list[SubjectSession],
+    start_session_number: int = 1,
+) -> list[SubjectSession]:
+    """
+    Nhân bản danh sách buổi học sang môn học đích (SCRUM-129 - Clone Sessions).
+    - Chạy hoàn toàn trong một transaction duy nhất (Atomic: ALL OR NOTHING).
+    - Tạo mới ID (UUID), gắn subject_id = target_subject_id.
+    - Gán session_number liên tiếp bắt đầu từ start_session_number.
+    - Giữ nguyên topic, objective.
+    - Server gán timestamps created_at, updated_at mới.
+    """
+    now = datetime.now(timezone.utc)
+    cloned_models: list[SubjectSession] = []
+
+    sql = """
+        INSERT INTO subject_sessions (
+            id,
+            subject_id,
+            session_number,
+            topic,
+            objective,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+
+    with _database_cursor(write=True) as cursor:
+        for idx, src in enumerate(source_sessions):
+            new_id = str(uuid.uuid4())
+            new_session_number = start_session_number + idx
+            cursor.execute(
+                sql,
+                (
+                    new_id,
+                    target_subject_id,
+                    new_session_number,
+                    src.topic,
+                    src.objective,
+                    _to_mysql_datetime(now),
+                    _to_mysql_datetime(now),
+                ),
+            )
+            cloned_models.append(
+                SubjectSession(
+                    id=new_id,
+                    subject_id=target_subject_id,
+                    session_number=new_session_number,
+                    topic=src.topic,
+                    objective=src.objective,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    return cloned_models

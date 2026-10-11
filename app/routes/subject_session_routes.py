@@ -349,3 +349,61 @@ def delete_subject_session(subject_id: str, session_id: str):
         }), 500
 
 
+@subject_session_bp.post("/v1/subjects/<subject_id>/sessions/clone")
+@subject_session_bp.post("/subjects/<subject_id>/sessions/clone")
+@permission_required("course.manage")
+def clone_subject_sessions(subject_id: str):
+    """
+    API nhân bản danh sách buổi học từ môn học khác (SCRUM-129 - Clone Sessions).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Chạy trong 1 transaction an toàn (ALL OR NOTHING).
+    """
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+
+    try:
+        result = subject_session_service.clone_subject_sessions_service(
+            target_subject_id=subject_id,
+            payload=payload,
+        )
+        return jsonify({
+            "status": "success",
+            "message": result["message"],
+            "data": result,
+        }), 201
+
+    except SubjectSessionServiceError as exc:
+        return jsonify({
+            "code": exc.code,
+            "message": exc.message,
+            "error": {
+                "code": exc.code,
+                "message": exc.message,
+            },
+        }), exc.status_code
+
+    except MySQLError as exc:
+        logger.exception("MySQL database error when cloning subject sessions: %s", exc)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi nhân bản buổi học.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Lỗi cơ sở dữ liệu khi nhân bản buổi học.",
+            },
+        }), 500
+
+    except Exception as exc:
+        logger.exception("Unexpected error when cloning subject sessions: %s", exc)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Không thể nhân bản danh sách buổi học. Vui lòng thử lại.",
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Không thể nhân bản danh sách buổi học. Vui lòng thử lại.",
+            },
+        }), 500
+
+
+
