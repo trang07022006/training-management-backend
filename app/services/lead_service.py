@@ -376,10 +376,25 @@ def get_public_training_programs_service() -> list[dict[str, Any]]:
     return training_program_repository.get_public_active_training_programs()
 
 
+try:
+    from zoneinfo import ZoneInfo
+    VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+except Exception:
+    VIETNAM_TZ = timezone(timedelta(hours=7))
+
+
 def _parse_iso_date(
     raw_val: Any, param_name: str, end_of_day: bool = False
 ) -> datetime | None:
-    """Chuyển đổi chuỗi ngày ISO thành đối tượng datetime UTC có kiểm tra an toàn."""
+    """
+    Chuyển đổi chuỗi ngày ISO thành đối tượng datetime UTC chuẩn theo múi giờ Việt Nam (Asia/Ho_Chi_Minh).
+    - Chuỗi ngày YYYY-MM-DD được hiểu là ngày lịch theo múi giờ Việt Nam (Asia/Ho_Chi_Minh):
+      + date_from (start of day): 00:00:00.000000 GMT+7 -> chuyển sang UTC.
+      + date_to (end of day): 23:59:59.999999 GMT+7 -> chuyển sang UTC.
+    - Chuỗi ISO-8601:
+      + Nếu không có múi giờ: mặc định hiểu theo Asia/Ho_Chi_Minh rồi chuyển sang UTC.
+      + Nếu đã có múi giờ: chuyển sang UTC.
+    """
     if raw_val is None:
         return None
     if not isinstance(raw_val, str) or not raw_val.strip():
@@ -390,12 +405,14 @@ def _parse_iso_date(
         if len(cleaned) == 10 and re.match(r"^\d{4}-\d{2}-\d{2}$", cleaned):
             d = datetime.strptime(cleaned, "%Y-%m-%d")
             if end_of_day:
-                d = d.replace(hour=23, minute=59, second=59, microsecond=999999)
-            return d.replace(tzinfo=timezone.utc)
+                d = d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=VIETNAM_TZ)
+            else:
+                d = d.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=VIETNAM_TZ)
+            return d.astimezone(timezone.utc)
         dt = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+            dt = dt.replace(tzinfo=VIETNAM_TZ)
+        return dt.astimezone(timezone.utc)
     except (ValueError, TypeError):
         raise LeadValidationError(
             "INVALID_PARAMS",
@@ -508,6 +525,13 @@ def get_leads_service(
         if not isinstance(source, str):
             raise LeadValidationError("INVALID_PARAMS", "Nguồn tiếp nhận phải là chuỗi ký tự.")
         clean_source = source.strip()
+        if clean_source and clean_source not in VALID_LEAD_SOURCES:
+            raise LeadValidationError(
+                "INVALID_PARAMS",
+                f"Nguồn tiếp nhận '{clean_source}' không hợp lệ. Các nguồn hợp lệ: {', '.join(sorted(VALID_LEAD_SOURCES))}.",
+            )
+        if not clean_source:
+            clean_source = None
 
     # Validate date range
     date_from = _parse_iso_date(date_from_raw, "date_from", end_of_day=False)

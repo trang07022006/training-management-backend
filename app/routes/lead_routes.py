@@ -41,8 +41,8 @@ def list_leads():
     interested_program_id = request.args.get("interested_program_id")
     assigned_to_user_id = request.args.get("assigned_to_user_id")
     source = request.args.get("source")
-    date_from = request.args.get("date_from")
-    date_to = request.args.get("date_to")
+    date_from = request.args.get("date_from") or request.args.get("from_date")
+    date_to = request.args.get("date_to") or request.args.get("to_date")
     sort_by = request.args.get("sort_by", default="created_at")
     sort_order = request.args.get("sort_order", default="DESC")
 

@@ -41,7 +41,10 @@ from flask_jwt_extended import JWTManager, create_access_token
 from app.config.jwt_handlers import register_jwt_handlers
 from app.database.connection import get_db_connection
 from app.models.lead import (
+    LEAD_SOURCE_DIRECT,
+    LEAD_SOURCE_HOTLINE,
     LEAD_SOURCE_PUBLIC_FORM,
+    LEAD_SOURCE_SOCIAL,
     LEAD_STATUS_CONTACTED,
     LEAD_STATUS_NEW,
     LEAD_STATUS_QUALIFIED,
@@ -322,6 +325,190 @@ class Scrum128LeadSearchFilterApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.get_json()["code"], "INVALID_PARAMS")
 
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_filter_by_source_valid_and_invalid(self, mock_get_session, mock_has_perm):
+        """TC128-04: Lọc theo nguồn (source) hợp lệ và chặn nguồn không hợp lệ."""
+        mock_get_session.return_value = self.authorized_session
+        mock_has_perm.return_value = True
+
+        lid_direct = self._create_lead(
+            full_name="Nguyễn Nguồn Trực Tiếp",
+            phone="0988111222",
+            source=LEAD_SOURCE_DIRECT,
+        )
+        lid_public = self._create_lead(
+            full_name="Lê Nguồn Website",
+            phone="0988333444",
+            source=LEAD_SOURCE_PUBLIC_FORM,
+        )
+        lid_social = self._create_lead(
+            full_name="Trần Nguồn Mạng Xã Hội",
+            phone="0988555666",
+            source=LEAD_SOURCE_SOCIAL,
+        )
+
+        # 1. Lọc theo source=direct
+        res_direct = self.client.get(
+            f"/api/v1/leads?source={LEAD_SOURCE_DIRECT}",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_direct.status_code, 200)
+        items_direct = res_direct.get_json()["data"]["items"]
+        self.assertTrue(any(i["id"] == lid_direct for i in items_direct))
+        self.assertFalse(any(i["id"] == lid_public for i in items_direct))
+        self.assertFalse(any(i["id"] == lid_social for i in items_direct))
+
+        # 2. Lọc theo source=social
+        res_social = self.client.get(
+            f"/api/v1/leads?source={LEAD_SOURCE_SOCIAL}",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_social.status_code, 200)
+        items_social = res_social.get_json()["data"]["items"]
+        self.assertTrue(any(i["id"] == lid_social for i in items_social))
+        self.assertFalse(any(i["id"] == lid_direct for i in items_social))
+        self.assertFalse(any(i["id"] == lid_public for i in items_social))
+
+        # 3. Lọc theo nguồn không hợp lệ -> 400 INVALID_PARAMS
+        res_invalid = self.client.get(
+            "/api/v1/leads?source=invalid_source_code",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_invalid.status_code, 400)
+        self.assertEqual(res_invalid.get_json()["code"], "INVALID_PARAMS")
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_filter_date_range_timezone_same_day_no_leak(
+        self, mock_get_session, mock_has_perm
+    ):
+        """
+        TC128-06 & TC128-07: Lọc cùng ngày 10/10/2026 -> 10/10/2026 theo múi giờ Việt Nam GMT+7.
+        - Lead A: tạo lúc 10/10/2026 01:27 GMT+7 (09/10/2026 18:27 UTC) -> PHẢI CÓ
+        - Lead B: tạo lúc 10/10/2026 23:45 GMT+7 (10/10/2026 16:45 UTC) -> PHẢI CÓ
+        - Lead C: tạo lúc 11/10/2026 01:27 GMT+7 (10/10/2026 18:27 UTC) -> KHÔNG ĐƯỢC CÓ (Next-day leak test)
+        - Lead D: tạo lúc 09/10/2026 23:30 GMT+7 (09/10/2026 16:30 UTC) -> KHÔNG ĐƯỢC CÓ (Previous-day leak test)
+        """
+        mock_get_session.return_value = self.authorized_session
+        mock_has_perm.return_value = True
+
+        lid_a = self._create_lead(
+            full_name="Lead A Ngày 10 Sáng",
+            phone="0977000001",
+            created_at=datetime(2026, 10, 9, 18, 27, 0, tzinfo=timezone.utc),
+        )
+        lid_b = self._create_lead(
+            full_name="Lead B Ngày 10 Đêm",
+            phone="0977000002",
+            created_at=datetime(2026, 10, 10, 16, 45, 0, tzinfo=timezone.utc),
+        )
+        lid_c = self._create_lead(
+            full_name="Lead C Ngày 11 Rạng Sáng",
+            phone="0977000003",
+            created_at=datetime(2026, 10, 10, 18, 27, 0, tzinfo=timezone.utc),
+        )
+        lid_d = self._create_lead(
+            full_name="Lead D Ngày 09 Đêm",
+            phone="0977000004",
+            created_at=datetime(2026, 10, 9, 16, 30, 0, tzinfo=timezone.utc),
+        )
+
+        res = self.client.get(
+            "/api/v1/leads?date_from=2026-10-10&date_to=2026-10-10",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]["items"]
+
+        self.assertTrue(any(i["id"] == lid_a for i in items), "Lead A (10/10 01:27 GMT+7) phải có")
+        self.assertTrue(any(i["id"] == lid_b for i in items), "Lead B (10/10 23:45 GMT+7) phải có")
+        self.assertFalse(any(i["id"] == lid_c for i in items), "Lead C (11/10 01:27 GMT+7) KHÔNG được xuất hiện!")
+        self.assertFalse(any(i["id"] == lid_d for i in items), "Lead D (09/10 23:30 GMT+7) KHÔNG được xuất hiện!")
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_filter_date_range_cross_day_no_leak(
+        self, mock_get_session, mock_has_perm
+    ):
+        """
+        TC128-06: Lọc khoảng ngày 08/10/2026 -> 10/10/2026 theo múi giờ Việt Nam.
+        - Lead 08/10: PHẢI CÓ
+        - Lead 10/10: PHẢI CÓ
+        - Lead 11/10 (01:27 GMT+7): KHÔNG ĐƯỢC CÓ
+        """
+        mock_get_session.return_value = self.authorized_session
+        mock_has_perm.return_value = True
+
+        lid_08 = self._create_lead(
+            full_name="Lead Ngày 08",
+            phone="0977080808",
+            created_at=datetime(2026, 10, 8, 3, 0, 0, tzinfo=timezone.utc),
+        )
+        lid_10 = self._create_lead(
+            full_name="Lead Ngày 10",
+            phone="0977101010",
+            created_at=datetime(2026, 10, 10, 10, 0, 0, tzinfo=timezone.utc),
+        )
+        lid_11 = self._create_lead(
+            full_name="Lead Ngày 11 Rạng Sáng",
+            phone="0977111111",
+            created_at=datetime(2026, 10, 10, 18, 27, 0, tzinfo=timezone.utc),
+        )
+
+        res = self.client.get(
+            "/api/v1/leads?date_from=2026-10-08&date_to=2026-10-10",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]["items"]
+
+        self.assertTrue(any(i["id"] == lid_08 for i in items))
+        self.assertTrue(any(i["id"] == lid_10 for i in items))
+        self.assertFalse(any(i["id"] == lid_11 for i in items), "Lead ngày 11/10 không được lọt vào filter đến ngày 10/10!")
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_filter_date_single_boundary_and_aliases(
+        self, mock_get_session, mock_has_perm
+    ):
+        """
+        TC128-06: Lọc chỉ có from_date hoặc chỉ có to_date, hỗ trợ alias from_date/to_date.
+        """
+        mock_get_session.return_value = self.authorized_session
+        mock_has_perm.return_value = True
+
+        lid_old = self._create_lead(
+            full_name="Lead Cũ Ngày 09",
+            phone="0977090909",
+            created_at=datetime(2026, 10, 9, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        lid_new = self._create_lead(
+            full_name="Lead Mới Ngày 11",
+            phone="0977110011",
+            created_at=datetime(2026, 10, 10, 18, 30, 0, tzinfo=timezone.utc), # 11/10 01:30 GMT+7
+        )
+
+        # 1. Chỉ có from_date=2026-10-11
+        res_from = self.client.get(
+            "/api/v1/leads?from_date=2026-10-11",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_from.status_code, 200)
+        items_from = res_from.get_json()["data"]["items"]
+        self.assertTrue(any(i["id"] == lid_new for i in items_from))
+        self.assertFalse(any(i["id"] == lid_old for i in items_from))
+
+        # 2. Chỉ có to_date=2026-10-10
+        res_to = self.client.get(
+            "/api/v1/leads?to_date=2026-10-10",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_to.status_code, 200)
+        items_to = res_to.get_json()["data"]["items"]
+        self.assertTrue(any(i["id"] == lid_old for i in items_to))
+        self.assertFalse(any(i["id"] == lid_new for i in items_to))
+
     # =========================================================================
     # 4. SORTING & COMBINED TESTS
     # =========================================================================
@@ -334,30 +521,48 @@ class Scrum128LeadSearchFilterApiTests(unittest.TestCase):
         mock_has_perm.return_value = True
 
         lid = self._create_lead(
-            full_name="Nguyễn Văn Kết Hợp",
+            full_name="Nguyễn Văn Kết Hợp QA-S127",
             phone="0911223399",
             email="kethop@ictu.edu.vn",
             status=LEAD_STATUS_CONTACTED,
+            source=LEAD_SOURCE_DIRECT,
             assigned_to_user_id=self.admin_user_id,
+            created_at=datetime(2026, 10, 11, 4, 30, 0, tzinfo=timezone.utc), # 11/10 11:30 GMT+7
         )
 
-        # Query đúng tất cả điều kiện
+        # Query đúng tất cả điều kiện: search + status + source + assignee + date range
         res = self.client.get(
-            f"/api/v1/leads?search=Kết+Hợp&status=contacted&assigned_to_user_id={self.admin_user_id}",
+            f"/api/v1/leads?search=QA-S127&status=contacted&source=direct&assigned_to_user_id={self.admin_user_id}&date_from=2026-10-11&date_to=2026-10-11",
             headers=self.auth_headers,
         )
         self.assertEqual(res.status_code, 200)
         items = res.get_json()["data"]["items"]
         self.assertTrue(any(item["id"] == lid for item in items))
 
+        # Query sai source không ra kết quả
+        res_source_mismatch = self.client.get(
+            f"/api/v1/leads?search=QA-S127&status=contacted&source=social&assigned_to_user_id={self.admin_user_id}&date_from=2026-10-11&date_to=2026-10-11",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_source_mismatch.status_code, 200)
+        self.assertFalse(any(item["id"] == lid for item in res_source_mismatch.get_json()["data"]["items"]))
+
         # Query sai status không ra kết quả
         res_mismatch = self.client.get(
-            f"/api/v1/leads?search=Kết+Hợp&status=new&assigned_to_user_id={self.admin_user_id}",
+            f"/api/v1/leads?search=QA-S127&status=new&source=direct&assigned_to_user_id={self.admin_user_id}&date_from=2026-10-11&date_to=2026-10-11",
             headers=self.auth_headers,
         )
         self.assertEqual(res_mismatch.status_code, 200)
         items_mismatch = res_mismatch.get_json()["data"]["items"]
         self.assertFalse(any(item["id"] == lid for item in items_mismatch))
+
+        # Query sai date range (lệch sang ngày khác) không ra kết quả
+        res_date_mismatch = self.client.get(
+            f"/api/v1/leads?search=QA-S127&status=contacted&source=direct&assigned_to_user_id={self.admin_user_id}&date_from=2026-10-10&date_to=2026-10-10",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_date_mismatch.status_code, 200)
+        self.assertFalse(any(item["id"] == lid for item in res_date_mismatch.get_json()["data"]["items"]))
 
     @patch("app.utils.rbac_auth.has_permission")
     @patch("app.utils.rbac_auth.get_session_by_id")
