@@ -22,6 +22,7 @@ class User:
     phone: str | None = None
     date_of_birth: date | str | None = None
     address: str | None = None
+    avatar_path: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -38,7 +39,7 @@ class User:
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
-    def to_profile_dict(self) -> dict:
+    def to_profile_dict(self, include_avatar: bool = False) -> dict:
         """Chuyển đổi thông tin hồ sơ cá nhân (SCRUM-120).
         Tuyệt đối không bao gồm password_hash, failed_login_attempts, locked_until hoặc session data."""
         dob_str = None
@@ -48,7 +49,7 @@ class User:
             else:
                 dob_str = str(self.date_of_birth)
 
-        return {
+        data = {
             "id": str(self.id),
             "name": self.name,
             "email": self.email,
@@ -57,6 +58,9 @@ class User:
             "address": self.address,
             "role": self.role,
         }
+        if include_avatar:
+            data["avatar_path"] = self.avatar_path
+        return data
 
     def check_password(self, password: str) -> bool:
         """Xác thực mật khẩu với password_hash của người dùng (không chấp nhận plaintext)."""

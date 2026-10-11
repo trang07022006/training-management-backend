@@ -110,7 +110,7 @@ def get_primary_role_code_by_user_id(user_id: str) -> str | None:
     if not roles:
         return None
     # Thứ tự ưu tiên nếu user có nhiều role
-    priority = ["admin", "trainer", "trainee", "user"]
+    priority = ["admin", "training_manager", "consultant", "trainer", "trainee", "user"]
     for p in priority:
         if p in roles:
             return p
