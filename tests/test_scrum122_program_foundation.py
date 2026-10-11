@@ -118,13 +118,14 @@ class Scrum122ProgramRepositoryMockTests(unittest.TestCase):
         mock_cursor.execute.assert_called_once()
         sql, values = mock_cursor.execute.call_args[0]
         self.assertIn("INSERT INTO training_programs", sql)
-        self.assertIn("%s, %s, %s, %s, %s, %s, %s, %s", sql)
+        self.assertIn("%s, %s, %s, %s, %s, %s, %s, %s, %s", sql)
         self.assertEqual(values[0], self.program_id)
         self.assertEqual(values[1], "AI-2026")
         self.assertEqual(values[2], "Trí tuệ Nhân tạo")
         self.assertEqual(values[3], "Chuyên ngành AI")
         self.assertEqual(values[4], 8)
-        self.assertEqual(values[5], "active")
+        self.assertIsNone(values[5])  # standard_tuition_fee
+        self.assertEqual(values[6], "active")
 
     @patch("app.repositories.training_program_repository._database_cursor")
     def test_06_get_program_by_id(self, mock_cursor_ctx):

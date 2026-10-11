@@ -14,11 +14,42 @@ import uuid
 from typing import Any
 
 from app.models.lead import (
+    LEAD_SOURCE_DIRECT,
     LEAD_SOURCE_PUBLIC_FORM,
     LEAD_STATUS_NEW,
+    VALID_LEAD_SOURCES,
     Lead,
 )
-from app.repositories import lead_repository, training_program_repository, user_repository
+from app.repositories import (
+    lead_repository,
+    training_program_repository,
+    user_repository,
+    user_role_repository,
+)
+
+
+def is_user_consultant(user_id: str) -> bool:
+    """
+    Kiểm tra người dùng có vai trò Tư vấn tuyển sinh ('consultant') hợp lệ (SCRUM-127).
+    Chỉ chấp nhận user đang active và có vai trò consultant.
+    Từ chối nếu user có các vai trò khác: trainer, trainee, admin, training_manager.
+    """
+    if not is_valid_uuid(user_id):
+        return False
+    user = user_repository.get_user_by_id(user_id)
+    if not user or user.status != "active":
+        return False
+
+    roles = set(user_role_repository.get_role_codes_by_user_id(user_id))
+    if not roles and user.role:
+        roles = {user.role}
+
+    disallowed_roles = {"trainer", "trainee", "admin", "training_manager"}
+    if roles.intersection(disallowed_roles):
+        return False
+
+    return "consultant" in roles
+
 
 
 CONSULTATION_COOLDOWN_SECONDS = 60
@@ -384,6 +415,7 @@ def get_leads_service(
     date_to_raw: str | None = None,
     sort_by: str = "created_at",
     sort_order: str = "DESC",
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Lấy danh sách Lead cho người dùng nội bộ có thẩm quyền (SCRUM-126/127/128).
@@ -391,6 +423,7 @@ def get_leads_service(
     - Tìm kiếm: search theo họ tên, điện thoại, email.
     - Bộ lọc: status, interested_program_id, assigned_to_user_id, source, date_from, date_to.
     - Sắp xếp: sort_by whitelist, sort_order ASC/DESC.
+    - Phân quyền dữ liệu (SCRUM-127): Tư vấn viên chỉ thấy Lead được giao cho mình.
     """
     try:
         page = int(page_raw)
@@ -454,6 +487,21 @@ def get_leads_service(
             if not is_valid_uuid(clean_assignee_id):
                 raise LeadValidationError("INVALID_PARAMS", "Mã người phụ trách không hợp lệ (phải là UUID).")
 
+    # Phân quyền dữ liệu tại Backend (SCRUM-127 - Activity A11):
+    # Role Tư vấn tuyển sinh chỉ nhìn thấy Lead được giao cho mình (assignee_id = current_user.id).
+    # Quản lý đào tạo (training_manager) và Quản trị viên (admin) xem toàn bộ Lead.
+    if actor_id:
+        actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_id))
+        actor_user = user_repository.get_user_by_id(actor_id)
+        if actor_user and actor_user.role:
+            actor_roles.add(actor_user.role)
+
+        is_privileged = bool(actor_roles.intersection({"admin", "training_manager"}))
+        is_consultant = "consultant" in actor_roles
+
+        if is_consultant and not is_privileged:
+            clean_assignee_id = actor_id
+
     # Validate source
     clean_source: str | None = None
     if source is not None:
@@ -511,12 +559,12 @@ def get_leads_service(
     }
 
 
-
-def get_lead_by_id_service(lead_id: str) -> dict[str, Any]:
+def get_lead_by_id_service(lead_id: str, actor_id: str | None = None) -> dict[str, Any]:
     """
-    Lấy chi tiết một Lead theo ID (SCRUM-126 - Activity A2).
+    Lấy chi tiết một Lead theo ID (SCRUM-126/SCRUM-127).
     - Kiểm tra định dạng UUID 36 ký tự.
     - Ném LeadNotFoundError (404) nếu không tìm thấy.
+    - Phân quyền: Tư vấn tuyển sinh chỉ xem Lead được phân công cho mình.
     """
     if not is_valid_uuid(lead_id):
         raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
@@ -525,7 +573,25 @@ def get_lead_by_id_service(lead_id: str) -> dict[str, Any]:
     if not lead:
         raise LeadNotFoundError()
 
+    if actor_id:
+        actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_id))
+        actor_user = user_repository.get_user_by_id(actor_id)
+        if actor_user and actor_user.role:
+            actor_roles.add(actor_user.role)
+
+        is_privileged = bool(actor_roles.intersection({"admin", "training_manager"}))
+        is_consultant = "consultant" in actor_roles
+
+        if is_consultant and not is_privileged:
+            if lead.assigned_to_user_id != actor_id:
+                raise LeadServiceError(
+                    "FORBIDDEN",
+                    "Bạn không có quyền truy cập thông tin Lead này.",
+                    status_code=403,
+                )
+
     return lead.to_dict()
+
 
 
 def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -581,7 +647,11 @@ def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[st
     }
 
 
-def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+def assign_lead_service(
+    lead_id: str,
+    payload: dict[str, Any] | None,
+    performed_by_user_id: str | None = None,
+) -> dict[str, Any]:
     """
     Phân công hoặc gỡ phân công Lead (SCRUM-127 - Activity A2/A3).
     - Kiểm tra ID Lead hợp lệ và Lead tồn tại trong cơ sở dữ liệu.
@@ -589,7 +659,10 @@ def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[st
         {"user_id": "<uuid>"} -> phân công nhân sự
         {"user_id": null}     -> gỡ phân công
     - Nếu payload là None (khi gọi từ DELETE endpoint) -> coi như gỡ phân công.
-    - Kiểm tra user_id hợp lệ: phải tồn tại, đang hoạt động (active), và có vai trò phù hợp (admin, trainer).
+    - Validate vai trò: CHỈ chấp nhận user đang active có vai trò Tư vấn tuyển sinh ('consultant').
+    - Từ chối trainer, trainee, admin, user, training_manager với thông báo:
+      "Chỉ có thể phân công Lead cho nhân viên Tư vấn tuyển sinh."
+    - Ghi nhận lịch sử chuyển giao mỗi khi người phụ trách thay đổi.
     """
     if not is_valid_uuid(lead_id):
         raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
@@ -599,6 +672,7 @@ def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[st
         raise LeadNotFoundError()
 
     target_user_id: str | None = None
+    target_user = None
 
     if payload is not None:
         if not isinstance(payload, dict):
@@ -619,16 +693,20 @@ def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[st
             if not is_valid_uuid(target_user_id):
                 raise LeadValidationError("INVALID_PARAMS", "Mã người dùng không hợp lệ.")
 
-            user = user_repository.get_user_by_id(target_user_id)
-            if not user:
+            target_user = user_repository.get_user_by_id(target_user_id)
+            if not target_user:
                 raise LeadServiceError("USER_NOT_FOUND", "Người dùng được phân công không tồn tại.", status_code=404)
 
-            if user.status != "active":
+            if target_user.status != "active":
                 raise LeadValidationError("INACTIVE_USER", "Người dùng không còn hoạt động, không thể nhận phân công.")
 
-            if user.role not in {"admin", "trainer"}:
-                raise LeadValidationError("INVALID_ASSIGNEE", "Chỉ có thể phân công cho Quản trị viên hoặc Giảng viên.")
+            if not is_user_consultant(target_user_id):
+                raise LeadValidationError(
+                    "INVALID_ASSIGNEE",
+                    "Chỉ có thể phân công Lead cho nhân viên Tư vấn tuyển sinh.",
+                )
 
+    old_assignee_id = existing_lead.assigned_to_user_id
     now = datetime.now(timezone.utc)
     updated = lead_repository.assign_lead(
         lead_id=lead_id,
@@ -639,12 +717,162 @@ def assign_lead_service(lead_id: str, payload: dict[str, Any] | None) -> dict[st
     if not updated:
         raise LeadNotFoundError()
 
-    msg = "Phân công Lead thành công." if target_user_id else "Gỡ phân công Lead thành công."
+    # Ghi nhận lịch sử chuyển giao nếu assignee thay đổi (bao gồm A -> B, None -> A, và A -> None)
+    if old_assignee_id != target_user_id:
+        lead_repository.create_lead_assignment_history(
+            lead_id=lead_id,
+            old_assigned_to_user_id=old_assignee_id,
+            new_assigned_to_user_id=target_user_id,
+            performed_by_user_id=performed_by_user_id,
+            created_at=now,
+        )
+
+    assignee_name = target_user.name if target_user else (updated.assigned_to_name or "")
+    msg = f"Đã phân công Lead cho {assignee_name}." if target_user_id else "Gỡ phân công Lead thành công."
     return {
         "status": "success",
         "message": msg,
         "data": updated.to_dict(),
     }
+
+
+def bulk_assign_leads_service(
+    payload: dict[str, Any],
+    performed_by_user_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Phân công hoặc gỡ phân công đồng loạt nhiều Lead (SCRUM-127 - Activity A10).
+    Body: {"lead_ids": ["uuid-1", "uuid-2"], "user_id": "<uuid>" hoặc null}
+    """
+    if not isinstance(payload, dict):
+        raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
+
+    lead_ids_raw = payload.get("lead_ids")
+    if not isinstance(lead_ids_raw, list) or len(lead_ids_raw) == 0:
+        raise LeadValidationError("INVALID_PARAMS", "Danh sách 'lead_ids' phải là mảng không rỗng.")
+
+    if len(lead_ids_raw) > 100:
+        raise LeadValidationError("INVALID_PARAMS", "Không thể phân công quá 100 Lead mỗi lần.")
+
+    lead_ids: list[str] = []
+    for lid in lead_ids_raw:
+        if not isinstance(lid, str) or not is_valid_uuid(lid.strip()):
+            raise LeadValidationError("INVALID_PARAMS", f"Mã Lead '{lid}' không đúng định dạng UUID.")
+        lead_ids.append(lid.strip())
+
+    target_user_id: str | None = None
+    target_user = None
+
+    raw_user_id = payload.get("user_id")
+    if raw_user_id is not None:
+        if not isinstance(raw_user_id, str):
+            raise LeadValidationError("INVALID_PARAMS", "Mã người dùng không hợp lệ.")
+        clean_user_id = raw_user_id.strip()
+        if not is_valid_uuid(clean_user_id):
+            raise LeadValidationError("INVALID_PARAMS", "Mã người dùng không hợp lệ.")
+        target_user_id = clean_user_id
+
+        target_user = user_repository.get_user_by_id(target_user_id)
+        if not target_user:
+            raise LeadServiceError("USER_NOT_FOUND", "Người dùng được phân công không tồn tại.", status_code=404)
+
+        if target_user.status != "active":
+            raise LeadValidationError("INACTIVE_USER", "Người dùng không còn hoạt động, không thể nhận phân công.")
+
+        if not is_user_consultant(target_user_id):
+            raise LeadValidationError(
+                "INVALID_ASSIGNEE",
+                "Chỉ có thể phân công Lead cho nhân viên Tư vấn tuyển sinh.",
+            )
+
+    now = datetime.now(timezone.utc)
+    updated_count = 0
+
+    for lid in lead_ids:
+        existing = lead_repository.get_lead_by_id(lid)
+        if not existing:
+            continue
+
+        if existing.assigned_to_user_id != target_user_id:
+            lead_repository.assign_lead(
+                lead_id=lid,
+                assigned_to_user_id=target_user_id,
+                assigned_at=now if target_user_id else None,
+                updated_at=now,
+            )
+            lead_repository.create_lead_assignment_history(
+                lead_id=lid,
+                old_assigned_to_user_id=existing.assigned_to_user_id,
+                new_assigned_to_user_id=target_user_id,
+                performed_by_user_id=performed_by_user_id,
+                created_at=now,
+            )
+            updated_count += 1
+
+    assignee_name = target_user.name if target_user else "tư vấn viên"
+    msg = (
+        f"Đã phân công {updated_count} Lead cho {assignee_name}."
+        if target_user_id
+        else f"Đã gỡ phân công {updated_count} Lead."
+    )
+    return {
+        "status": "success",
+        "message": msg,
+        "data": {
+            "updated_count": updated_count,
+            "target_user_id": target_user_id,
+        },
+    }
+
+
+def get_lead_assignment_history_service(
+    lead_id: str,
+    actor_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Lấy danh sách lịch sử phân công của một Lead (SCRUM-127 - Activity A8).
+    Sắp xếp mới nhất ở trên.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    if actor_id:
+        actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_id))
+        actor_user = user_repository.get_user_by_id(actor_id)
+        if actor_user and actor_user.role:
+            actor_roles.add(actor_user.role)
+
+        is_privileged = bool(actor_roles.intersection({"admin", "training_manager"}))
+        is_consultant = "consultant" in actor_roles
+
+        if is_consultant and not is_privileged:
+            if lead.assigned_to_user_id != actor_id:
+                raise LeadServiceError(
+                    "FORBIDDEN",
+                    "Bạn không có quyền truy cập lịch sử của Lead này.",
+                    status_code=403,
+                )
+
+    records = lead_repository.get_lead_assignment_history(lead_id)
+    return [
+        {
+            "id": r["id"],
+            "lead_id": r["lead_id"],
+            "old_assigned_to_user_id": r["old_assigned_to_user_id"],
+            "new_assigned_to_user_id": r["new_assigned_to_user_id"],
+            "performed_by_user_id": r["performed_by_user_id"],
+            "old_assigned_to_name": r["old_assigned_to_name"],
+            "new_assigned_to_name": r["new_assigned_to_name"],
+            "performed_by_name": r["performed_by_name"],
+            "created_at": r["created_at"].strftime("%Y-%m-%dT%H:%M:%SZ") if r.get("created_at") else None,
+        }
+        for r in records
+    ]
+
 
 
 def get_assignable_users_service() -> list[dict[str, Any]]:
@@ -654,6 +882,244 @@ def get_assignable_users_service() -> list[dict[str, Any]]:
     """
     users = lead_repository.get_assignable_lead_users()
     return [u for u in users if is_valid_uuid(str(u.get("id", "")))]
+
+
+def check_lead_phone_service(
+    phone: str | None,
+    exclude_lead_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Kiểm tra số điện thoại có trùng với lead đã có hay không (SCRUM-126).
+    """
+    if not phone or not isinstance(phone, str) or len(phone.strip()) < 3:
+        return {"exists": False, "lead": None}
+
+    clean_phone = phone.strip()
+    clean_exclude = exclude_lead_id.strip() if exclude_lead_id else None
+
+    existing = lead_repository.get_lead_by_phone(clean_phone, exclude_lead_id=clean_exclude)
+    if existing:
+        return {
+            "exists": True,
+            "lead": {
+                "id": existing.id,
+                "full_name": existing.full_name,
+                "phone": existing.phone,
+            },
+        }
+    return {"exists": False, "lead": None}
+
+
+ALLOWED_MANUAL_LEAD_FIELDS = {
+    "full_name",
+    "phone",
+    "email",
+    "source",
+    "interested_program_id",
+    "message",
+}
+
+
+def _validate_manual_lead_payload(payload: dict[str, Any]) -> tuple[str, str, str | None, str, str | None, str | None]:
+    """Hàm chuẩn hóa và kiểm tra dữ liệu đầu vào cho tạo/sửa Lead thủ công (SCRUM-126)."""
+    if not isinstance(payload, dict):
+        raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
+
+    unexpected = set(payload.keys()) - ALLOWED_MANUAL_LEAD_FIELDS
+    if unexpected:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            f"Không được phép truyền các trường không hợp lệ: {', '.join(sorted(unexpected))}.",
+        )
+
+    # 1. Họ và tên * (bắt buộc)
+    raw_name = payload.get("full_name")
+    if raw_name is None:
+        raise LeadValidationError("NAME_REQUIRED", "Vui lòng nhập họ và tên.")
+    if not isinstance(raw_name, str):
+        raise LeadValidationError("INVALID_PARAMS", "Họ và tên phải là chuỗi văn bản.")
+    full_name = raw_name.strip()
+    if not full_name:
+        raise LeadValidationError("NAME_REQUIRED", "Vui lòng nhập họ và tên.")
+    if len(full_name) > 255:
+        raise LeadValidationError("INVALID_PARAMS", "Họ và tên không được vượt quá 255 ký tự.")
+
+    # 2. Số điện thoại * (bắt buộc)
+    raw_phone = payload.get("phone")
+    if raw_phone is None:
+        raise LeadValidationError("PHONE_REQUIRED", "Vui lòng nhập số điện thoại.")
+    if not isinstance(raw_phone, str):
+        raise LeadValidationError("INVALID_PARAMS", "Số điện thoại phải là chuỗi văn bản.")
+    phone = raw_phone.strip()
+    if not phone:
+        raise LeadValidationError("PHONE_REQUIRED", "Vui lòng nhập số điện thoại.")
+    if len(phone) > 30 or not PHONE_CHARS_REGEX.match(phone):
+        raise LeadValidationError("INVALID_PARAMS", "Số điện thoại không đúng định dạng hợp lệ.")
+
+    # 3. Email (không bắt buộc, nếu nhập phải đúng format)
+    raw_email = payload.get("email")
+    email: str | None = None
+    if raw_email is not None and not (isinstance(raw_email, str) and not raw_email.strip()):
+        if not isinstance(raw_email, str):
+            raise LeadValidationError("INVALID_PARAMS", "Email phải là chuỗi văn bản.")
+        email_cand = raw_email.strip().lower()
+        if not EMAIL_REGEX.match(email_cand) or len(email_cand) > 255:
+            raise LeadValidationError("INVALID_EMAIL", "Email không đúng định dạng hợp lệ.")
+        email = email_cand
+
+    # 4. Nguồn (mặc định 'direct' cho tạo thủ công)
+    raw_source = payload.get("source")
+    source = LEAD_SOURCE_DIRECT
+    if raw_source is not None and not (isinstance(raw_source, str) and not raw_source.strip()):
+        if not isinstance(raw_source, str):
+            raise LeadValidationError("INVALID_PARAMS", "Nguồn tiếp nhận phải là chuỗi văn bản.")
+        clean_source = raw_source.strip().lower()
+        if clean_source not in VALID_LEAD_SOURCES:
+            raise LeadValidationError(
+                "INVALID_SOURCE",
+                f"Nguồn '{clean_source}' không hợp lệ. Các nguồn hợp lệ: {', '.join(sorted(VALID_LEAD_SOURCES))}.",
+            )
+        source = clean_source
+
+    # 5. Chương trình quan tâm (không bắt buộc, phải là UUID hợp lệ và tồn tại)
+    raw_program_id = payload.get("interested_program_id")
+    interested_program_id: str | None = None
+    if raw_program_id is not None and not (isinstance(raw_program_id, str) and not raw_program_id.strip()):
+        if not isinstance(raw_program_id, str):
+            raise LeadValidationError("INVALID_PARAMS", "Mã chương trình quan tâm phải là chuỗi UUID.")
+        clean_prog = raw_program_id.strip()
+        if not is_valid_uuid(clean_prog):
+            raise LeadValidationError("INVALID_PARAMS", "Mã chương trình quan tâm không hợp lệ.")
+        prog = training_program_repository.get_training_program_by_id(clean_prog)
+        if not prog:
+            raise LeadProgramNotFoundError()
+        interested_program_id = clean_prog
+
+    # 6. Ghi chú nội dung (message)
+    raw_msg = payload.get("message")
+    message: str | None = None
+    if raw_msg is not None and not (isinstance(raw_msg, str) and not raw_msg.strip()):
+        if not isinstance(raw_msg, str):
+            raise LeadValidationError("INVALID_PARAMS", "Nội dung ghi chú phải là chuỗi văn bản.")
+        clean_msg = raw_msg.strip()
+        if len(clean_msg) > 5000:
+            raise LeadValidationError("INVALID_PARAMS", "Nội dung ghi chú không được vượt quá 5000 ký tự.")
+        message = clean_msg
+
+    return full_name, phone, email, source, interested_program_id, message
+
+
+def create_manual_lead_service(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Tạo khách hàng tiềm năng thủ công bởi cán bộ tuyển sinh (SCRUM-126).
+    """
+    full_name, phone, email, source, interested_program_id, message = _validate_manual_lead_payload(payload)
+
+    # Cảnh báo số điện thoại trùng
+    existing_phone_lead = lead_repository.get_lead_by_phone(phone)
+    duplicate_info = None
+    if existing_phone_lead:
+        duplicate_info = {
+            "id": existing_phone_lead.id,
+            "full_name": existing_phone_lead.full_name,
+            "phone": existing_phone_lead.phone,
+        }
+
+    now = datetime.now(timezone.utc)
+    new_lead = Lead(
+        id=str(uuid.uuid4()),
+        full_name=full_name,
+        phone=phone,
+        email=email,
+        interested_program_id=interested_program_id,
+        message=message,
+        source=source,
+        status=LEAD_STATUS_NEW,
+        created_at=now,
+        updated_at=now,
+    )
+
+    created_lead = lead_repository.insert_lead(new_lead)
+
+    return {
+        "status": "success",
+        "message": "Tạo khách hàng tiềm năng thành công.",
+        "data": created_lead.to_dict(),
+        "duplicate_warning": bool(existing_phone_lead),
+        "existing_lead": duplicate_info,
+    }
+
+
+def update_lead_info_service(lead_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Cập nhật thông tin chi tiết một Lead (SCRUM-126 - Tạo và sửa Lead).
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    existing_lead = lead_repository.get_lead_by_id(lead_id)
+    if not existing_lead:
+        raise LeadNotFoundError()
+
+    full_name, phone, email, source, interested_program_id, message = _validate_manual_lead_payload(payload)
+
+    # Cảnh báo số điện thoại trùng (ngoại trừ lead hiện tại)
+    existing_phone_lead = lead_repository.get_lead_by_phone(phone, exclude_lead_id=lead_id)
+    duplicate_info = None
+    if existing_phone_lead:
+        duplicate_info = {
+            "id": existing_phone_lead.id,
+            "full_name": existing_phone_lead.full_name,
+            "phone": existing_phone_lead.phone,
+        }
+
+    now = datetime.now(timezone.utc)
+    updated = lead_repository.update_lead_info(
+        lead_id=lead_id,
+        full_name=full_name,
+        phone=phone,
+        email=email,
+        source=source,
+        interested_program_id=interested_program_id,
+        message=message,
+        updated_at=now,
+    )
+    if not updated:
+        raise LeadNotFoundError()
+
+    return {
+        "status": "success",
+        "message": "Cập nhật khách hàng tiềm năng thành công.",
+        "data": updated.to_dict(),
+        "duplicate_warning": bool(existing_phone_lead),
+        "existing_lead": duplicate_info,
+    }
+
+
+def delete_lead_service(lead_id: str) -> dict[str, Any]:
+    """
+    Xóa một Lead theo ID (SCRUM-126).
+    - Kiểm tra ID hợp lệ (UUID).
+    - Ném LeadNotFoundError (404) nếu không tìm thấy.
+    - Thực hiện xóa và trả về kết quả thành công.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    existing = lead_repository.get_lead_by_id(lead_id)
+    if not existing:
+        raise LeadNotFoundError("Không tìm thấy thông tin Lead để xóa.")
+
+    success = lead_repository.delete_lead(lead_id)
+    if not success:
+        raise LeadServiceError("DELETE_FAILED", "Không thể xóa khách hàng tiềm năng.", 500)
+
+    return {
+        "status": "success",
+        "message": "Xóa khách hàng tiềm năng thành công.",
+        "data": {"id": lead_id},
+    }
+
 
 
 

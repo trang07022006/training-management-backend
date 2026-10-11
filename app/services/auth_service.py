@@ -25,8 +25,9 @@ ACCOUNT_TEMP_LOCKED_MESSAGE = "Tài khoản tạm thời bị khóa do nhập sa
 PUBLIC_FORGOT_PASSWORD_MESSAGE = (
     "Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi tới email của bạn."
 )
-FORGOT_PASSWORD_COOLDOWN_SECONDS = 60
-FORGOT_PASSWORD_COOLDOWN_MESSAGE = "Bạn vừa yêu cầu đặt lại mật khẩu. Vui lòng chờ trước khi gửi lại."
+FORGOT_PASSWORD_COOLDOWN_SECONDS = 30
+FORGOT_PASSWORD_MAX_REQUESTS = 3
+FORGOT_PASSWORD_COOLDOWN_MESSAGE = "Bạn đã gửi 3 yêu cầu liên tiếp. Vui lòng thử lại sau"
 
 RESET_TOKEN_EXPIRES_MINUTES = 30
 RESET_TOKEN_DURATION = timedelta(minutes=RESET_TOKEN_EXPIRES_MINUTES)
@@ -231,7 +232,7 @@ def create_password_reset_token(
     return raw_token, token_record
 
 
-_forgot_password_rate_limits: dict[str, datetime] = {}
+_forgot_password_rate_limits: dict[str, dict] = {}
 
 
 def clear_forgot_password_rate_limits() -> None:
@@ -266,39 +267,55 @@ def process_forgot_password_request(
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    # 1. Kiểm tra rate limit trong bộ nhớ (áp dụng cho CẢ email tồn tại và không tồn tại - chống enumeration)
-    last_req_time = _forgot_password_rate_limits.get(normalized_email)
-    if last_req_time is not None:
-        if last_req_time.tzinfo is None:
-            last_req_time = last_req_time.replace(tzinfo=timezone.utc)
-        elapsed = (now - last_req_time).total_seconds()
-        if elapsed < FORGOT_PASSWORD_COOLDOWN_SECONDS:
-            remaining = max(1, int(FORGOT_PASSWORD_COOLDOWN_SECONDS - elapsed))
+    # 1. Kiểm tra rate limit trong bộ nhớ
+    state = _forgot_password_rate_limits.get(normalized_email, {"requests": [], "locked_until": None})
+    locked_until = state.get("locked_until")
+    if locked_until is not None:
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if now < locked_until:
+            remaining = max(1, int((locked_until - now).total_seconds()))
             raise AuthValidationError(
                 "FORGOT_PASSWORD_COOLDOWN",
                 FORGOT_PASSWORD_COOLDOWN_MESSAGE,
                 retry_after_seconds=remaining,
             )
+        else:
+            state["requests"] = []
+            state["locked_until"] = None
 
-    # 2. Kiểm tra người dùng theo email trong MySQL database (không fallback mock)
+    # Lọc bỏ các request đã quá 30 giây
+    recent_requests = [
+        t for t in state.get("requests", [])
+        if (now - (t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t)).total_seconds() <= FORGOT_PASSWORD_COOLDOWN_SECONDS
+    ]
+    state["requests"] = recent_requests
+    _forgot_password_rate_limits[normalized_email] = state
+
+    # Nếu đã có đủ số request tối đa trong cửa sổ thời gian
+    if len(recent_requests) >= FORGOT_PASSWORD_MAX_REQUESTS:
+        locked_until = now + timedelta(seconds=FORGOT_PASSWORD_COOLDOWN_SECONDS)
+        state["locked_until"] = locked_until
+        raise AuthValidationError(
+            "FORGOT_PASSWORD_COOLDOWN",
+            FORGOT_PASSWORD_COOLDOWN_MESSAGE,
+            retry_after_seconds=FORGOT_PASSWORD_COOLDOWN_SECONDS,
+        )
+
+    # 2. Kiểm tra người dùng theo email trong MySQL database
     user = user_repository.get_user_by_email(normalized_email)
 
-    # SCRUM-46 & SCRUM-48: Nếu user tồn tại, kiểm tra DB rate limit, tạo token 30 phút và gửi email
     if user is not None:
-        latest_token = password_reset_repository.get_latest_reset_token_by_user_id(user.id)
-        if latest_token is not None and latest_token.created_at is not None:
-            token_created_at = latest_token.created_at
-            if token_created_at.tzinfo is None:
-                token_created_at = token_created_at.replace(tzinfo=timezone.utc)
-            elapsed_db = (now - token_created_at).total_seconds()
-            if elapsed_db < FORGOT_PASSWORD_COOLDOWN_SECONDS:
-                remaining = max(1, int(FORGOT_PASSWORD_COOLDOWN_SECONDS - elapsed_db))
-                _forgot_password_rate_limits[normalized_email] = token_created_at
-                raise AuthValidationError(
-                    "FORGOT_PASSWORD_COOLDOWN",
-                    FORGOT_PASSWORD_COOLDOWN_MESSAGE,
-                    retry_after_seconds=remaining,
-                )
+        since = now - timedelta(seconds=FORGOT_PASSWORD_COOLDOWN_SECONDS)
+        db_count = password_reset_repository.get_recent_reset_tokens_count(user.id, since)
+        if db_count >= FORGOT_PASSWORD_MAX_REQUESTS:
+            locked_until = now + timedelta(seconds=FORGOT_PASSWORD_COOLDOWN_SECONDS)
+            state["locked_until"] = locked_until
+            raise AuthValidationError(
+                "FORGOT_PASSWORD_COOLDOWN",
+                FORGOT_PASSWORD_COOLDOWN_MESSAGE,
+                retry_after_seconds=FORGOT_PASSWORD_COOLDOWN_SECONDS,
+            )
 
         raw_token, token_record = create_password_reset_token(
             user_id=user.id,
@@ -318,12 +335,23 @@ def process_forgot_password_request(
             )
             # Không throw lỗi ra ngoài để bảo vệ nguyên tắc anti-enumeration
 
-    # Cập nhật thời điểm yêu cầu vào bộ nhớ rate limit
-    _forgot_password_rate_limits[normalized_email] = now
+    # Cập nhật thời điểm yêu cầu vào bộ nhớ rate limit sau khi đã tạo token thành công (hoặc xử lý xong)
+    state["requests"].append(now)
+    # Kiểm tra xem lần này có phải là lần thứ 3 không
+    retry_after = None
+    if len(state["requests"]) >= FORGOT_PASSWORD_MAX_REQUESTS:
+        state["locked_until"] = now + timedelta(seconds=FORGOT_PASSWORD_COOLDOWN_SECONDS)
+        retry_after = FORGOT_PASSWORD_COOLDOWN_SECONDS
+        
+    _forgot_password_rate_limits[normalized_email] = state
 
-    return {
+    result = {
         "message": PUBLIC_FORGOT_PASSWORD_MESSAGE,
     }
+    if retry_after is not None:
+        result["retry_after_seconds"] = retry_after
+        
+    return result
 
 
 def validate_reset_token(

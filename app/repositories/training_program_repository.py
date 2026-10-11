@@ -44,6 +44,7 @@ def _row_to_model(row: dict) -> TrainingProgram:
         name=str(row["name"]),
         description=row.get("description"),
         duration_semesters=int(duration) if duration is not None else None,
+        standard_tuition_fee=int(row["standard_tuition_fee"]) if row.get("standard_tuition_fee") is not None else None,
         status=str(row.get("status") or PROGRAM_STATUS_DRAFT),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
@@ -65,11 +66,12 @@ def insert_training_program(program: TrainingProgram) -> TrainingProgram:
             name,
             description,
             duration_semesters,
+            standard_tuition_fee,
             status,
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     values = (
         program.id,
@@ -77,6 +79,7 @@ def insert_training_program(program: TrainingProgram) -> TrainingProgram:
         program.name,
         program.description,
         program.duration_semesters,
+        program.standard_tuition_fee,
         program.status,
         _to_mysql_datetime(created_at),
         _to_mysql_datetime(updated_at),
@@ -91,6 +94,7 @@ def insert_training_program(program: TrainingProgram) -> TrainingProgram:
         name=program.name,
         description=program.description,
         duration_semesters=program.duration_semesters,
+        standard_tuition_fee=program.standard_tuition_fee,
         status=program.status,
         created_at=created_at,
         updated_at=updated_at,
@@ -109,6 +113,7 @@ def get_training_program_by_id(program_id: str) -> TrainingProgram | None:
             name,
             description,
             duration_semesters,
+            standard_tuition_fee,
             status,
             created_at,
             updated_at
@@ -137,6 +142,7 @@ def get_training_program_by_code(code: str) -> TrainingProgram | None:
             name,
             description,
             duration_semesters,
+            standard_tuition_fee,
             status,
             created_at,
             updated_at
@@ -202,6 +208,7 @@ def get_all_training_programs(
             name,
             description,
             duration_semesters,
+            standard_tuition_fee,
             status,
             created_at,
             updated_at
@@ -284,6 +291,7 @@ ALLOWED_UPDATE_FIELDS = {
     "name",
     "description",
     "duration_semesters",
+    "standard_tuition_fee",
     "status",
 }
 
@@ -303,6 +311,7 @@ def update_training_program(program: TrainingProgram) -> TrainingProgram:
             name = %s,
             description = %s,
             duration_semesters = %s,
+            standard_tuition_fee = %s,
             status = %s,
             updated_at = %s
         WHERE id = %s
@@ -312,6 +321,7 @@ def update_training_program(program: TrainingProgram) -> TrainingProgram:
         program.name,
         program.description,
         program.duration_semesters,
+        program.standard_tuition_fee,
         program.status,
         _to_mysql_datetime(updated_at),
         program.id,

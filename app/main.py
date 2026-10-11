@@ -37,6 +37,9 @@ app.register_blueprint(user_role_bp)
 app.register_blueprint(public_consultation_bp)
 app.register_blueprint(lead_bp)
 
+from app.database.ensure_business_roles import ensure_business_roles
+ensure_business_roles()
+
 
 @app.route("/api/health", methods=["GET"])
 def health():

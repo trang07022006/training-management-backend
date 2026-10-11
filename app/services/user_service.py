@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
 PHONE_REGEX = re.compile(r"^\+?[0-9]{9,15}$")
-VALID_ROLES = {"admin", "trainer", "trainee", "user"}
+VALID_ROLES = {
+    "admin",
+    "trainer",
+    "trainee",
+    "user",
+    "consultant",
+    "training_manager",
+}
 VALID_STATUSES = {"active", "inactive", "locked"}
 
 

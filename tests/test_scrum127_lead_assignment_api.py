@@ -195,7 +195,7 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
         res = self.client.patch(
             "/api/v1/leads/not-a-valid-uuid/assignment",
             headers=self.auth_headers,
-            json={"user_id": self.admin_user_id},
+            json={"user_id": "4fae5ce7-f236-443e-a93a-778db2b0e1bf"},
         )
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.get_json()["code"], "INVALID_PARAMS")
@@ -213,7 +213,7 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
         res = self.client.patch(
             f"/api/v1/leads/{non_existent_lid}/assignment",
             headers=self.auth_headers,
-            json={"user_id": self.admin_user_id},
+            json={"user_id": "4fae5ce7-f236-443e-a93a-778db2b0e1bf"},
         )
         self.assertEqual(res.status_code, 404)
         self.assertEqual(res.get_json()["code"], "LEAD_NOT_FOUND")
@@ -231,7 +231,7 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
         res = self.client.patch(
             f"/api/v1/leads/{lid}/assignment",
             headers=self.auth_headers,
-            json={"user_id": self.admin_user_id, "extra_field": "hack"},
+            json={"user_id": "4fae5ce7-f236-443e-a93a-778db2b0e1bf", "extra_field": "hack"},
         )
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.get_json()["code"], "INVALID_PARAMS")
@@ -292,7 +292,7 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
                     INSERT INTO users (id, name, email, password_hash, role, status)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (inactive_uid, "Cán bộ Khóa", f"locked_{inactive_uid[:8]}@ictu.edu.vn", "hash", "trainer", "inactive"),
+                    (inactive_uid, "Cán bộ Khóa", f"locked_{inactive_uid[:8]}@ictu.edu.vn", "hash", "consultant", "inactive"),
                 )
             conn.commit()
         finally:
@@ -312,37 +312,37 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
     def test_assign_to_non_assignable_role_rejected(
         self, mock_get_session, mock_has_perm
     ):
-        """Không được phép phân công cho user có role trainee/student."""
+        """Không được phép phân công cho user có role trainer/trainee/admin/user/training_manager (SCRUM-127)."""
         mock_get_session.return_value = self.authorized_session
         mock_has_perm.return_value = True
 
         lid = self._create_test_lead()
-        trainee_uid = str(uuid.uuid4())
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO users (id, name, email, password_hash, role, status)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (trainee_uid, "Học viên Test", f"trainee_{trainee_uid[:8]}@ictu.edu.vn", "hash", "trainee", "active"),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-        self.created_user_ids.append(trainee_uid)
-
+        # Thử với role trainer
+        trainer_uid = "7c50e76d-7c00-4167-b5dd-1c06df11d3e8"  # Nguyễn Văn A (trainer)
         res = self.client.patch(
             f"/api/v1/leads/{lid}/assignment",
             headers=self.auth_headers,
-            json={"user_id": trainee_uid},
+            json={"user_id": trainer_uid},
         )
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.get_json()["code"], "INVALID_ASSIGNEE")
+        self.assertEqual(
+            res.get_json()["message"],
+            "Chỉ có thể phân công Lead cho nhân viên Tư vấn tuyển sinh.",
+        )
+
+        # Thử với role training_manager
+        tm_uid = "ebcf9c67-0cd9-4199-a0ef-35541879f25d"  # QA Quản lý đào tạo
+        res2 = self.client.patch(
+            f"/api/v1/leads/{lid}/assignment",
+            headers=self.auth_headers,
+            json={"user_id": tm_uid},
+        )
+        self.assertEqual(res2.status_code, 400)
+        self.assertEqual(res2.get_json()["code"], "INVALID_ASSIGNEE")
 
     # =========================================================================
-    # 3. SUCCESSFUL ASSIGN & UNASSIGN TESTS
+    # 3. SUCCESSFUL ASSIGN & UNASSIGN & HISTORY TESTS
     # =========================================================================
 
     @patch("app.utils.rbac_auth.has_permission")
@@ -350,50 +350,83 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
     def test_assign_lead_success(
         self, mock_get_session, mock_has_perm
     ):
-        """Phân công Lead cho nhân sự hợp lệ thành công."""
+        """Phân công Lead cho tư vấn viên hợp lệ thành công (SCRUM-127)."""
         mock_get_session.return_value = self.authorized_session
         mock_has_perm.return_value = True
 
         lid = self._create_test_lead()
+        consultant_id = "4fae5ce7-f236-443e-a93a-778db2b0e1bf"  # test (consultant)
         res = self.client.patch(
             f"/api/v1/leads/{lid}/assignment",
             headers=self.auth_headers,
-            json={"user_id": self.admin_user_id},
+            json={"user_id": consultant_id},
         )
         self.assertEqual(res.status_code, 200)
         body = res.get_json()
         self.assertEqual(body["status"], "success")
-        self.assertEqual(body["data"]["assigned_to_user_id"], self.admin_user_id)
+        self.assertEqual(body["data"]["assigned_to_user_id"], consultant_id)
         self.assertIsNotNone(body["data"]["assigned_at"])
-        self.assertEqual(body["data"]["assigned_to_name"], "Minh Trang")
+        self.assertEqual(body["data"]["assigned_to_name"], "test")
 
     @patch("app.utils.rbac_auth.has_permission")
     @patch("app.utils.rbac_auth.get_session_by_id")
-    def test_unassign_lead_via_patch_null(
+    def test_transfer_lead_and_verify_history(
         self, mock_get_session, mock_has_perm
     ):
-        """Gỡ phân công Lead bằng PATCH {"user_id": null} thành công."""
+        """Chuyển giao Lead từ Consultant A sang Consultant B rồi Unassign và kiểm tra lịch sử (SCRUM-127)."""
         mock_get_session.return_value = self.authorized_session
         mock_has_perm.return_value = True
 
         lid = self._create_test_lead()
-        # Bước 1: Assign
-        self.client.patch(
+        consultant_a = "4fae5ce7-f236-443e-a93a-778db2b0e1bf"  # test
+        consultant_b = "b98111a5-6303-4de9-be69-e3059c5796a6"  # QA Tư vấn tuyển sinh
+
+        # 1. Gán lần 1: None -> Consultant A
+        res1 = self.client.patch(
             f"/api/v1/leads/{lid}/assignment",
             headers=self.auth_headers,
-            json={"user_id": self.admin_user_id},
+            json={"user_id": consultant_a},
         )
-        # Bước 2: Unassign
-        res = self.client.patch(
+        self.assertEqual(res1.status_code, 200)
+
+        # 2. Chuyển giao: Consultant A -> Consultant B
+        res2 = self.client.patch(
+            f"/api/v1/leads/{lid}/assignment",
+            headers=self.auth_headers,
+            json={"user_id": consultant_b},
+        )
+        self.assertEqual(res2.status_code, 200)
+
+        # 3. Gỡ phân công: Consultant B -> None
+        res3 = self.client.patch(
             f"/api/v1/leads/{lid}/assignment",
             headers=self.auth_headers,
             json={"user_id": None},
         )
-        self.assertEqual(res.status_code, 200)
-        body = res.get_json()
-        self.assertEqual(body["status"], "success")
-        self.assertIsNone(body["data"]["assigned_to_user_id"])
-        self.assertIsNone(body["data"]["assigned_at"])
+        self.assertEqual(res3.status_code, 200)
+
+        # 4. Lấy lịch sử qua API GET /api/v1/leads/<id>/history
+        res_hist = self.client.get(
+            f"/api/v1/leads/{lid}/history",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res_hist.status_code, 200)
+        history = res_hist.get_json()["data"]
+        self.assertEqual(len(history), 3)
+
+        # Bản ghi mới nhất (index 0): Consultant B -> None
+        self.assertEqual(history[0]["old_assigned_to_user_id"], consultant_b)
+        self.assertIsNone(history[0]["new_assigned_to_user_id"])
+
+        # Bản ghi thứ hai (index 1): Consultant A -> Consultant B
+        self.assertEqual(history[1]["old_assigned_to_user_id"], consultant_a)
+        self.assertEqual(history[1]["new_assigned_to_user_id"], consultant_b)
+        self.assertEqual(history[1]["old_assigned_to_name"], "test")
+
+        # Bản ghi đầu tiên (index 2): None -> Consultant A
+        self.assertIsNone(history[2]["old_assigned_to_user_id"])
+        self.assertEqual(history[2]["new_assigned_to_user_id"], consultant_a)
+        self.assertEqual(history[2]["new_assigned_to_name"], "test")
 
     @patch("app.utils.rbac_auth.has_permission")
     @patch("app.utils.rbac_auth.get_session_by_id")
@@ -405,11 +438,12 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
         mock_has_perm.return_value = True
 
         lid = self._create_test_lead()
+        consultant_id = "4fae5ce7-f236-443e-a93a-778db2b0e1bf"
         # Bước 1: Assign
         self.client.patch(
             f"/api/v1/leads/{lid}/assignment",
             headers=self.auth_headers,
-            json={"user_id": self.admin_user_id},
+            json={"user_id": consultant_id},
         )
         # Bước 2: DELETE unassign
         res = self.client.delete(
@@ -423,15 +457,15 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
         self.assertIsNone(body["data"]["assigned_at"])
 
     # =========================================================================
-    # 4. ASSIGNABLE USERS LIST TESTS
+    # 4. ASSIGNABLE USERS LIST TESTS (CONSULTANTS ONLY)
     # =========================================================================
 
     @patch("app.utils.rbac_auth.has_permission")
     @patch("app.utils.rbac_auth.get_session_by_id")
-    def test_get_assignable_users_returns_safe_fields_only(
+    def test_get_assignable_users_returns_consultants_only(
         self, mock_get_session, mock_has_perm
     ):
-        """GET /api/v1/leads/assignable-users chỉ trả về id, name, email, role an toàn."""
+        """GET /api/v1/leads/assignable-users CHỈ trả về tài khoản Tư vấn tuyển sinh (SCRUM-127)."""
         mock_get_session.return_value = self.authorized_session
         mock_has_perm.return_value = True
 
@@ -449,8 +483,7 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
             self.assertIn("id", u)
             self.assertIn("name", u)
             self.assertIn("email", u)
-            self.assertIn("role", u)
-            self.assertIn(u["role"], ["admin", "trainer"])
+            self.assertEqual(u["role"], "consultant")
             # Tuyệt đối không có trường nhạy cảm
             self.assertNotIn("password_hash", u)
             self.assertNotIn("date_of_birth", u)
@@ -476,4 +509,94 @@ class Scrum127LeadAssignmentApiTests(unittest.TestCase):
         self.assertNotIn("demo-user-admin", ids)
         for u in body["data"]:
             self.assertEqual(len(u["id"]), 36)
+
+    # =========================================================================
+    # 5. BULK ASSIGNMENT TESTS (SCRUM-127)
+    # =========================================================================
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_bulk_assign_leads_success(
+        self, mock_get_session, mock_has_perm
+    ):
+        """POST /api/v1/leads/bulk-assignment phân công nhiều Lead thành công (SCRUM-127)."""
+        mock_get_session.return_value = self.authorized_session
+        mock_has_perm.return_value = True
+
+        lid1 = self._create_test_lead()
+        lid2 = self._create_test_lead()
+        consultant_id = "4fae5ce7-f236-443e-a93a-778db2b0e1bf"
+
+        res = self.client.post(
+            "/api/v1/leads/bulk-assignment",
+            headers=self.auth_headers,
+            json={
+                "lead_ids": [lid1, lid2],
+                "user_id": consultant_id,
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["data"]["updated_count"], 2)
+
+        # Kiểm tra cả 2 lead đã được phân công cho consultant
+        lead1 = lead_repository.get_lead_by_id(lid1)
+        lead2 = lead_repository.get_lead_by_id(lid2)
+        self.assertEqual(lead1.assigned_to_user_id, consultant_id)
+        self.assertEqual(lead2.assigned_to_user_id, consultant_id)
+
+    # =========================================================================
+    # 6. CONSULTANT DATA SCOPING TESTS (SCRUM-127)
+    # =========================================================================
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_consultant_only_sees_assigned_leads(
+        self, mock_get_session, mock_has_perm
+    ):
+        """Tư vấn tuyển sinh đăng nhập CHỈ nhìn thấy Lead được giao cho mình (SCRUM-127)."""
+        consultant_a = "4fae5ce7-f236-443e-a93a-778db2b0e1bf"  # test
+        consultant_b = "b98111a5-6303-4de9-be69-e3059c5796a6"  # QA Tư vấn tuyển sinh
+
+        session_consultant_a = LoginSession(
+            session_id="session-consultant-a-127",
+            user_id=consultant_a,
+            refresh_jti="ref-ca-127",
+            created_at=self.now,
+            last_activity_at=self.now,
+            idle_expires_at=self.now + timedelta(minutes=30),
+            absolute_expires_at=self.now + timedelta(days=7),
+            revoked_at=None,
+        )
+
+        with self.app.app_context():
+            token_ca = create_access_token(
+                identity=consultant_a,
+                additional_claims={"sid": session_consultant_a.session_id},
+            )
+        headers_ca = {"Authorization": f"Bearer {token_ca}"}
+
+        mock_get_session.return_value = session_consultant_a
+        mock_has_perm.return_value = True
+
+        lid_a = self._create_test_lead()
+        lid_b = self._create_test_lead()
+
+        # Gán lead A cho consultant A, lead B cho consultant B
+        lead_repository.assign_lead(lid_a, consultant_a)
+        lead_repository.assign_lead(lid_b, consultant_b)
+
+        # Consultant A gọi list leads
+        res = self.client.get(
+            "/api/v1/leads",
+            headers=headers_ca,
+        )
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]["items"]
+        item_ids = [it["id"] for it in items]
+
+        self.assertIn(lid_a, item_ids)
+        self.assertNotIn(lid_b, item_ids)
+
 

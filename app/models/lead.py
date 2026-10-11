@@ -25,6 +25,22 @@ VALID_LEAD_STATUSES = {
 }
 
 LEAD_SOURCE_PUBLIC_FORM = "public_form"
+LEAD_SOURCE_DIRECT = "direct"
+LEAD_SOURCE_HOTLINE = "hotline"
+LEAD_SOURCE_REFERRAL = "referral"
+LEAD_SOURCE_SOCIAL = "social"
+LEAD_SOURCE_EVENT = "event"
+LEAD_SOURCE_OTHER = "other"
+
+VALID_LEAD_SOURCES = {
+    LEAD_SOURCE_PUBLIC_FORM,
+    LEAD_SOURCE_DIRECT,
+    LEAD_SOURCE_HOTLINE,
+    LEAD_SOURCE_REFERRAL,
+    LEAD_SOURCE_SOCIAL,
+    LEAD_SOURCE_EVENT,
+    LEAD_SOURCE_OTHER,
+}
 
 
 def format_datetime_utc_iso(dt: datetime | None) -> str | None:

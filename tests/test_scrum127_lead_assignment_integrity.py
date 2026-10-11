@@ -106,8 +106,8 @@ class TestLeadAssignmentIntegrityAndConcurrency:
 
     def test_concurrency_last_write_wins(self):
         """Hai admin phân công nối tiếp nhau, ghi nhận giá trị cuối cùng an toàn."""
-        u1 = self._create_temp_user(role="trainer")
-        u2 = self._create_temp_user(role="admin")
+        u1 = self._create_temp_user(role="consultant")
+        u2 = self._create_temp_user(role="consultant")
 
         lid = str(uuid.uuid4())
         lead = Lead(

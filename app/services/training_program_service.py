@@ -59,7 +59,7 @@ class ProgramInUseError(TrainingProgramServiceError):
 
     def __init__(
         self,
-        message: str = "Không thể xóa chương trình đào tạo vì đang có dữ liệu liên kết hoặc phụ thuộc trong hệ thống.",
+        message: str = "Chương trình đang có dữ liệu phụ thuộc (môn học, lớp học) không được xoá, chỉ được ngừng áp dụng.",
     ):
         super().__init__(code="PROGRAM_IN_USE", message=message, status_code=409)
 
@@ -231,15 +231,39 @@ def validate_program_duration(raw_duration: Any) -> int | None:
         return None
     if isinstance(raw_duration, bool) or not isinstance(raw_duration, int):
         raise TrainingProgramValidationError(
-            "Thời lượng học kỳ (duration_semesters) phải là số nguyên dương.",
+            "Thời lượng (duration_semesters) phải là số nguyên dương.",
             code="INVALID_PARAMS",
         )
     if raw_duration <= 0 or raw_duration > 65535:
         raise TrainingProgramValidationError(
-            "Thời lượng học kỳ (duration_semesters) phải là số nguyên dương từ 1 đến 65535.",
+            "Thời lượng (duration_semesters) phải là số nguyên dương từ 1 đến 65535.",
             code="INVALID_PARAMS",
         )
     return raw_duration
+
+
+def validate_program_tuition_fee(raw_fee: Any) -> int | None:
+    """Kiểm tra và chuẩn hóa học phí chuẩn (standard_tuition_fee)."""
+    if raw_fee is None:
+        return None
+    if isinstance(raw_fee, bool) or not isinstance(raw_fee, int):
+        raise TrainingProgramValidationError(
+            "Học phí chuẩn (standard_tuition_fee) phải là số nguyên.",
+            code="INVALID_PARAMS",
+        )
+    if raw_fee < 0:
+        raise TrainingProgramValidationError(
+            "Học phí chuẩn không được nhỏ hơn 0.",
+            code="INVALID_PARAMS",
+        )
+    # MySQL INT UNSIGNED max is 4294967295, we'll just allow up to 4 billion for safety, or just standard positive int.
+    # Since our DB column is INT UNSIGNED, we check bounds.
+    if raw_fee > 4000000000:
+        raise TrainingProgramValidationError(
+            "Học phí chuẩn vượt quá giới hạn cho phép.",
+            code="INVALID_PARAMS",
+        )
+    return raw_fee
 
 
 def validate_program_status(raw_status: Any, default: str = PROGRAM_STATUS_DRAFT) -> str:
@@ -302,6 +326,7 @@ def create_training_program_service(data: dict) -> dict:
     cleaned_name = validate_program_name(data.get("name"))
     cleaned_desc = validate_program_description(data.get("description"))
     cleaned_duration = validate_program_duration(data.get("duration_semesters"))
+    cleaned_tuition_fee = validate_program_tuition_fee(data.get("standard_tuition_fee"))
     cleaned_status = validate_program_status(data.get("status"), default=PROGRAM_STATUS_DRAFT)
 
     # Kiểm tra trùng mã code ở tầng service
@@ -318,6 +343,7 @@ def create_training_program_service(data: dict) -> dict:
         name=cleaned_name,
         description=cleaned_desc,
         duration_semesters=cleaned_duration,
+        standard_tuition_fee=cleaned_tuition_fee,
         status=cleaned_status,
         created_at=now,
         updated_at=now,
@@ -378,6 +404,7 @@ def update_training_program_service(program_id: str, data: dict) -> dict:
     cleaned_name = validate_program_name(data.get("name"))
     cleaned_desc = validate_program_description(data.get("description"))
     cleaned_duration = validate_program_duration(data.get("duration_semesters"))
+    cleaned_tuition_fee = validate_program_tuition_fee(data.get("standard_tuition_fee"))
     cleaned_status = validate_program_status(data.get("status"), default=PROGRAM_STATUS_DRAFT)
 
     if cleaned_code != existing.code:
@@ -391,6 +418,7 @@ def update_training_program_service(program_id: str, data: dict) -> dict:
         name=cleaned_name,
         description=cleaned_desc,
         duration_semesters=cleaned_duration,
+        standard_tuition_fee=cleaned_tuition_fee,
         status=cleaned_status,
         created_at=existing.created_at,
         updated_at=now,
@@ -469,6 +497,9 @@ def patch_training_program_service(program_id: str, data: dict) -> dict:
 
     if "duration_semesters" in data:
         fields_to_update["duration_semesters"] = validate_program_duration(data["duration_semesters"])
+
+    if "standard_tuition_fee" in data:
+        fields_to_update["standard_tuition_fee"] = validate_program_tuition_fee(data["standard_tuition_fee"])
 
     if "status" in data:
         fields_to_update["status"] = validate_patch_status(data["status"])

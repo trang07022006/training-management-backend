@@ -430,15 +430,31 @@ def _is_valid_user_uuid(val: str) -> bool:
 def get_assignable_lead_users() -> list[dict]:
     """
     Lấy danh sách người dùng có thể được phân công phụ trách Lead (SCRUM-127 - Activity A4).
-    Chỉ lấy người dùng có trạng thái 'active', vai trò 'admin' hoặc 'trainer',
+    CHỈ lấy người dùng có trạng thái 'active', vai trò Tư vấn tuyển sinh ('consultant'),
     và có UUID hợp lệ (loại trừ các tài khoản demo không thể phân công).
+    Không hiển thị: Quản trị viên, Quản lý đào tạo, Giảng viên, Học viên, Người dùng.
     Chỉ trả về các thông tin an toàn: id, name, email, role.
     """
     sql = """
-        SELECT id, name, email, role
-        FROM users
-        WHERE status = 'active' AND role IN ('admin', 'trainer')
-        ORDER BY name ASC, email ASC
+        SELECT DISTINCT u.id, u.name, u.email, 'consultant' AS role
+        FROM users u
+        LEFT JOIN user_roles ur ON u.id = ur.user_id
+        LEFT JOIN roles r ON ur.role_id = r.id
+        WHERE u.status = 'active'
+          AND (
+              r.code = 'consultant'
+              OR (u.role = 'consultant' AND NOT EXISTS (
+                  SELECT 1 FROM user_roles ur2
+                  JOIN roles r2 ON ur2.role_id = r2.id
+                  WHERE ur2.user_id = u.id AND r2.code != 'consultant'
+              ))
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM user_roles ur3
+              JOIN roles r3 ON ur3.role_id = r3.id
+              WHERE ur3.user_id = u.id AND r3.code IN ('admin', 'training_manager', 'trainer', 'trainee')
+          )
+        ORDER BY u.name ASC, u.email ASC
     """
     with _database_cursor(write=False) as cursor:
         cursor.execute(sql)
@@ -456,12 +472,200 @@ def get_assignable_lead_users() -> list[dict]:
     ]
 
 
-def delete_lead_for_testing(lead_id: str) -> bool:
-    """Xóa một lead khỏi bảng (chỉ dùng cho cleanup trong testing)."""
+def create_lead_assignment_history(
+    lead_id: str,
+    old_assigned_to_user_id: str | None,
+    new_assigned_to_user_id: str | None,
+    performed_by_user_id: str | None,
+    created_at: datetime | None = None,
+) -> dict:
+    """
+    Ghi nhận lịch sử chuyển giao / phân công Lead (SCRUM-127).
+    """
+    now = datetime.now(timezone.utc)
+    target_created_at = created_at or now
+    history_id = str(uuid.uuid4())
+
+    sql = """
+        INSERT INTO lead_assignment_history (
+            id, lead_id, old_assigned_to_user_id, new_assigned_to_user_id,
+            performed_by_user_id, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    params = (
+        history_id,
+        lead_id,
+        old_assigned_to_user_id,
+        new_assigned_to_user_id,
+        performed_by_user_id,
+        _to_mysql_datetime(target_created_at),
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, params)
+
+    return {
+        "id": history_id,
+        "lead_id": lead_id,
+        "old_assigned_to_user_id": old_assigned_to_user_id,
+        "new_assigned_to_user_id": new_assigned_to_user_id,
+        "performed_by_user_id": performed_by_user_id,
+        "created_at": _ensure_utc_datetime(target_created_at),
+    }
+
+
+def get_lead_assignment_history(lead_id: str) -> list[dict]:
+    """
+    Lấy danh sách lịch sử phân công của một Lead, sắp xếp mới nhất ở trên (SCRUM-127).
+    Nạp tên nhân sự cũ, nhân sự mới và người thực hiện thao tác.
+    """
+    sql = """
+        SELECT
+            lah.id,
+            lah.lead_id,
+            lah.old_assigned_to_user_id,
+            lah.new_assigned_to_user_id,
+            lah.performed_by_user_id,
+            lah.created_at,
+            u_old.name AS old_assigned_to_name,
+            u_new.name AS new_assigned_to_name,
+            u_perf.name AS performed_by_name
+        FROM lead_assignment_history lah
+        LEFT JOIN users u_old ON lah.old_assigned_to_user_id = u_old.id
+        LEFT JOIN users u_new ON lah.new_assigned_to_user_id = u_new.id
+        LEFT JOIN users u_perf ON lah.performed_by_user_id = u_perf.id
+        WHERE lah.lead_id = %s
+        ORDER BY lah.seq DESC
+    """
+    with _database_cursor(write=False) as cursor:
+        cursor.execute(sql, (lead_id,))
+        rows = cursor.fetchall() or []
+
+    return [
+        {
+            "id": str(r["id"]),
+            "lead_id": str(r["lead_id"]),
+            "old_assigned_to_user_id": str(r["old_assigned_to_user_id"]) if r.get("old_assigned_to_user_id") else None,
+            "new_assigned_to_user_id": str(r["new_assigned_to_user_id"]) if r.get("new_assigned_to_user_id") else None,
+            "performed_by_user_id": str(r["performed_by_user_id"]) if r.get("performed_by_user_id") else None,
+            "old_assigned_to_name": r.get("old_assigned_to_name"),
+            "new_assigned_to_name": r.get("new_assigned_to_name"),
+            "performed_by_name": r.get("performed_by_name"),
+            "created_at": _ensure_utc_datetime(r.get("created_at")),
+        }
+        for r in rows
+    ]
+
+
+
+def get_lead_by_phone(phone: str, exclude_lead_id: str | None = None) -> Lead | None:
+    """
+    Tra cứu Lead theo số điện thoại (dùng để kiểm tra trùng SĐT cho SCRUM-126).
+    """
+    clean_phone = phone.strip()
+    if exclude_lead_id:
+        sql = """
+            SELECT
+                l.id, l.full_name, l.phone, l.email, l.interested_program_id,
+                l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
+                l.created_at, l.updated_at,
+                tp.code AS interested_program_code,
+                tp.name AS interested_program_name,
+                u.name AS assigned_to_name,
+                u.email AS assigned_to_email
+            FROM leads l
+            LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+            LEFT JOIN users u ON l.assigned_to_user_id = u.id
+            WHERE l.phone = %s AND l.id != %s
+            LIMIT 1
+        """
+        params = (clean_phone, exclude_lead_id)
+    else:
+        sql = """
+            SELECT
+                l.id, l.full_name, l.phone, l.email, l.interested_program_id,
+                l.message, l.source, l.status, l.assigned_to_user_id, l.assigned_at,
+                l.created_at, l.updated_at,
+                tp.code AS interested_program_code,
+                tp.name AS interested_program_name,
+                u.name AS assigned_to_name,
+                u.email AS assigned_to_email
+            FROM leads l
+            LEFT JOIN training_programs tp ON l.interested_program_id = tp.id
+            LEFT JOIN users u ON l.assigned_to_user_id = u.id
+            WHERE l.phone = %s
+            LIMIT 1
+        """
+        params = (clean_phone,)
+
+    with _database_cursor(write=False) as cursor:
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return _row_to_model(row)
+
+
+def update_lead_info(
+    lead_id: str,
+    full_name: str,
+    phone: str,
+    email: str | None,
+    source: str,
+    interested_program_id: str | None,
+    message: str | None = None,
+    updated_at: datetime | None = None,
+) -> Lead | None:
+    """
+    Cập nhật thông tin chi tiết một Lead (SCRUM-126 - Tạo và sửa Lead).
+    """
+    now = datetime.now(timezone.utc)
+    target_updated_at = updated_at or now
+
+    sql = """
+        UPDATE leads
+        SET full_name = %s,
+            phone = %s,
+            email = %s,
+            source = %s,
+            interested_program_id = %s,
+            message = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    params = (
+        full_name,
+        phone,
+        email,
+        source,
+        interested_program_id,
+        message,
+        _to_mysql_datetime(target_updated_at),
+        lead_id,
+    )
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, params)
+        if cursor.rowcount == 0:
+            existing = get_lead_by_id(lead_id)
+            if not existing:
+                return None
+            return existing
+
+    return get_lead_by_id(lead_id)
+
+
+def delete_lead(lead_id: str) -> bool:
+    """Xóa một lead khỏi cơ sở dữ liệu theo ID (SCRUM-126)."""
     sql = "DELETE FROM leads WHERE id = %s"
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (lead_id,))
         return cursor.rowcount > 0
+
+
+def delete_lead_for_testing(lead_id: str) -> bool:
+    """Xóa một lead khỏi bảng (chỉ dùng cho cleanup trong testing)."""
+    return delete_lead(lead_id)
 
 
 

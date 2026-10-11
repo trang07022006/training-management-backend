@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS training_programs (
     name VARCHAR(255) NOT NULL,
     description TEXT NULL,
     duration_semesters SMALLINT UNSIGNED NULL,
+    standard_tuition_fee INT UNSIGNED NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'draft',
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
