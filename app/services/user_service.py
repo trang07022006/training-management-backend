@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
 PHONE_REGEX = re.compile(r"^\+?[0-9]{9,15}$")
-VALID_ROLES = {"admin", "trainer", "trainee", "user"}
+VALID_ROLES = {
+    "admin",
+    "trainer",
+    "trainee",
+    "user",
+    "consultant",
+    "training_manager",
+}
 VALID_STATUSES = {"active", "inactive", "locked"}
 
 
@@ -365,6 +372,9 @@ def get_user_profile_service(user_id: str) -> dict:
 
     profile_data = user.to_profile_dict()
     profile_data["role"] = display_role
+    profile_data["avatar_url"] = (
+        "/api/v1/users/profile/avatar" if user.avatar_path else None
+    )
 
     return profile_data
 
