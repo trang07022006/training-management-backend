@@ -65,13 +65,13 @@ class ForgotPasswordRateLimitTests(unittest.TestCase):
         self.mock_send_email.assert_called_once()
 
     @patch("app.services.auth_service.password_reset_repository.insert_reset_token")
-    @patch("app.services.auth_service.password_reset_repository.get_latest_reset_token_by_user_id")
+    @patch("app.services.auth_service.password_reset_repository.get_recent_reset_tokens_count")
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_2_immediate_subsequent_request_blocked_with_429_and_cooldown(
-        self, mock_get_user, mock_get_token, mock_insert_token
+        self, mock_get_user, mock_get_count, mock_insert_token
     ):
         mock_get_user.return_value = self.mock_user
-        mock_get_token.return_value = None
+        mock_get_count.return_value = 0
 
         # Yêu cầu 1: Thành công
         res1 = self.client.post(
@@ -80,32 +80,47 @@ class ForgotPasswordRateLimitTests(unittest.TestCase):
         )
         self.assertEqual(res1.status_code, 200)
 
-        # Yêu cầu 2 ngay lập tức: Phải bị 429 Too Many Requests
+        # Yêu cầu 2 ngay lập tức: Vẫn thành công
         res2 = self.client.post(
             "/api/auth/forgot-password",
             json={"email": "developer@ictu.edu.vn"},
         )
-        self.assertEqual(res2.status_code, 429)
-        data2 = res2.get_json()
-        self.assertEqual(data2["code"], "FORGOT_PASSWORD_COOLDOWN")
-        self.assertEqual(data2["message"], FORGOT_PASSWORD_COOLDOWN_MESSAGE)
-        self.assertIn("retry_after_seconds", data2)
-        self.assertGreaterEqual(data2["retry_after_seconds"], 1)
-        self.assertLessEqual(data2["retry_after_seconds"], FORGOT_PASSWORD_COOLDOWN_SECONDS)
-        self.assertEqual(res2.headers.get("Retry-After"), str(data2["retry_after_seconds"]))
+        self.assertEqual(res2.status_code, 200)
+        
+        # Yêu cầu 3 ngay lập tức: Thành công nhưng kèm retry_after
+        res3 = self.client.post(
+            "/api/auth/forgot-password",
+            json={"email": "developer@ictu.edu.vn"},
+        )
+        self.assertEqual(res3.status_code, 200)
+        self.assertIn("retry_after_seconds", res3.get_json())
+        self.assertEqual(res3.get_json()["retry_after_seconds"], 30)
 
-        # Không sinh thêm token thứ 2 và không gửi thêm email
-        mock_insert_token.assert_called_once()
-        self.mock_send_email.assert_called_once()
+        # Yêu cầu 4 ngay lập tức: Phải bị 429 Too Many Requests
+        res4 = self.client.post(
+            "/api/auth/forgot-password",
+            json={"email": "developer@ictu.edu.vn"},
+        )
+        self.assertEqual(res4.status_code, 429)
+        data4 = res4.get_json()
+        self.assertEqual(data4["code"], "FORGOT_PASSWORD_COOLDOWN")
+        self.assertEqual(data4["message"], FORGOT_PASSWORD_COOLDOWN_MESSAGE)
+        self.assertIn("retry_after_seconds", data4)
+        self.assertGreaterEqual(data4["retry_after_seconds"], 1)
+        self.assertLessEqual(data4["retry_after_seconds"], FORGOT_PASSWORD_COOLDOWN_SECONDS)
+        self.assertEqual(res4.headers.get("Retry-After"), str(data4["retry_after_seconds"]))
+
+        self.assertEqual(mock_insert_token.call_count, 3)
+        self.assertEqual(self.mock_send_email.call_count, 3)
 
     @patch("app.services.auth_service.password_reset_repository.insert_reset_token")
-    @patch("app.services.auth_service.password_reset_repository.get_latest_reset_token_by_user_id")
+    @patch("app.services.auth_service.password_reset_repository.get_recent_reset_tokens_count")
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_3_request_allowed_after_cooldown_expires(
-        self, mock_get_user, mock_get_token, mock_insert_token
+        self, mock_get_user, mock_get_count, mock_insert_token
     ):
         mock_get_user.return_value = self.mock_user
-        mock_get_token.return_value = None
+        mock_get_count.return_value = 0
 
         t0 = datetime(2026, 10, 3, 10, 0, 0, tzinfo=timezone.utc)
         result1 = process_forgot_password_request("developer@ictu.edu.vn", current_time=t0)
@@ -128,35 +143,38 @@ class ForgotPasswordRateLimitTests(unittest.TestCase):
         self.assertEqual(res1.status_code, 200)
         self.assertEqual(res1.get_json()["message"], PUBLIC_FORGOT_PASSWORD_MESSAGE)
 
-        # Yêu cầu 2 ngay lập tức với cùng email không tồn tại: Vẫn trả 429 cooldown
+        # Yêu cầu 2 và 3 với email không tồn tại: 200
         res2 = self.client.post(
             "/api/auth/forgot-password",
             json={"email": "nonexistent@ictu.edu.vn"},
         )
-        self.assertEqual(res2.status_code, 429)
-        data2 = res2.get_json()
-        self.assertEqual(data2["code"], "FORGOT_PASSWORD_COOLDOWN")
-        self.assertEqual(data2["message"], FORGOT_PASSWORD_COOLDOWN_MESSAGE)
-        self.assertIn("retry_after_seconds", data2)
+        res3 = self.client.post(
+            "/api/auth/forgot-password",
+            json={"email": "nonexistent@ictu.edu.vn"},
+        )
+        self.assertEqual(res3.status_code, 200)
 
-    @patch("app.services.auth_service.password_reset_repository.get_latest_reset_token_by_user_id")
+        # Yêu cầu 4 ngay lập tức với cùng email không tồn tại: Trả 429 cooldown
+        res4 = self.client.post(
+            "/api/auth/forgot-password",
+            json={"email": "nonexistent@ictu.edu.vn"},
+        )
+        self.assertEqual(res4.status_code, 429)
+        data4 = res4.get_json()
+        self.assertEqual(data4["code"], "FORGOT_PASSWORD_COOLDOWN")
+        self.assertEqual(data4["message"], FORGOT_PASSWORD_COOLDOWN_MESSAGE)
+        self.assertIn("retry_after_seconds", data4)
+
+    @patch("app.services.auth_service.password_reset_repository.get_recent_reset_tokens_count")
     @patch("app.services.auth_service.user_repository.get_user_by_email")
     def test_5_f5_reload_bypass_prevented_by_database_persistent_token(
-        self, mock_get_user, mock_get_token
+        self, mock_get_user, mock_get_count
     ):
         """Giả lập trường hợp bộ nhớ bị xóa (reload app / restart worker / F5), token trong DB vẫn kích hoạt rate limit."""
         mock_get_user.return_value = self.mock_user
 
-        now = datetime.now(timezone.utc)
-        # Giả lập database đã có token được tạo 20 giây trước
-        recent_token = PasswordResetToken(
-            id="token-recent-1",
-            user_id=self.mock_user.id,
-            token_hash="fakehash",
-            created_at=now - timedelta(seconds=20),
-            expires_at=now + timedelta(minutes=30),
-        )
-        mock_get_token.return_value = recent_token
+        # Giả lập DB trả về đã có 3 yêu cầu trong 30s qua
+        mock_get_count.return_value = 3
 
         # Xóa sạch rate limit bộ nhớ để giả lập bypass bộ nhớ
         clear_forgot_password_rate_limits()
@@ -168,9 +186,9 @@ class ForgotPasswordRateLimitTests(unittest.TestCase):
         self.assertEqual(res.status_code, 429)
         data = res.get_json()
         self.assertEqual(data["code"], "FORGOT_PASSWORD_COOLDOWN")
-        # Còn lại xấp xỉ 40 giây
-        self.assertGreaterEqual(data["retry_after_seconds"], 35)
-        self.assertLessEqual(data["retry_after_seconds"], 45)
+        # 30 giây cooldown
+        self.assertGreaterEqual(data["retry_after_seconds"], 25)
+        self.assertLessEqual(data["retry_after_seconds"], 35)
 
     @patch("app.services.auth_service.password_reset_repository.insert_reset_token")
     def test_6_reset_token_remains_30_minutes_expiry_and_single_use(self, mock_insert_token):

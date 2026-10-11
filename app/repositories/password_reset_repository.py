@@ -158,6 +158,23 @@ def get_latest_reset_token_by_user_id(user_id: str) -> PasswordResetToken | None
     return _row_to_token(row)
 
 
+def get_recent_reset_tokens_count(user_id: str, since: datetime) -> int:
+    """Đếm số lượng token được tạo ra từ thời điểm `since`."""
+    sql = """
+        SELECT COUNT(*) as count
+        FROM password_reset_tokens
+        WHERE user_id = %s AND created_at >= %s
+    """
+    mysql_since = _to_mysql_datetime(since)
+    with _database_cursor() as cursor:
+        cursor.execute(sql, (user_id, mysql_since))
+        row = cursor.fetchone()
+        
+    if row is None:
+        return 0
+    return int(row["count"])
+
+
 def mark_reset_token_used(token_id: str, used_at: datetime | None = None) -> None:
     """Đánh dấu reset token đã được sử dụng bằng cách gán used_at."""
     now = used_at or datetime.now(timezone.utc)
