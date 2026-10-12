@@ -1,6 +1,6 @@
 from functools import wraps
 
-from flask import g, jsonify
+from flask import g, jsonify, request
 from flask_jwt_extended import (
     get_jwt,
     get_jwt_identity,
@@ -47,10 +47,25 @@ def session_required(view):
         except MySQLError:
             return jsonify({"code": "SESSION_STORAGE_UNAVAILABLE"}), 503
 
+        # SCRUM-215: Chặn truy cập nếu tài khoản bắt buộc đổi mật khẩu lần đầu
+        current_path = getattr(request, "path", "").rstrip("/")
+        if not current_path.startswith("/api/auth/"):
+            try:
+                from app.repositories import user_repository
+                user_record = user_repository.get_user_by_id(user_id)
+                if user_record and getattr(user_record, "must_change_password", False):
+                    return jsonify({
+                        "code": "PASSWORD_CHANGE_REQUIRED",
+                        "message": "Bạn cần đổi mật khẩu trước khi tiếp tục sử dụng hệ thống.",
+                    }), 403
+            except Exception:
+                pass
+
         # API có thể lấy phiên đã kiểm tra qua g.login_session.
         g.login_session = session
 
         return view(*args, **kwargs)
 
     return wrapped
+
     

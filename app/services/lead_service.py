@@ -646,7 +646,97 @@ def get_lead_by_id_service(lead_id: str, actor_id: str | None = None) -> dict[st
                     status_code=403,
                 )
 
-    return lead.to_dict()
+    lead_data = lead.to_dict()
+
+    # SCRUM-215: Nếu Lead đã được chuyển thành học viên, bổ sung thông tin Student liên kết từ DB
+    try:
+        from app.repositories import student_repository
+        student = student_repository.get_student_by_lead_id(lead_id)
+        if student:
+            lead_data["student_code"] = student.student_code
+            account_email = student.email or lead.email
+            account_status = "Đã tạo"
+            if student.user_id:
+                user = user_repository.get_user_by_id(student.user_id)
+                if user and user.email:
+                    account_email = user.email
+            lead_data["student"] = {
+                "id": student.id,
+                "student_code": student.student_code,
+                "user_id": student.user_id,
+                "full_name": student.full_name,
+                "account_email": account_email,
+                "account_status": account_status,
+                "status": student.status,
+                "program_code": student.program_code or lead.interested_program_code,
+                "program_name": student.program_name or lead.interested_program_name,
+                "created_at": format_datetime_utc_iso(student.created_at),
+            }
+    except Exception as e:
+        logger.warning("Không thể nạp thông tin Student cho Lead %s: %s", lead_id, e)
+
+    return lead_data
+
+
+def get_lead_student_service(lead_id: str, actor_id: str | None = None) -> dict[str, Any]:
+    """
+    Lấy thông tin học viên được chuyển đổi từ một Lead (SCRUM-215).
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    if actor_id:
+        actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_id))
+        actor_user = user_repository.get_user_by_id(actor_id)
+        if actor_user and actor_user.role:
+            actor_roles.add(actor_user.role)
+
+        is_privileged = bool(actor_roles.intersection({"admin", "training_manager"}))
+        is_consultant = "consultant" in actor_roles
+
+        if is_consultant and not is_privileged:
+            if lead.assigned_to_user_id != actor_id:
+                raise LeadServiceError(
+                    "FORBIDDEN",
+                    "Bạn không có quyền truy cập thông tin Lead này.",
+                    status_code=403,
+                )
+
+    from app.repositories import student_repository
+    student = student_repository.get_student_by_lead_id(lead_id)
+    if not student:
+        raise LeadServiceError(
+            "STUDENT_NOT_FOUND",
+            "Chưa có thông tin học viên cho khách hàng tiềm năng này.",
+            status_code=404,
+        )
+
+    account_email = student.email or lead.email
+    account_status = "Đã tạo"
+    if student.user_id:
+        user = user_repository.get_user_by_id(student.user_id)
+        if user and user.email:
+            account_email = user.email
+
+    return {
+        "id": student.id,
+        "student_code": student.student_code,
+        "user_id": student.user_id,
+        "full_name": student.full_name,
+        "phone": student.phone,
+        "email": student.email,
+        "account_email": account_email,
+        "account_status": account_status,
+        "status": student.status,
+        "program_id": student.program_id,
+        "program_code": student.program_code or lead.interested_program_code,
+        "program_name": student.program_name or lead.interested_program_name,
+        "created_at": format_datetime_utc_iso(student.created_at),
+    }
 
 
 
@@ -1010,6 +1100,13 @@ def update_lead_status_service(
     if not existing:
         raise LeadNotFoundError()
 
+    if existing.status in ("converted", "enrolled"):
+        raise LeadServiceError(
+            "LEAD_IMMUTABLE",
+            "Khách hàng đã nhập học, không thể thay đổi trạng thái.",
+            400,
+        )
+
     if _is_restricted_consultant(actor_id):
         if existing.assigned_to_user_id != actor_id:
             raise LeadServiceError(
@@ -1076,6 +1173,13 @@ def assign_lead_service(
     existing_lead = lead_repository.get_lead_by_id(lead_id)
     if not existing_lead:
         raise LeadNotFoundError()
+
+    if existing_lead.status in ("converted", "enrolled"):
+        raise LeadServiceError(
+            "LEAD_IMMUTABLE",
+            "Khách hàng đã nhập học, không thể thay đổi phân công.",
+            400,
+        )
 
     target_user_id: str | None = None
     target_user = None
@@ -1466,6 +1570,13 @@ def update_lead_info_service(lead_id: str, payload: dict[str, Any]) -> dict[str,
     existing_lead = lead_repository.get_lead_by_id(lead_id)
     if not existing_lead:
         raise LeadNotFoundError()
+
+    if existing_lead.status in ("converted", "enrolled"):
+        raise LeadServiceError(
+            "LEAD_IMMUTABLE",
+            "Khách hàng đã nhập học, không thể chỉnh sửa thông tin.",
+            400,
+        )
 
     full_name, phone, email, source, interested_program_id, message = _validate_manual_lead_payload(payload)
 

@@ -17,6 +17,7 @@ class User:
     role: str = "user"
     status: str = "active"
     failed_login_attempts: int = 0
+    must_change_password: bool = False
     locked_until: datetime | None = None
     name: str | None = None
     phone: str | None = None

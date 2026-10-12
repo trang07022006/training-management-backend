@@ -49,6 +49,7 @@ def ensure_business_roles() -> None:
                     ('role-id-consultant', 'perm-id-session-view', NOW()),
                     ('role-id-admin', 'perm-id-lead-delete', NOW());
             """)
+
             # 4. SCRUM-213: Bổ sung bảng lead_status_history và trường rejection_reason
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS lead_status_history (
@@ -124,8 +125,46 @@ def ensure_business_roles() -> None:
             if cursor.fetchone()[0] == 0:
                 cursor.execute("ALTER TABLE leads ADD COLUMN callback_date DATE NULL AFTER rejection_reason;")
 
+            # 6. SCRUM-215: Đảm bảo bảng students và bảng sequence
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS students (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    student_code VARCHAR(50) NOT NULL,
+                    user_id VARCHAR(36) NULL,
+                    lead_id VARCHAR(36) NULL,
+                    full_name VARCHAR(255) NOT NULL,
+                    phone VARCHAR(50) NOT NULL,
+                    email VARCHAR(255) NULL,
+                    program_id VARCHAR(36) NULL,
+                    status VARCHAR(50) NOT NULL DEFAULT 'enrolled',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    CONSTRAINT uq_students_student_code UNIQUE (student_code),
+                    CONSTRAINT uq_students_lead_id UNIQUE (lead_id),
+                    CONSTRAINT uq_students_user_id UNIQUE (user_id),
+                    CONSTRAINT fk_students_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_students_lead FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_students_program FOREIGN KEY (program_id) REFERENCES training_programs(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS student_code_sequences (
+                    prefix VARCHAR(20) NOT NULL PRIMARY KEY,
+                    current_val INT UNSIGNED NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            # 7. SCRUM-215 Initial Password Change Request: Cột must_change_password trong bảng users
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'must_change_password';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE AFTER failed_login_attempts;")
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles, permissions, lead status history and care logs schema ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, and must_change_password ensured successfully.")
     except Exception as e:
-        logger.warning("Could not auto-ensure business roles and schema: %s", e)
+        logger.warning("Could not auto-ensure business roles and schemas: %s", e)
+
