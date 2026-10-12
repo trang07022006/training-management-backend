@@ -229,9 +229,25 @@ def ensure_business_roles() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
 
+            # 11. SCRUM-220: Bảng class_subject_instructors
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS class_subject_instructors (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    class_subject_id VARCHAR(36) NOT NULL,
+                    instructor_id VARCHAR(36) NOT NULL,
+                    role_type VARCHAR(50) NOT NULL DEFAULT 'main',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_class_subject_instructor (class_subject_id, instructor_id),
+                    INDEX idx_csi_class_subject (class_subject_id),
+                    INDEX idx_csi_instructor (instructor_id),
+                    INDEX idx_csi_role_type (role_type)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, must_change_password, student profile fields, class schemas, and enrollments ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, must_change_password, student profile fields, class schemas, enrollments, and instructor assignments ensured successfully.")
     except Exception as e:
         logger.warning("Could not auto-ensure business roles and schemas: %s", e)
 

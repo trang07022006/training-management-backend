@@ -94,6 +94,8 @@ class ClassSubject:
     subject_code: str | None = None
     subject_name: str | None = None
     credits: int | None = None
+    main_instructor: dict[str, Any] | None = None
+    assistants: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +108,8 @@ class ClassSubject:
             "semester": self.semester,
             "is_mandatory": self.is_mandatory,
             "order_index": self.order_index,
+            "main_instructor": self.main_instructor,
+            "assistants": self.assistants or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

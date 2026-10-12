@@ -197,7 +197,7 @@ def copy_program_subjects_to_class(class_id: str, program_id: str) -> int:
 
 
 def get_class_subjects(class_id: str) -> list[ClassSubject]:
-    """Lấy danh sách môn học đã sao chép của một lớp học."""
+    """Lấy danh sách môn học đã sao chép của một lớp học kèm thông tin giảng viên/trợ giảng (SCRUM-217 & SCRUM-220)."""
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
@@ -212,6 +212,39 @@ def get_class_subjects(class_id: str) -> list[ClassSubject]:
                 (class_id,),
             )
             rows = cursor.fetchall()
+
+            # Lấy thông tin phân công giảng viên cho các môn của lớp nếu bảng tồn tại
+            instructors_by_subject = {}
+            try:
+                cursor.execute(
+                    """
+                    SELECT csi.class_subject_id, csi.instructor_id, csi.role_type,
+                           u.name AS instructor_name, u.email AS instructor_email, u.role AS instructor_role
+                    FROM class_subject_instructors csi
+                    JOIN users u ON csi.instructor_id = u.id
+                    WHERE csi.class_subject_id IN (SELECT id FROM class_subjects WHERE class_id = %s)
+                    ORDER BY csi.created_at ASC
+                    """,
+                    (class_id,),
+                )
+                csi_rows = cursor.fetchall()
+                for r in csi_rows:
+                    cs_id = r["class_subject_id"]
+                    if cs_id not in instructors_by_subject:
+                        instructors_by_subject[cs_id] = {"main": None, "assistants": []}
+                    info = {
+                        "id": r["instructor_id"],
+                        "name": r["instructor_name"],
+                        "email": r["instructor_email"],
+                        "role": r["instructor_role"],
+                    }
+                    if r["role_type"] == "main":
+                        instructors_by_subject[cs_id]["main"] = info
+                    else:
+                        instructors_by_subject[cs_id]["assistants"].append(info)
+            except Exception:
+                instructors_by_subject = {}
+
             return [
                 ClassSubject(
                     id=row["id"],
@@ -225,9 +258,102 @@ def get_class_subjects(class_id: str) -> list[ClassSubject]:
                     subject_code=row["subject_code"],
                     subject_name=row["subject_name"],
                     credits=row["credits"],
+                    main_instructor=instructors_by_subject.get(row["id"], {}).get("main"),
+                    assistants=instructors_by_subject.get(row["id"], {}).get("assistants", []),
                 )
                 for row in rows
             ]
+    finally:
+        conn.close()
+
+
+def get_class_subject_by_id(class_subject_id: str) -> dict | None:
+    """Lấy thông tin một môn học của lớp theo ID (SCRUM-220)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT cs.*, s.code AS subject_code, s.name AS subject_name, s.credits
+                FROM class_subjects cs
+                JOIN subjects s ON cs.subject_id = s.id
+                WHERE cs.id = %s
+                """,
+                (class_subject_id,),
+            )
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def get_class_subject_instructors(class_subject_id: str) -> list[dict]:
+    """Lấy danh sách giảng viên chính và trợ giảng đã phân công cho môn học (SCRUM-220)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT csi.id, csi.class_subject_id, csi.instructor_id, csi.role_type,
+                       csi.created_at, csi.updated_at,
+                       u.name AS instructor_name, u.email AS instructor_email, u.role AS instructor_role
+                FROM class_subject_instructors csi
+                JOIN users u ON csi.instructor_id = u.id
+                WHERE csi.class_subject_id = %s
+                ORDER BY CASE WHEN csi.role_type = 'main' THEN 1 ELSE 2 END, csi.created_at ASC
+                """,
+                (class_subject_id,),
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def assign_instructors_to_class_subject(
+    class_subject_id: str,
+    main_instructor_id: str | None,
+    assistant_ids: list[str],
+) -> list[dict]:
+    """
+    Phân công giảng viên chính và trợ giảng cho môn học của lớp (SCRUM-220).
+    - Mỗi môn có tối đa 1 giảng viên chính (main).
+    - Có thể có 0..n trợ giảng (assistant).
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Xóa các phân công cũ của môn
+            cursor.execute("DELETE FROM class_subject_instructors WHERE class_subject_id = %s", (class_subject_id,))
+
+            now = datetime.now(timezone.utc)
+            # Thêm giảng viên chính (nếu có)
+            if main_instructor_id and main_instructor_id.strip():
+                cursor.execute(
+                    """
+                    INSERT INTO class_subject_instructors (id, class_subject_id, instructor_id, role_type, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'main', %s, %s)
+                    """,
+                    (str(uuid.uuid4()), class_subject_id, main_instructor_id.strip(), now, now),
+                )
+
+            # Thêm trợ giảng (bỏ qua nếu trùng lặp hoặc trùng với main_instructor)
+            seen_assts = set()
+            for asst_id in assistant_ids:
+                clean_id = asst_id.strip() if isinstance(asst_id, str) else str(asst_id)
+                if not clean_id or clean_id == (main_instructor_id or "").strip():
+                    continue
+                if clean_id in seen_assts:
+                    continue
+                seen_assts.add(clean_id)
+                cursor.execute(
+                    """
+                    INSERT INTO class_subject_instructors (id, class_subject_id, instructor_id, role_type, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'assistant', %s, %s)
+                    """,
+                    (str(uuid.uuid4()), class_subject_id, clean_id, now, now),
+                )
+
+            conn.commit()
+        return get_class_subject_instructors(class_subject_id)
     finally:
         conn.close()
 
@@ -236,28 +362,39 @@ def list_classes(
     program_id: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    instructor_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[ClassEntity], int]:
-    """Lấy danh sách lớp học có lọc và phân trang."""
+    """Lấy danh sách lớp học có lọc và phân trang (SCRUM-217, SCRUM-219, SCRUM-220)."""
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
             where_clauses = ["1=1"]
             params = []
 
-            if program_id:
+            if program_id and program_id.strip():
                 where_clauses.append("c.program_id = %s")
                 params.append(program_id.strip())
 
-            if status:
+            if status and status.strip():
                 where_clauses.append("c.status = %s")
                 params.append(status.strip())
 
-            if search:
+            if search and search.strip():
                 term = f"%{search.strip()}%"
                 where_clauses.append("(c.class_code LIKE %s OR tp.name LIKE %s OR tp.code LIKE %s)")
                 params.extend([term, term, term])
+
+            if date_from and date_from.strip():
+                where_clauses.append("c.expected_start_date >= %s")
+                params.append(date_from.strip())
+
+            if date_to and date_to.strip():
+                where_clauses.append("c.expected_start_date <= %s")
+                params.append(date_to.strip())
 
             where_sql = " AND ".join(where_clauses)
 

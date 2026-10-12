@@ -70,11 +70,15 @@ def create_class_endpoint():
 @permission_required("course.view")
 def list_classes_endpoint():
     """
-    API lấy danh sách lớp học có lọc theo chương trình, trạng thái, tìm kiếm.
+    API lấy danh sách lớp học có lọc theo chương trình, trạng thái, tìm kiếm, thời gian và giảng viên (SCRUM-217, SCRUM-219, SCRUM-220).
     """
     program_id = request.args.get("program_id")
     status = request.args.get("status")
     search = request.args.get("search")
+    date_from = request.args.get("date_from") or request.args.get("from_date")
+    date_to = request.args.get("date_to") or request.args.get("to_date")
+    instructor_id = None
+
     try:
         page = int(request.args.get("page", 1))
     except (ValueError, TypeError):
@@ -89,6 +93,9 @@ def list_classes_endpoint():
             program_id=program_id,
             status=status,
             search=search,
+            date_from=date_from,
+            date_to=date_to,
+            instructor_id=instructor_id,
             page=page,
             page_size=page_size,
         )
@@ -204,4 +211,74 @@ def get_class_subjects_endpoint(class_id: str):
             "status": "error",
             "code": "DATABASE_ERROR",
             "message": "Lỗi cơ sở dữ liệu khi truy xuất môn học của lớp.",
+        }), 500
+
+
+@class_bp.get("/v1/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.get("/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@permission_required("course.view")
+def get_class_subject_instructors_endpoint(class_id: str, class_subject_id: str):
+    """
+    API xem phân công giảng viên chính và trợ giảng của một môn trong lớp (SCRUM-220).
+    Phân quyền: course.view.
+    """
+    try:
+        result = class_service.get_class_subject_instructors_service(class_id, class_subject_id)
+        return jsonify({
+            "status": "success",
+            "data": result,
+        }), 200
+    except ClassServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi đọc danh sách phân công giảng viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy xuất thông tin phân công giảng viên.",
+        }), 500
+
+
+@class_bp.post("/v1/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.post("/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.put("/v1/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.put("/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@permission_required("course.manage")
+def assign_instructors_endpoint(class_id: str, class_subject_id: str):
+    """
+    API phân công giảng viên chính và trợ giảng theo từng môn của lớp (SCRUM-220).
+    Phân quyền: Quản lý đào tạo (course.manage).
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu không hợp lệ.",
+        }), 400
+
+    try:
+        result = class_service.assign_instructors_service(class_id, class_subject_id, payload)
+        return jsonify({
+            "status": "success",
+            "code": "INSTRUCTORS_ASSIGNED",
+            "message": "Phân công giảng viên và trợ giảng cho môn học thành công.",
+            "data": result,
+        }), 200
+    except ClassServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi phân công giảng viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi lưu thông tin phân công giảng viên.",
         }), 500
