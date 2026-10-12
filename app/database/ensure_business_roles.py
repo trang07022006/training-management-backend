@@ -49,7 +49,7 @@ def ensure_business_roles() -> None:
                     ('role-id-consultant', 'perm-id-session-view', NOW()),
                     ('role-id-admin', 'perm-id-lead-delete', NOW());
             """)
-            # 4. Đảm bảo bảng students (SCRUM-215)
+            # 4. Đảm bảo bảng students và bảng sequence (SCRUM-215)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS students (
                     id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -69,6 +69,12 @@ def ensure_business_roles() -> None:
                     CONSTRAINT fk_students_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
                     CONSTRAINT fk_students_lead FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL,
                     CONSTRAINT fk_students_program FOREIGN KEY (program_id) REFERENCES training_programs(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS student_code_sequences (
+                    prefix VARCHAR(20) NOT NULL PRIMARY KEY,
+                    current_val INT UNSIGNED NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
             connection.commit()

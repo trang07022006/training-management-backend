@@ -57,26 +57,36 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
     if existing_student:
         raise LeadAlreadyConvertedError()
 
-    # Sinh mã học viên tự động
-    student_code = student_repository.generate_next_student_code()
-
+    # Sinh mã học viên tự động và tạo Student (có cơ chế retry nếu gặp xung đột mã)
     student_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
+    max_retries = 3
+    created_student = None
+    student_code = ""
 
-    student = Student(
-        id=student_id,
-        student_code=student_code,
-        full_name=lead.full_name,
-        phone=lead.phone,
-        email=lead.email,
-        program_id=lead.interested_program_id,
-        lead_id=lead.id,
-        status="enrolled",
-        created_at=now,
-        updated_at=now,
-    )
+    for attempt in range(max_retries):
+        student_code = student_repository.generate_next_student_code()
+        student = Student(
+            id=student_id,
+            student_code=student_code,
+            full_name=lead.full_name,
+            phone=lead.phone,
+            email=lead.email,
+            program_id=lead.interested_program_id,
+            lead_id=lead.id,
+            status="enrolled",
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            created_student = student_repository.create_student(student)
+            break
+        except Exception as e:
+            if "uq_students_student_code" in str(e) and attempt < max_retries - 1:
+                logger.warning("Collision on student_code %s, retrying with next code...", student_code)
+                continue
+            raise
 
-    created_student = student_repository.create_student(student)
     # Lấy thông tin đầy đủ sau khi tạo (kèm tên chương trình đào tạo)
     full_student = student_repository.get_student_by_id(created_student.id) or created_student
 

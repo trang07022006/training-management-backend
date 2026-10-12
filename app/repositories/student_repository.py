@@ -11,41 +11,61 @@ from app.models.student import Student
 logger = logging.getLogger(__name__)
 
 
-def generate_next_student_code(prefix: str = "HV") -> str:
+def generate_next_student_code(prefix: str = "STU") -> str:
     """
-    Tự động sinh mã học viên duy nhất (SCRUM-215 - Sub-task 215-02).
-    Quy tắc: HV + YYYY + 4 chữ số thứ tự (ví dụ: HV20260001, HV20260002).
+    Tự động sinh mã học viên kỹ thuật tối thiểu duy nhất (SCRUM-215 - Sub-task 215-02).
+    Format kỹ thuật: STU + 6 chữ số thứ tự (ví dụ: STU000001, STU000002).
+    Đảm bảo an toàn concurrency và tránh collision qua atomic sequence counter & database unique constraint.
     """
-    year = datetime.now(timezone.utc).year
-    search_pattern = f"{prefix}{year}%"
-
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
+            # Đảm bảo bảng sequence tồn tại
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS student_code_sequences (
+                    prefix VARCHAR(20) NOT NULL PRIMARY KEY,
+                    current_val INT UNSIGNED NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            # Kiểm tra và khởi tạo sequence counter đồng bộ từ MAX(student_code)
             cursor.execute(
-                """
-                SELECT student_code FROM students
-                WHERE student_code LIKE %s
-                ORDER BY student_code DESC
-                LIMIT 1
-                FOR UPDATE
-                """,
-                (search_pattern,),
+                "SELECT current_val FROM student_code_sequences WHERE prefix = %s FOR UPDATE",
+                (prefix,),
             )
             row = cursor.fetchone()
-            if row and row[0]:
-                last_code = row[0]
-                # Trích xuất phần số cuối
-                seq_part = last_code[len(f"{prefix}{year}") :]
-                try:
-                    next_seq = int(seq_part) + 1
-                except ValueError:
-                    next_seq = 1
-            else:
-                next_seq = 1
+            if row is None:
+                # Quét mã lớn nhất hiện có trong students để tránh trùng nếu bảng đã có dữ liệu
+                cursor.execute(
+                    "SELECT student_code FROM students WHERE student_code LIKE %s ORDER BY student_code DESC LIMIT 1",
+                    (f"{prefix}%",),
+                )
+                max_row = cursor.fetchone()
+                current_max = 0
+                if max_row and max_row[0]:
+                    raw_code = str(max_row[0])
+                    digits = raw_code[len(prefix):]
+                    if digits.isdigit():
+                        current_max = int(digits)
 
-            new_code = f"{prefix}{year}{next_seq:04d}"
-            return new_code
+                cursor.execute(
+                    "INSERT INTO student_code_sequences (prefix, current_val) VALUES (%s, %s) "
+                    "ON DUPLICATE KEY UPDATE current_val = current_val",
+                    (prefix, current_max),
+                )
+
+            # Atomic increment an toàn tuyệt đối với LAST_INSERT_ID
+            cursor.execute(
+                "UPDATE student_code_sequences SET current_val = LAST_INSERT_ID(current_val + 1) WHERE prefix = %s",
+                (prefix,),
+            )
+            connection.commit()
+
+            cursor.execute("SELECT LAST_INSERT_ID()")
+            next_seq_row = cursor.fetchone()
+            next_seq = next_seq_row[0] if next_seq_row else 1
+
+            return f"{prefix}{next_seq:06d}"
     finally:
         connection.close()
 

@@ -194,8 +194,8 @@ class Scrum215LeadToStudentApiTests(unittest.TestCase):
         self.assertIn("đã được chuyển thành hồ sơ học viên trước đó", data2["message"])
 
     @patch("app.utils.rbac_auth.get_session_by_id")
-    def test_tc215_05_convert_nonexistent_lead_returns_404(self, mock_get_session):
-        """TC215-05: Chuyển đổi Lead không tồn tại trả về lỗi 404."""
+    def test_tc215_nonexistent_lead_returns_404(self, mock_get_session):
+        """TC215-404: Chuyển đổi Lead không tồn tại trả về lỗi 404."""
         mock_get_session.return_value = self.authorized_session
         random_id = str(uuid.uuid4())
 
@@ -207,3 +207,129 @@ class Scrum215LeadToStudentApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         data = response.get_json()
         self.assertEqual(data["code"], "LEAD_NOT_FOUND")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_05_convert_won_lead_generates_student_code_automatically(self, mock_get_session):
+        """TC215-05: Convert một Lead đã Chốt -> Student được tạo với student_code tự động."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        data = response.get_json()
+        student_data = data["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        student_code = student_data.get("student_code")
+        self.assertIsNotNone(student_code)
+        self.assertTrue(len(student_code) > 0)
+        self.assertTrue(
+            student_code.startswith("STU"),
+            f"Expected code to start with STU, got {student_code}",
+        )
+        self.assertEqual(len(student_code), 9)  # STU + 6 digits = 9 chars
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_06_convert_second_lead_generates_different_code(self, mock_get_session):
+        """TC215-06: Convert Lead thứ hai -> student_code khác Student thứ nhất."""
+        mock_get_session.return_value = self.authorized_session
+        lead1 = self._create_test_lead(status=LEAD_STATUS_WON)
+        lead2 = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        res1 = self.client.post(
+            f"/api/v1/leads/{lead1.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res1.status_code, 201)
+        code1 = res1.get_json()["data"]["student"]["student_code"]
+        self.created_student_ids.append(res1.get_json()["data"]["student"]["id"])
+
+        res2 = self.client.post(
+            f"/api/v1/leads/{lead2.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res2.status_code, 201)
+        code2 = res2.get_json()["data"]["student"]["student_code"]
+        self.created_student_ids.append(res2.get_json()["data"]["student"]["id"])
+
+        self.assertNotEqual(code1, code2, "Hai học viên chuyển đổi liên tiếp không được trùng mã!")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_07_request_without_student_code_still_auto_generates(self, mock_get_session):
+        """TC215-07: Không nhập student_code từ UI/request -> backend vẫn tự sinh student_code."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Gửi request không có body hoặc cố ý gửi custom code giả định
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+            json={"student_code": "FORCED_MANUAL_CODE_NOT_ALLOWED"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        # Mã sinh ra phải do hệ thống tự sinh theo prefix STU, không dùng custom code từ client
+        self.assertNotEqual(student_data["student_code"], "FORCED_MANUAL_CODE_NOT_ALLOWED")
+        self.assertTrue(student_data["student_code"].startswith("STU"))
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_08_reload_query_student_preserves_student_code(self, mock_get_session):
+        """TC215-08: Reload/query Student -> student_code vẫn tồn tại đúng trong DB."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        original_code = student_data["student_code"]
+
+        # Query lại bằng ID
+        persisted_by_id = student_repository.get_student_by_id(student_data["id"])
+        self.assertIsNotNone(persisted_by_id)
+        self.assertEqual(persisted_by_id.student_code, original_code)
+
+        # Query lại bằng mã học viên
+        persisted_by_code = student_repository.get_student_by_code(original_code)
+        self.assertIsNotNone(persisted_by_code)
+        self.assertEqual(persisted_by_code.id, student_data["id"])
+
+    def test_tc215_09_uniqueness_enforced_cannot_create_two_students_same_code(self):
+        """TC215-09: Kiểm tra uniqueness -> không thể tạo hai Student có cùng student_code trong DB."""
+        from app.models.student import Student
+
+        unique_code = f"STU_TEST_{uuid.uuid4().hex[:6]}"
+        s1 = Student(
+            id=str(uuid.uuid4()),
+            student_code=unique_code,
+            full_name="Học Viên Duy Nhất 1",
+            phone="0911000001",
+            status="enrolled",
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        student_repository.create_student(s1)
+        self.created_student_ids.append(s1.id)
+
+        # Thử tạo Student thứ 2 với cùng student_code
+        s2 = Student(
+            id=str(uuid.uuid4()),
+            student_code=unique_code,
+            full_name="Học Viên Trùng Mã 2",
+            phone="0911000002",
+            status="enrolled",
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        with self.assertRaises(Exception):
+            student_repository.create_student(s2)
