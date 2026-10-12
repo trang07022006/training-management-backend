@@ -716,4 +716,66 @@ def delete_lead_endpoint(lead_id: str):
         }), 500
 
 
+@lead_bp.post("/v1/leads/<lead_id>/convert-to-student")
+@lead_bp.post("/leads/<lead_id>/convert-to-student")
+@permission_required("course.manage")
+def convert_lead_to_student(lead_id: str):
+    """
+    API chuyển đổi Lead đã chốt sang hồ sơ học viên (SCRUM-215).
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        from app.services import student_service
+        from app.services.student_service import StudentServiceError
+
+        result = student_service.convert_lead_to_student_service(lead_id, actor_id)
+        return jsonify({
+            "status": "success",
+            "code": "CONVERT_SUCCESS",
+            "message": "Chuyển đổi khách hàng thành học viên thành công.",
+            "data": result,
+        }), 201
+
+    except StudentServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi chuyển đổi Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi chuyển đổi Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+
 
