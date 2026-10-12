@@ -10,6 +10,22 @@ from datetime import datetime, timezone
 
 LEAD_STATUS_NEW = "new"
 LEAD_STATUS_CONTACTED = "contacted"
+LEAD_STATUS_CONSULTING = "consulting"
+LEAD_STATUS_TRIAL_SCHEDULED = "trial_scheduled"
+LEAD_STATUS_WON = "won"
+LEAD_STATUS_REJECTED = "rejected"
+
+# SCRUM-213: 6 standard pipeline statuses in exact order
+PIPELINE_LEAD_STATUSES = [
+    LEAD_STATUS_NEW,
+    LEAD_STATUS_CONTACTED,
+    LEAD_STATUS_CONSULTING,
+    LEAD_STATUS_TRIAL_SCHEDULED,
+    LEAD_STATUS_WON,
+    LEAD_STATUS_REJECTED,
+]
+
+# Legacy statuses for backward compatibility with existing tests
 LEAD_STATUS_QUALIFIED = "qualified"
 LEAD_STATUS_CONVERTED = "converted"
 LEAD_STATUS_LOST = "lost"
@@ -18,11 +34,30 @@ LEAD_STATUS_CANCELLED = "cancelled"
 VALID_LEAD_STATUSES = {
     LEAD_STATUS_NEW,
     LEAD_STATUS_CONTACTED,
+    LEAD_STATUS_CONSULTING,
+    LEAD_STATUS_TRIAL_SCHEDULED,
+    LEAD_STATUS_WON,
+    LEAD_STATUS_REJECTED,
     LEAD_STATUS_QUALIFIED,
     LEAD_STATUS_CONVERTED,
     LEAD_STATUS_LOST,
     LEAD_STATUS_CANCELLED,
 }
+
+# SCRUM-213: Danh sách lý do từ chối chuẩn
+REJECTION_REASON_NO_NEED = "Không còn nhu cầu"
+REJECTION_REASON_COST_UNSUITABLE = "Chi phí không phù hợp"
+REJECTION_REASON_CHOSE_OTHER = "Chọn đơn vị khác"
+REJECTION_REASON_UNREACHABLE = "Không liên lạc được"
+REJECTION_REASON_OTHER = "Khác"
+
+VALID_REJECTION_REASONS = [
+    REJECTION_REASON_NO_NEED,
+    REJECTION_REASON_COST_UNSUITABLE,
+    REJECTION_REASON_CHOSE_OTHER,
+    REJECTION_REASON_UNREACHABLE,
+    REJECTION_REASON_OTHER,
+]
 
 LEAD_SOURCE_PUBLIC_FORM = "public_form"
 LEAD_SOURCE_DIRECT = "direct"
@@ -73,6 +108,7 @@ class Lead:
     status: str = LEAD_STATUS_NEW
     assigned_to_user_id: str | None = None
     assigned_at: datetime | None = None
+    rejection_reason: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -107,6 +143,7 @@ class Lead:
             "message": self.message,
             "source": self.source,
             "status": self.status,
+            "rejection_reason": self.rejection_reason,
             "assigned_to_user_id": self.assigned_to_user_id,
             "assigned_at": format_datetime_utc_iso(self.assigned_at),
             "created_at": format_datetime_utc_iso(self.created_at),
