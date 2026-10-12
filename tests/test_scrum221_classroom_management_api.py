@@ -54,6 +54,8 @@ class Scrum221ClassroomManagementApiTests(unittest.TestCase):
             )
 
         self.created_room_ids = []
+        self.created_class_ids = []
+        self.created_program_ids = []
 
     def tearDown(self):
         for rid in self.created_room_ids:
@@ -61,6 +63,19 @@ class Scrum221ClassroomManagementApiTests(unittest.TestCase):
                 classroom_repository.delete_classroom_for_testing(rid)
             except Exception:
                 pass
+
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                for cid in self.created_class_ids:
+                    cursor.execute("DELETE FROM classes WHERE id = %s", (cid,))
+                for pid in self.created_program_ids:
+                    cursor.execute("DELETE FROM training_programs WHERE id = %s", (pid,))
+                conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
 
     # =========================================================================
     # 221-01: KHAI BÁO PHÒNG VẬT LÝ / TRỰC TUYẾN (TC221-01 -> TC221-04)
@@ -169,9 +184,160 @@ class Scrum221ClassroomManagementApiTests(unittest.TestCase):
         self.assertEqual(data["room_type"], "online")
         self.assertIsNone(data["capacity"])
 
-    # 221-02 tests will be activated in sub-task 221-02
-    pass
+    # =========================================================================
+    # 221-02: CẢNH BÁO VƯỢT SỨC CHỨA (TC221-05 -> TC221-08)
+    # =========================================================================
+
+    def _create_test_class(self, max_capacity: int = 30) -> str:
+        """Helper tạo lớp học phục vụ test kiểm tra sức chứa phòng."""
+        program_id = str(uuid.uuid4())
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO training_programs (id, code, name, duration_semesters, standard_tuition_fee, status, created_at, updated_at)
+                    VALUES (%s, %s, 'Chương trình Test 221', 4, 10000000, 'active', NOW(), NOW())
+                    """,
+                    (program_id, f"PRG-221-{uuid.uuid4().hex[:6]}"),
+                )
+                class_id = str(uuid.uuid4())
+                cursor.execute(
+                    """
+                    INSERT INTO classes (id, class_code, program_id, max_capacity, learning_mode, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, 'offline', 'preparing', NOW(), NOW())
+                    """,
+                    (class_id, f"CLS-221-{uuid.uuid4().hex[:6]}", program_id, max_capacity),
+                )
+                conn.commit()
+            self.created_program_ids.append(program_id)
+            self.created_class_ids.append(class_id)
+            return class_id
+        finally:
+            conn.close()
+
+    def test_tc221_05_class_within_room_capacity_no_warning(self):
+        """TC221-05: Lớp <= sức chứa phòng (Lớp 30 người, Phòng 35 chỗ) -> không warning."""
+        class_id = self._create_test_class(max_capacity=30)
+
+        # Tạo phòng 35 chỗ
+        room_code = f"ROOM-PHY-{uuid.uuid4().hex[:6].upper()}"
+        res = self.client.post(
+            "/api/v1/rooms",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "room_code": room_code,
+                "room_name": "Phòng 35 chỗ",
+                "room_type": "physical",
+                "capacity": 35,
+            },
+        )
+        self.assertEqual(res.status_code, 201)
+        room_id = res.get_json()["data"]["id"]
+        self.created_room_ids.append(room_id)
+
+        # Kiểm tra sức chứa
+        check_res = self.client.get(
+            f"/api/v1/rooms/{room_id}/check-capacity?class_id={class_id}",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(check_res.status_code, 200)
+        data = check_res.get_json()["data"]
+        self.assertFalse(data["is_exceeded"])
+        self.assertFalse(data["warning"])
+        self.assertIsNone(data["warning_message"])
+
+    def test_tc221_06_class_exceeds_room_capacity_shows_warning(self):
+        """TC221-06: Lớp > sức chứa phòng (Lớp 30 người, Phòng 20 chỗ) -> cảnh báo rõ ràng (non-blocking)."""
+        class_id = self._create_test_class(max_capacity=30)
+
+        # Tạo phòng 20 chỗ
+        room_code = f"ROOM-PHY-{uuid.uuid4().hex[:6].upper()}"
+        res = self.client.post(
+            "/api/v1/rooms",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "room_code": room_code,
+                "room_name": "Phòng nhỏ 20 chỗ",
+                "room_type": "physical",
+                "capacity": 20,
+            },
+        )
+        self.assertEqual(res.status_code, 201)
+        room_id = res.get_json()["data"]["id"]
+        self.created_room_ids.append(room_id)
+
+        # Kiểm tra sức chứa
+        check_res = self.client.get(
+            f"/api/v1/rooms/{room_id}/check-capacity?class_id={class_id}",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(check_res.status_code, 200)
+        data = check_res.get_json()["data"]
+        self.assertTrue(data["is_exceeded"])
+        self.assertTrue(data["warning"])
+        self.assertIsNotNone(data["warning_message"])
+        self.assertIn("Sĩ số lớp vượt sức chứa phòng", data["warning_message"])
+        self.assertIn("30", data["warning_message"])
+        self.assertIn("20", data["warning_message"])
+
+    def test_tc221_07_online_room_no_capacity_warning(self):
+        """TC221-07: Phòng online -> không áp physical capacity warning nếu không có capacity."""
+        class_id = self._create_test_class(max_capacity=30)
+
+        # Tạo phòng online
+        room_code = f"ROOM-ONL-{uuid.uuid4().hex[:6].upper()}"
+        res = self.client.post(
+            "/api/v1/rooms",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "room_code": room_code,
+                "room_name": "Phòng Zoom Không giới hạn",
+                "room_type": "online",
+                "online_link": "https://zoom.us/j/111222333",
+            },
+        )
+        self.assertEqual(res.status_code, 201)
+        room_id = res.get_json()["data"]["id"]
+        self.created_room_ids.append(room_id)
+
+        check_res = self.client.get(
+            f"/api/v1/rooms/{room_id}/check-capacity?class_id={class_id}",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(check_res.status_code, 200)
+        data = check_res.get_json()["data"]
+        self.assertFalse(data["is_exceeded"])
+        self.assertFalse(data["warning"])
+        self.assertIsNone(data["warning_message"])
+
+    def test_tc221_08_reload_persists_room_data(self):
+        """TC221-08: Reload -> room data persist đúng."""
+        room_code = f"ROOM-PHY-{uuid.uuid4().hex[:6].upper()}"
+        res = self.client.post(
+            "/api/v1/rooms",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "room_code": room_code,
+                "room_name": "Phòng Hội trường lớn",
+                "room_type": "physical",
+                "capacity": 120,
+            },
+        )
+        self.assertEqual(res.status_code, 201)
+        room_id = res.get_json()["data"]["id"]
+        self.created_room_ids.append(room_id)
+
+        get_res = self.client.get(
+            f"/api/v1/rooms/{room_id}",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(get_res.status_code, 200)
+        data = get_res.get_json()["data"]
+        self.assertEqual(data["capacity"], 120)
+        self.assertEqual(data["room_name"], "Phòng Hội trường lớn")
 
 
 if __name__ == "__main__":
     unittest.main()
+
