@@ -306,8 +306,12 @@ def assign_instructors_service(class_id: str, class_subject_id: str, payload: di
         user_record = user_repository.get_user_by_id(main_instructor_id)
         if not user_record:
             raise ClassServiceError("INSTRUCTOR_NOT_FOUND", "Tài khoản giảng viên chính không tồn tại trong hệ thống.", 404)
-        # SCRUM-220: Role validation will be added in sub-task 220-02
-        pass
+        if getattr(user_record, "role", "") != "trainer":
+            raise ClassServiceError(
+                "INVALID_INSTRUCTOR_ROLE",
+                "Chỉ tài khoản có vai trò Giảng viên mới được phân công làm giảng viên chính.",
+                400,
+            )
     else:
         main_instructor_id = None
 
@@ -323,7 +327,13 @@ def assign_instructors_service(class_id: str, class_subject_id: str, payload: di
         asst_user = user_repository.get_user_by_id(asst_id_str)
         if not asst_user:
             raise ClassServiceError("ASSISTANT_NOT_FOUND", "Tài khoản trợ giảng không tồn tại trong hệ thống.", 404)
-        # SCRUM-220: Role validation will be added in sub-task 220-02
+        # Kiểm tra vai trò của trợ giảng (SCRUM-220)
+        if getattr(asst_user, "role", "") in ("trainee", "user", "consultant"):
+            raise ClassServiceError(
+                "INVALID_ASSISTANT_ROLE",
+                "Chỉ tài khoản có vai trò phù hợp mới được phân công làm trợ giảng.",
+                400,
+            )
         validated_assistant_ids.append(asst_id_str)
 
     class_repository.assign_instructors_to_class_subject(

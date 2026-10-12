@@ -276,7 +276,48 @@ class Scrum220InstructorAssignmentApiTests(unittest.TestCase):
         self.assertEqual(data["main_instructor"]["id"], self.trainer_b_id)
         self.assertNotEqual(data["main_instructor"]["id"], self.trainer_a_id)
 
-    # 220-02 & 220-03 tests will be activated in respective sub-tasks
+    # =========================================================================
+    # 220-02: LỌC TÀI KHOẢN THEO VAI TRÒ & BACKEND VALIDATION (TC220-05 -> TC220-07)
+    # =========================================================================
+    def test_tc220_05_and_06_trainer_role_validation(self):
+        """TC220-05 & TC220-06: Chọn user có role trainer -> thành công."""
+        res = self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": self.trainer_a_id,
+                "assistant_ids": [self.assistant_1_id],
+            },
+        )
+        self.assertEqual(res.status_code, 200)
+
+    def test_tc220_07_reject_invalid_role(self):
+        """TC220-07: Gửi user có role không hợp lệ (ví dụ trainee) -> backend từ chối với HTTP 400."""
+        # 1. Trainee làm giảng viên chính -> từ chối
+        res = self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": self.trainee_user_id,
+                "assistant_ids": [],
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.get_json()["code"], "INVALID_INSTRUCTOR_ROLE")
+
+        # 2. Trainee làm trợ giảng -> từ chối
+        res2 = self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": self.trainer_a_id,
+                "assistant_ids": [self.trainee_user_id],
+            },
+        )
+        self.assertEqual(res2.status_code, 400)
+        self.assertEqual(res2.get_json()["code"], "INVALID_ASSISTANT_ROLE")
+
+    # 220-03 tests will be activated in next sub-task
     pass
 
 
