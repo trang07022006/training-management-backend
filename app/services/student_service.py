@@ -2,9 +2,9 @@
 Tầng nghiệp vụ Quản lý Học viên và Chuyển đổi Lead (Student Service) - SCRUM-215.
 """
 
+import os
 from datetime import datetime, timezone
 import logging
-import secrets
 import uuid
 from werkzeug.security import generate_password_hash
 from app.models.student import Student
@@ -29,6 +29,25 @@ class StudentServiceError(Exception):
         self.message = message
         self.status_code = status_code
         super().__init__(message)
+
+
+class StudentInitialPasswordNotConfiguredError(StudentServiceError):
+    def __init__(
+        self,
+        message: str = "Chưa cấu hình mật khẩu ban đầu cho học viên trong hệ thống (STUDENT_INITIAL_PASSWORD).",
+    ):
+        super().__init__("CONFIGURATION_ERROR", message, status_code=500)
+
+
+def get_student_initial_password() -> str:
+    """
+    Đọc mật khẩu ban đầu cố định cho học viên từ biến môi trường STUDENT_INITIAL_PASSWORD.
+    Nếu biến môi trường không tồn tại hoặc rỗng: không tự dùng fallback yếu mà ném lỗi rõ ràng.
+    """
+    pwd = os.getenv("STUDENT_INITIAL_PASSWORD")
+    if not pwd or not pwd.strip():
+        raise StudentInitialPasswordNotConfiguredError()
+    return pwd.strip()
 
 
 class LeadNotFoundError(StudentServiceError):
@@ -90,9 +109,9 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
                 if not any(r.id == role_obj.id for r in existing_roles):
                     user_role_repository.assign_role_to_user(user_id, role_obj.id)
         else:
-            user_id = str(uuid.uuid4())
-            raw_password = f"Hv@{secrets.token_hex(4)}"
+            raw_password = get_student_initial_password()
             password_hash = generate_password_hash(raw_password)
+            user_id = str(uuid.uuid4())
             new_user = User(
                 id=user_id,
                 email=norm_email,
@@ -102,6 +121,7 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
                 role="trainee",
                 status="active",
                 failed_login_attempts=0,
+                must_change_password=True,
                 created_at=now,
                 updated_at=now,
             )

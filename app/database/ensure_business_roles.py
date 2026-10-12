@@ -154,8 +154,17 @@ def ensure_business_roles() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
 
+            # 7. SCRUM-215 Initial Password Change Request: Cột must_change_password trong bảng users
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'must_change_password';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE AFTER failed_login_attempts;")
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles, permissions, lead history, care logs, and student schemas ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, and must_change_password ensured successfully.")
     except Exception as e:
         logger.warning("Could not auto-ensure business roles and schemas: %s", e)
+

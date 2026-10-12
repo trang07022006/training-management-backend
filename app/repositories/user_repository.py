@@ -47,6 +47,7 @@ def _row_to_user(row: dict) -> User:
         role=row.get("role", "user"),
         status=row.get("status", "active"),
         failed_login_attempts=row.get("failed_login_attempts") or 0,
+        must_change_password=bool(row.get("must_change_password", False)),
         locked_until=locked_until,
         name=row.get("name"),
         phone=row.get("phone"),
@@ -124,6 +125,7 @@ def list_users(
             role,
             status,
             failed_login_attempts,
+            must_change_password,
             locked_until,
             name,
             phone,
@@ -163,6 +165,7 @@ def get_user_by_email(email: str) -> User | None:
             role,
             status,
             failed_login_attempts,
+            must_change_password,
             locked_until,
             name,
             phone,
@@ -213,6 +216,7 @@ def get_user_by_id(user_id: str) -> User | None:
             role,
             status,
             failed_login_attempts,
+            must_change_password,
             locked_until,
             name,
             phone,
@@ -254,10 +258,11 @@ def create_user(user: User) -> User:
             role,
             status,
             failed_login_attempts,
+            must_change_password,
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     values = (
         user.id,
@@ -268,6 +273,7 @@ def create_user(user: User) -> User:
         user.role,
         user.status,
         user.failed_login_attempts or 0,
+        bool(user.must_change_password),
         _to_mysql_datetime(created_at),
         _to_mysql_datetime(updated_at),
     )
@@ -317,15 +323,29 @@ def reset_user_lockout(user_id: str) -> None:
 def update_user_password(user_id: str, new_password_hash: str) -> bool:
     """
     Cập nhật mật khẩu băm của người dùng vào MySQL (SCRUM-56).
+    Tự động đặt must_change_password = FALSE sau khi đổi mật khẩu thành công (SCRUM-215).
     Sử dụng parameterized query để chống SQL Injection và đảm bảo an toàn.
     """
     sql = """
         UPDATE users
-        SET password_hash = %s
+        SET password_hash = %s,
+            must_change_password = FALSE
         WHERE id = %s
     """
     with _database_cursor(write=True) as cursor:
         cursor.execute(sql, (new_password_hash, user_id))
+        return cursor.rowcount == 1
+
+
+def set_must_change_password(user_id: str, value: bool) -> bool:
+    """Cập nhật cờ must_change_password cho người dùng (SCRUM-215)."""
+    sql = """
+        UPDATE users
+        SET must_change_password = %s
+        WHERE id = %s
+    """
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql, (bool(value), user_id))
         return cursor.rowcount == 1
 
 
