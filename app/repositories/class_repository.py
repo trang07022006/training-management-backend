@@ -27,6 +27,7 @@ def _row_to_class(row: dict) -> ClassEntity:
         program_code=row.get("program_code"),
         program_name=row.get("program_name"),
         enrolled_count=int(row.get("enrolled_count") or 0),
+        session_progress=row.get("session_progress"),
     )
 
 
