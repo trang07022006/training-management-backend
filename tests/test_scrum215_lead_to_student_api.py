@@ -713,4 +713,65 @@ class Scrum215LeadToStudentApiTests(unittest.TestCase):
             lead_service.update_lead_info_service(lead.id, {"full_name": "Tên Mới", "phone": "0988776655"})
         self.assertEqual(ctx.exception.code, "LEAD_IMMUTABLE")
 
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_24_lead_detail_exposes_converted_student_and_persists_after_reload(self, mock_get_session):
+        """TC215-24: Lead detail API trả về student_code & student info cho Lead đã nhập học, persist sau reload."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # 1. Trước khi convert: Lead detail không có student info
+        detail_before = self.client.get(
+            f"/api/v1/leads/{lead.id}",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(detail_before.status_code, 200)
+        data_before = detail_before.get_json()["data"]
+        self.assertIsNone(data_before.get("student_code"))
+        self.assertIsNone(data_before.get("student"))
+
+        # Endpoint /student trả về 404
+        stu_before = self.client.get(
+            f"/api/v1/leads/{lead.id}/student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(stu_before.status_code, 404)
+        self.assertEqual(stu_before.get_json()["code"], "STUDENT_NOT_FOUND")
+
+        # 2. Chuyển đổi Lead sang Student
+        conv_res = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(conv_res.status_code, 201)
+        student_data = conv_res.get_json()["data"]["student"]
+        generated_code = student_data["student_code"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # 3. Sau khi convert (giả lập reload / F5): Gọi GET /api/v1/leads/<id>
+        detail_after = self.client.get(
+            f"/api/v1/leads/{lead.id}",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(detail_after.status_code, 200)
+        data_after = detail_after.get_json()["data"]
+        self.assertEqual(data_after.get("student_code"), generated_code)
+        self.assertIsNotNone(data_after.get("student"))
+        self.assertEqual(data_after["student"]["student_code"], generated_code)
+        self.assertEqual(data_after["student"]["account_status"], "Đã tạo")
+        self.assertEqual(data_after["student"]["account_email"], lead.email)
+
+        # 4. Kiểm tra endpoint GET /api/v1/leads/<id>/student
+        stu_after = self.client.get(
+            f"/api/v1/leads/{lead.id}/student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(stu_after.status_code, 200)
+        stu_resp_data = stu_after.get_json()["data"]
+        self.assertEqual(stu_resp_data["student_code"], generated_code)
+        self.assertEqual(stu_resp_data["account_status"], "Đã tạo")
+        self.assertEqual(stu_resp_data["account_email"], lead.email)
+
+
 

@@ -135,6 +135,8 @@ class Lead:
     interested_program_name: str | None = None
     assigned_to_name: str | None = None
     assigned_to_email: str | None = None
+    student_code: str | None = None
+    student: dict | None = None
 
     def validate_status(self) -> None:
         """Kiểm tra trạng thái của Lead có nằm trong danh mục hợp lệ không."""
@@ -176,6 +178,10 @@ class Lead:
             data["assigned_to_name"] = self.assigned_to_name
         if self.assigned_to_email is not None:
             data["assigned_to_email"] = self.assigned_to_email
+        if self.student_code is not None:
+            data["student_code"] = self.student_code
+        if self.student is not None:
+            data["student"] = self.student
         return data
 
     def to_public_dict(self) -> dict:
