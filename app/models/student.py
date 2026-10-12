@@ -4,18 +4,22 @@ Lưu trữ thông tin học viên được chuyển đổi từ Lead đã chốt
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 
-def format_datetime_utc_iso(dt: datetime | None) -> str | None:
-    """Chuyển đổi datetime sang chuẩn ISO 8601 UTC có hậu tố Z."""
+def format_datetime_utc_iso(dt: datetime | date | None) -> str | None:
+    """Chuyển đổi datetime sang chuẩn ISO 8601 UTC có hậu tố Z hoặc định dạng ngày nếu là date."""
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(dt, date):
+        return dt.strftime("%Y-%m-%d")
+    return str(dt)
 
 
 @dataclass

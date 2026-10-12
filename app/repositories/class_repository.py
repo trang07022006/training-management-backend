@@ -69,7 +69,7 @@ def get_class_by_id(class_id: str) -> ClassEntity | None:
             cursor.execute(
                 """
                 SELECT c.*, tp.code AS program_code, tp.name AS program_name,
-                       (SELECT COUNT(*) FROM student_classes sc WHERE sc.class_id = c.id) AS enrolled_count
+                       (SELECT COUNT(*) FROM class_enrollments ce WHERE ce.class_id = c.id) AS enrolled_count
                 FROM classes c
                 LEFT JOIN training_programs tp ON c.program_id = tp.id
                 WHERE c.id = %s
@@ -81,7 +81,7 @@ def get_class_by_id(class_id: str) -> ClassEntity | None:
                 return None
             return _row_to_class(row)
     except MySQLError:
-        # Nếu bảng student_classes chưa có (SCRUM-218)
+        # Nếu bảng class_enrollments chưa có (SCRUM-218)
         with conn.cursor(dictionary=True) as cursor:
             cursor.execute(
                 """
@@ -274,7 +274,8 @@ def list_classes(
             # Select page
             offset = (page - 1) * page_size
             data_query = f"""
-                SELECT c.*, tp.code AS program_code, tp.name AS program_name
+                SELECT c.*, tp.code AS program_code, tp.name AS program_name,
+                       (SELECT COUNT(*) FROM class_enrollments ce WHERE ce.class_id = c.id) AS enrolled_count
                 FROM classes c
                 LEFT JOIN training_programs tp ON c.program_id = tp.id
                 WHERE {where_sql}
