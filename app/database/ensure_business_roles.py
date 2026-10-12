@@ -162,9 +162,25 @@ def ensure_business_roles() -> None:
             if cursor.fetchone()[0] == 0:
                 cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE AFTER failed_login_attempts;")
 
+            # 8. SCRUM-216: Cột entry_level và notes trong bảng students
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_schema = DATABASE() AND table_name = 'students' AND column_name = 'entry_level';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE students ADD COLUMN entry_level VARCHAR(255) NULL AFTER status;")
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_schema = DATABASE() AND table_name = 'students' AND column_name = 'notes';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE students ADD COLUMN notes TEXT NULL AFTER entry_level;")
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, and must_change_password ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, must_change_password, and student profile fields ensured successfully.")
     except Exception as e:
         logger.warning("Could not auto-ensure business roles and schemas: %s", e)
+
 
