@@ -317,8 +317,87 @@ class Scrum220InstructorAssignmentApiTests(unittest.TestCase):
         self.assertEqual(res2.status_code, 400)
         self.assertEqual(res2.get_json()["code"], "INVALID_ASSISTANT_ROLE")
 
-    # 220-03 tests will be activated in next sub-task
-    pass
+    # =========================================================================
+    # 220-03: GIẢNG VIÊN THẤY LỚP CỦA MÌNH (TC220-08 -> TC220-10)
+    # =========================================================================
+    def test_tc220_08_assigned_instructor_sees_class(self):
+        """TC220-08: Phân công Trainer A vào môn của Class X -> Login Trainer A -> Class X xuất hiện."""
+        # Phân công Trainer A
+        self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": self.trainer_a_id,
+                "assistant_ids": [],
+            },
+        )
+
+        # Login / gọi API bằng Trainer A
+        trainer_a_token = self._get_trainer_token(self.trainer_a_id)
+        res = self.client.get(
+            "/api/v1/classes",
+            headers={"Authorization": f"Bearer {trainer_a_token}"},
+        )
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]["items"]
+        class_ids = [c["id"] for c in items]
+        self.assertIn(self.class_id, class_ids)
+
+    def test_tc220_09_unassigned_instructor_does_not_see_class(self):
+        """TC220-09: Trainer B không được phân công vào Class X -> không thấy Class X trong danh sách."""
+        # Chỉ phân công Trainer A
+        self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": self.trainer_a_id,
+                "assistant_ids": [],
+            },
+        )
+
+        # Login / gọi API bằng Trainer B
+        trainer_b_token = self._get_trainer_token(self.trainer_b_id)
+        res = self.client.get(
+            "/api/v1/classes",
+            headers={"Authorization": f"Bearer {trainer_b_token}"},
+        )
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]["items"]
+        class_ids = [c["id"] for c in items]
+        self.assertNotIn(self.class_id, class_ids)
+
+    def test_tc220_10_remove_assignment_updates_instructor_list(self):
+        """TC220-10: Gỡ assignment của Trainer A -> Class X không còn xuất hiện trong danh sách của Trainer A."""
+        # Gán Trainer A
+        self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": self.trainer_a_id,
+                "assistant_ids": [],
+            },
+        )
+
+        # Gỡ Trainer A (gán rỗng hoặc gán người khác)
+        self.client.post(
+            f"/api/v1/classes/{self.class_id}/subjects/{self.class_subject_id}/instructors",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+            json={
+                "main_instructor_id": None,
+                "assistant_ids": [],
+            },
+        )
+
+        # Gọi lại bằng Trainer A
+        trainer_a_token = self._get_trainer_token(self.trainer_a_id)
+        res = self.client.get(
+            "/api/v1/classes",
+            headers={"Authorization": f"Bearer {trainer_a_token}"},
+        )
+        self.assertEqual(res.status_code, 200)
+        items = res.get_json()["data"]["items"]
+        class_ids = [c["id"] for c in items]
+        self.assertNotIn(self.class_id, class_ids)
 
 
 if __name__ == "__main__":

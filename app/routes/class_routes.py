@@ -77,7 +77,19 @@ def list_classes_endpoint():
     search = request.args.get("search")
     date_from = request.args.get("date_from") or request.args.get("from_date")
     date_to = request.args.get("date_to") or request.args.get("to_date")
-    instructor_id = None
+    instructor_id = request.args.get("instructor_id")
+
+    # Scope giảng viên (SCRUM-220 - 220-03): Giảng viên chỉ thấy lớp mình được phân công
+    try:
+        from flask_jwt_extended import get_jwt_identity
+        from app.repositories import user_repository
+        current_user_id = get_jwt_identity()
+        if current_user_id:
+            user_record = user_repository.get_user_by_id(current_user_id)
+            if user_record and getattr(user_record, "role", "") == "trainer":
+                instructor_id = user_record.id
+    except Exception:
+        pass
 
     try:
         page = int(request.args.get("page", 1))

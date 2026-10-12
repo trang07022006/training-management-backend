@@ -396,6 +396,16 @@ def list_classes(
                 where_clauses.append("c.expected_start_date <= %s")
                 params.append(date_to.strip())
 
+            if instructor_id and instructor_id.strip():
+                where_clauses.append(
+                    """EXISTS (
+                        SELECT 1 FROM class_subjects cs
+                        INNER JOIN class_subject_instructors csi ON cs.id = csi.class_subject_id
+                        WHERE cs.class_id = c.id AND csi.instructor_id = %s
+                    )"""
+                )
+                params.append(instructor_id.strip())
+
             where_sql = " AND ".join(where_clauses)
 
             # Count total
