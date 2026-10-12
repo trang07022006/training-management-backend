@@ -177,9 +177,43 @@ def ensure_business_roles() -> None:
             if cursor.fetchone()[0] == 0:
                 cursor.execute("ALTER TABLE students ADD COLUMN notes TEXT NULL AFTER entry_level;")
 
+            # 9. SCRUM-217: Bảng classes và class_subjects
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS classes (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    class_code VARCHAR(50) NOT NULL UNIQUE,
+                    program_id VARCHAR(36) NOT NULL,
+                    expected_start_date DATE NULL,
+                    max_capacity INT UNSIGNED NOT NULL DEFAULT 30,
+                    learning_mode VARCHAR(50) NOT NULL DEFAULT 'offline',
+                    status VARCHAR(50) NOT NULL DEFAULT 'preparing',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    INDEX idx_classes_program_id (program_id),
+                    INDEX idx_classes_status (status),
+                    INDEX idx_classes_class_code (class_code)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS class_subjects (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    class_id VARCHAR(36) NOT NULL,
+                    subject_id VARCHAR(36) NOT NULL,
+                    semester SMALLINT UNSIGNED NULL,
+                    is_mandatory BOOLEAN NOT NULL DEFAULT TRUE,
+                    order_index SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_class_subjects (class_id, subject_id),
+                    INDEX idx_class_subjects_class (class_id),
+                    INDEX idx_class_subjects_subject (subject_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, must_change_password, and student profile fields ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, must_change_password, student profile fields, and class schemas ensured successfully.")
     except Exception as e:
         logger.warning("Could not auto-ensure business roles and schemas: %s", e)
 

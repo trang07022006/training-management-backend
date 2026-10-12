@@ -16,6 +16,7 @@ from app.routes.public_consultation_routes import public_consultation_bp
 from app.routes.subject_session_routes import subject_session_bp
 from app.routes.lead_routes import lead_bp
 from app.routes.student_routes import student_bp
+from app.routes.class_routes import class_bp
 
 
 app = Flask(__name__)
@@ -38,6 +39,7 @@ app.register_blueprint(user_role_bp)
 app.register_blueprint(public_consultation_bp)
 app.register_blueprint(lead_bp)
 app.register_blueprint(student_bp)
+app.register_blueprint(class_bp)
 
 from app.database.ensure_business_roles import ensure_business_roles
 ensure_business_roles()
