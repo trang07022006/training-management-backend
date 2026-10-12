@@ -31,6 +31,8 @@ class Student:
     user_id: str | None = None
     lead_id: str | None = None
     status: str = "enrolled"
+    entry_level: str | None = None
+    notes: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -50,6 +52,8 @@ class Student:
             "user_id": self.user_id,
             "lead_id": self.lead_id,
             "status": self.status,
+            "entry_level": self.entry_level,
+            "notes": self.notes,
             "created_at": format_datetime_utc_iso(self.created_at),
             "updated_at": format_datetime_utc_iso(self.updated_at),
         }

@@ -70,6 +70,27 @@ def generate_next_student_code(prefix: str = "STU") -> str:
         connection.close()
 
 
+def _row_to_student(row) -> Student:
+    """Helper chuyển đổi tuple từ SELECT sang Student entity."""
+    return Student(
+        id=row[0],
+        student_code=row[1],
+        user_id=row[2],
+        lead_id=row[3],
+        full_name=row[4],
+        phone=row[5],
+        email=row[6],
+        program_id=row[7],
+        status=row[8],
+        entry_level=row[9],
+        notes=row[10],
+        created_at=row[11],
+        updated_at=row[12],
+        program_code=row[13] if len(row) > 13 else None,
+        program_name=row[14] if len(row) > 14 else None,
+    )
+
+
 def create_student(student: Student) -> Student:
     """
     Tạo bản ghi học viên mới trong database.
@@ -87,9 +108,9 @@ def create_student(student: Student) -> Student:
                 INSERT INTO students (
                     id, student_code, user_id, lead_id,
                     full_name, phone, email, program_id,
-                    status, created_at, updated_at
+                    status, entry_level, notes, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             cursor.execute(
                 insert_sql,
@@ -103,6 +124,8 @@ def create_student(student: Student) -> Student:
                     student.email,
                     student.program_id,
                     student.status,
+                    student.entry_level,
+                    student.notes,
                     student.created_at,
                     student.updated_at,
                 ),
@@ -122,7 +145,7 @@ def get_student_by_id(student_id: str) -> Student | None:
                 SELECT 
                     s.id, s.student_code, s.user_id, s.lead_id,
                     s.full_name, s.phone, s.email, s.program_id,
-                    s.status, s.created_at, s.updated_at,
+                    s.status, s.entry_level, s.notes, s.created_at, s.updated_at,
                     tp.code AS program_code, tp.name AS program_name
                 FROM students s
                 LEFT JOIN training_programs tp ON s.program_id = tp.id
@@ -132,21 +155,7 @@ def get_student_by_id(student_id: str) -> Student | None:
             row = cursor.fetchone()
             if not row:
                 return None
-            return Student(
-                id=row[0],
-                student_code=row[1],
-                user_id=row[2],
-                lead_id=row[3],
-                full_name=row[4],
-                phone=row[5],
-                email=row[6],
-                program_id=row[7],
-                status=row[8],
-                created_at=row[9],
-                updated_at=row[10],
-                program_code=row[11],
-                program_name=row[12],
-            )
+            return _row_to_student(row)
     finally:
         connection.close()
 
@@ -160,7 +169,7 @@ def get_student_by_lead_id(lead_id: str) -> Student | None:
                 SELECT 
                     s.id, s.student_code, s.user_id, s.lead_id,
                     s.full_name, s.phone, s.email, s.program_id,
-                    s.status, s.created_at, s.updated_at,
+                    s.status, s.entry_level, s.notes, s.created_at, s.updated_at,
                     tp.code AS program_code, tp.name AS program_name
                 FROM students s
                 LEFT JOIN training_programs tp ON s.program_id = tp.id
@@ -170,21 +179,7 @@ def get_student_by_lead_id(lead_id: str) -> Student | None:
             row = cursor.fetchone()
             if not row:
                 return None
-            return Student(
-                id=row[0],
-                student_code=row[1],
-                user_id=row[2],
-                lead_id=row[3],
-                full_name=row[4],
-                phone=row[5],
-                email=row[6],
-                program_id=row[7],
-                status=row[8],
-                created_at=row[9],
-                updated_at=row[10],
-                program_code=row[11],
-                program_name=row[12],
-            )
+            return _row_to_student(row)
     finally:
         connection.close()
 
@@ -198,7 +193,7 @@ def get_student_by_code(student_code: str) -> Student | None:
                 SELECT 
                     s.id, s.student_code, s.user_id, s.lead_id,
                     s.full_name, s.phone, s.email, s.program_id,
-                    s.status, s.created_at, s.updated_at,
+                    s.status, s.entry_level, s.notes, s.created_at, s.updated_at,
                     tp.code AS program_code, tp.name AS program_name
                 FROM students s
                 LEFT JOIN training_programs tp ON s.program_id = tp.id
@@ -208,21 +203,7 @@ def get_student_by_code(student_code: str) -> Student | None:
             row = cursor.fetchone()
             if not row:
                 return None
-            return Student(
-                id=row[0],
-                student_code=row[1],
-                user_id=row[2],
-                lead_id=row[3],
-                full_name=row[4],
-                phone=row[5],
-                email=row[6],
-                program_id=row[7],
-                status=row[8],
-                created_at=row[9],
-                updated_at=row[10],
-                program_code=row[11],
-                program_name=row[12],
-            )
+            return _row_to_student(row)
     finally:
         connection.close()
 
@@ -244,4 +225,94 @@ def update_student_user_id(student_id: str, user_id: str) -> bool:
             return cursor.rowcount > 0
     finally:
         connection.close()
+
+
+def update_student_profile(
+    student_id: str,
+    full_name: str,
+    phone: str,
+    email: str | None = None,
+    entry_level: str | None = None,
+    notes: str | None = None,
+) -> Student | None:
+    """
+    Cập nhật thông tin hồ sơ học viên (SCRUM-216 - Sub-task 216-01).
+    - Cập nhật thông tin cá nhân: full_name, phone, email.
+    - Cập nhật trình độ đầu vào: entry_level.
+    - Cập nhật ghi chú: notes.
+    - student_code là read-only theo thiết kế.
+    """
+    now = datetime.now(timezone.utc)
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE students
+                SET full_name = %s,
+                    phone = %s,
+                    email = %s,
+                    entry_level = %s,
+                    notes = %s,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (full_name, phone, email, entry_level, notes, now, student_id),
+            )
+            connection.commit()
+            if cursor.rowcount == 0:
+                cursor.execute("SELECT id FROM students WHERE id = %s", (student_id,))
+                if not cursor.fetchone():
+                    return None
+        return get_student_by_id(student_id)
+    finally:
+        connection.close()
+
+
+def list_students(
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Student], int]:
+    """
+    Lấy danh sách học viên có phân trang và tìm kiếm (SCRUM-216 - Sub-task 216-01 & 216-03).
+    Hỗ trợ tìm kiếm theo: mã học viên (student_code), họ tên (full_name), số điện thoại (phone).
+    """
+    offset = max(0, (page - 1) * page_size)
+    where_clauses = []
+    params = []
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        where_clauses.append("(s.student_code LIKE %s OR s.full_name LIKE %s OR s.phone LIKE %s)")
+        params.extend([term, term, term])
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            count_sql = f"SELECT COUNT(*) FROM students s {where_sql}"
+            cursor.execute(count_sql, tuple(params))
+            total = cursor.fetchone()[0]
+
+            query_sql = f"""
+                SELECT 
+                    s.id, s.student_code, s.user_id, s.lead_id,
+                    s.full_name, s.phone, s.email, s.program_id,
+                    s.status, s.entry_level, s.notes, s.created_at, s.updated_at,
+                    tp.code AS program_code, tp.name AS program_name
+                FROM students s
+                LEFT JOIN training_programs tp ON s.program_id = tp.id
+                {where_sql}
+                ORDER BY s.created_at DESC
+                LIMIT %s OFFSET %s
+            """
+            cursor.execute(query_sql, tuple(params + [page_size, offset]))
+            rows = cursor.fetchall()
+            students = [_row_to_student(r) for r in rows]
+            return students, total
+    finally:
+        connection.close()
+
 

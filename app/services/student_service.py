@@ -219,3 +219,218 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
     }
 
 
+class StudentNotFoundError(StudentServiceError):
+    def __init__(self, message: str = "Không tìm thấy hồ sơ học viên."):
+        super().__init__("STUDENT_NOT_FOUND", message, status_code=404)
+
+
+class StudentValidationError(StudentServiceError):
+    def __init__(self, code: str = "VALIDATION_ERROR", message: str = "Dữ liệu không hợp lệ."):
+        super().__init__(code, message, status_code=400)
+
+
+import re
+from app.database.connection import get_db_connection
+from app.models.student import format_datetime_utc_iso
+
+PHONE_CHARS_REGEX = re.compile(r"^\+?[0-9\s\-\.\(\)]{6,30}$")
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+
+
+def _get_student_classes(student_id: str) -> tuple[dict | None, list[dict]]:
+    """
+    Truy vấn lớp đang học và lịch sử các lớp đã học của học viên (SCRUM-216 - Sub-task 216-02).
+    Nếu bảng class_enrollments/classes chưa tồn tại hoặc chưa có dữ liệu, trả về (None, []).
+    """
+    connection = get_db_connection()
+    try:
+        with connection.cursor(dictionary=True) as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) as cnt FROM information_schema.tables 
+                WHERE table_schema = DATABASE() AND table_name = 'class_enrollments';
+            """)
+            if cursor.fetchone()["cnt"] == 0:
+                return None, []
+
+            cursor.execute("""
+                SELECT 
+                    ce.id AS enrollment_id,
+                    ce.class_id,
+                    ce.status AS enrollment_status,
+                    ce.enrolled_at,
+                    c.code AS class_code,
+                    c.name AS class_name,
+                    c.status AS class_status,
+                    c.expected_start_date,
+                    tp.code AS program_code,
+                    tp.name AS program_name
+                FROM class_enrollments ce
+                JOIN classes c ON ce.class_id = c.id
+                LEFT JOIN training_programs tp ON c.program_id = tp.id
+                WHERE ce.student_id = %s
+                ORDER BY ce.enrolled_at DESC
+            """, (student_id,))
+            rows = cursor.fetchall()
+            if not rows:
+                return None, []
+
+            current = None
+            history = []
+            for r in rows:
+                cls_info = {
+                    "enrollment_id": r["enrollment_id"],
+                    "class_id": r["class_id"],
+                    "class_code": r["class_code"],
+                    "class_name": r["class_name"] or r["class_code"],
+                    "class_status": r["class_status"],
+                    "enrollment_status": r["enrollment_status"],
+                    "expected_start_date": format_datetime_utc_iso(r["expected_start_date"]) if r.get("expected_start_date") else None,
+                    "enrolled_at": format_datetime_utc_iso(r["enrolled_at"]) if r.get("enrolled_at") else None,
+                    "program_code": r.get("program_code"),
+                    "program_name": r.get("program_name"),
+                }
+                if r["class_status"] in ("in_progress", "ongoing", "studying") and not current:
+                    current = cls_info
+                else:
+                    history.append(cls_info)
+
+            if not current and rows:
+                first = rows[0]
+                if first["class_status"] in ("preparing", "in_progress", "ongoing"):
+                    current = {
+                        "enrollment_id": first["enrollment_id"],
+                        "class_id": first["class_id"],
+                        "class_code": first["class_code"],
+                        "class_name": first["class_name"] or first["class_code"],
+                        "class_status": first["class_status"],
+                        "enrollment_status": first["enrollment_status"],
+                        "expected_start_date": format_datetime_utc_iso(first["expected_start_date"]) if first.get("expected_start_date") else None,
+                        "enrolled_at": format_datetime_utc_iso(first["enrolled_at"]) if first.get("enrolled_at") else None,
+                        "program_code": first.get("program_code"),
+                        "program_name": first.get("program_name"),
+                    }
+                    history = [h for h in history if h["enrollment_id"] != first["enrollment_id"]]
+
+            return current, history
+    except Exception as e:
+        logger.warning("Không thể đọc danh sách lớp học của học viên %s: %s", student_id, e)
+        return None, []
+    finally:
+        connection.close()
+
+
+def get_student_detail_service(student_id: str) -> dict:
+    """
+    Lấy chi tiết hồ sơ học viên kèm lớp đang học và lịch sử lớp (SCRUM-216 - Sub-task 216-01 & 216-02).
+    """
+    student = student_repository.get_student_by_id(student_id)
+    if not student:
+        raise StudentNotFoundError()
+
+    data = student.to_dict()
+    current_class, class_history = _get_student_classes(student.id)
+    data["current_class"] = current_class
+    data["class_history"] = class_history
+    return data
+
+
+def update_student_profile_service(student_id: str, payload: dict) -> dict:
+    """
+    Cập nhật thông tin hồ sơ học viên (SCRUM-216 - Sub-task 216-01).
+    - Cập nhật thông tin cá nhân: full_name, phone, email.
+    - Cập nhật trình độ đầu vào: entry_level.
+    - Cập nhật ghi chú: notes.
+    """
+    student = student_repository.get_student_by_id(student_id)
+    if not student:
+        raise StudentNotFoundError()
+
+    full_name = payload.get("full_name")
+    if full_name is not None:
+        if not isinstance(full_name, str) or not full_name.strip():
+            raise StudentValidationError("INVALID_NAME", "Họ và tên không được để trống.")
+        full_name = full_name.strip()
+        if len(full_name) > 255:
+            raise StudentValidationError("NAME_TOO_LONG", "Họ và tên không được vượt quá 255 ký tự.")
+    else:
+        full_name = student.full_name
+
+    phone = payload.get("phone")
+    if phone is not None:
+        if not isinstance(phone, str) or not phone.strip():
+            raise StudentValidationError("INVALID_PHONE", "Số điện thoại không được để trống.")
+        phone = phone.strip()
+        if not PHONE_CHARS_REGEX.match(phone):
+            raise StudentValidationError("INVALID_PHONE", "Số điện thoại không đúng định dạng.")
+    else:
+        phone = student.phone
+
+    email = payload.get("email")
+    if email is not None:
+        if isinstance(email, str) and email.strip():
+            email = email.strip()
+            if not EMAIL_REGEX.match(email):
+                raise StudentValidationError("INVALID_EMAIL", "Email không đúng định dạng.")
+        else:
+            email = None
+    else:
+        email = student.email
+
+    entry_level = payload.get("entry_level")
+    if entry_level is not None:
+        if isinstance(entry_level, str) and entry_level.strip():
+            entry_level = entry_level.strip()
+            if len(entry_level) > 255:
+                raise StudentValidationError("ENTRY_LEVEL_TOO_LONG", "Trình độ đầu vào không được vượt quá 255 ký tự.")
+        else:
+            entry_level = None
+    else:
+        entry_level = student.entry_level
+
+    notes = payload.get("notes")
+    if notes is not None:
+        if isinstance(notes, str) and notes.strip():
+            notes = notes.strip()
+        else:
+            notes = None
+    else:
+        notes = student.notes
+
+    updated = student_repository.update_student_profile(
+        student_id=student.id,
+        full_name=full_name,
+        phone=phone,
+        email=email,
+        entry_level=entry_level,
+        notes=notes,
+    )
+    if not updated:
+        raise StudentNotFoundError()
+
+    data = updated.to_dict()
+    current_class, class_history = _get_student_classes(updated.id)
+    data["current_class"] = current_class
+    data["class_history"] = class_history
+    return data
+
+
+def list_students_service(
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """
+    Lấy danh sách học viên có phân trang và tìm kiếm (SCRUM-216 - Sub-task 216-01 & 216-03).
+    """
+    page = max(1, page)
+    page_size = max(1, min(100, page_size))
+    students, total = student_repository.list_students(search=search, page=page, page_size=page_size)
+    return {
+        "items": [s.to_dict() for s in students],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+
