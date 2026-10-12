@@ -225,3 +225,23 @@ def get_student_by_code(student_code: str) -> Student | None:
             )
     finally:
         connection.close()
+
+
+def update_student_user_id(student_id: str, user_id: str) -> bool:
+    """Cập nhật user_id cho bản ghi Student (SCRUM-215 - Sub-task 215-03)."""
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE students
+                SET user_id = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (user_id, datetime.now(timezone.utc), student_id),
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+    finally:
+        connection.close()
+
