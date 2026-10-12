@@ -51,6 +51,13 @@ def create_class_endpoint():
         }), err.status_code
     except MySQLError as err:
         logger.error("Lỗi cơ sở dữ liệu khi mở lớp học: %s", err)
+        err_msg = str(err)
+        if getattr(err, "errno", None) == 1062 or "1062" in err_msg or "Duplicate entry" in err_msg:
+            return jsonify({
+                "status": "error",
+                "code": "CLASS_CODE_ALREADY_EXISTS",
+                "message": "Mã lớp đã tồn tại. Vui lòng chọn mã lớp khác.",
+            }), 409
         return jsonify({
             "status": "error",
             "code": "DATABASE_ERROR",

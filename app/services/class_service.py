@@ -40,7 +40,7 @@ class ClassValidationError(ClassServiceError):
 
 
 class ClassCodeAlreadyExistsError(ClassServiceError):
-    def __init__(self, message: str = "Mã lớp học đã tồn tại trong hệ thống. Vui lòng nhập mã lớp khác."):
+    def __init__(self, message: str = "Mã lớp đã tồn tại. Vui lòng chọn mã lớp khác."):
         super().__init__("CLASS_CODE_ALREADY_EXISTS", message, status_code=409)
 
 
@@ -78,7 +78,7 @@ def create_class_service(payload: dict) -> dict:
     # Kiểm tra mã lớp duy nhất (217-02)
     existing = class_repository.get_class_by_code(class_code)
     if existing:
-        raise ClassCodeAlreadyExistsError(f"Mã lớp học '{class_code}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác.")
+        raise ClassCodeAlreadyExistsError("Mã lớp đã tồn tại. Vui lòng chọn mã lớp khác.")
 
     # 2. Chương trình đào tạo
     program_id = payload.get("program_id")

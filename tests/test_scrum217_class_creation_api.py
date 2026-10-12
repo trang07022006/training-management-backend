@@ -216,7 +216,7 @@ class Scrum217ClassCreationApiTests(unittest.TestCase):
         self.assertIn(resp2.status_code, (409, 400))
         body2 = resp2.get_json()
         self.assertEqual(body2["code"], "CLASS_CODE_ALREADY_EXISTS")
-        self.assertIn("đã tồn tại", body2["message"])
+        self.assertEqual(body2["message"], "Mã lớp đã tồn tại. Vui lòng chọn mã lớp khác.")
 
     # =========================================================================
     # 217-03: VÒNG ĐỜI LỚP
