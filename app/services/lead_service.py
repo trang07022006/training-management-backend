@@ -659,6 +659,13 @@ def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[st
     if not existing:
         raise LeadNotFoundError()
 
+    if existing.status in ("converted", "enrolled"):
+        raise LeadServiceError(
+            "LEAD_IMMUTABLE",
+            "Khách hàng đã nhập học, không thể thay đổi trạng thái.",
+            400,
+        )
+
     now = datetime.now(timezone.utc)
     updated = lead_repository.update_lead_status(lead_id, status, updated_at=now)
     if not updated:
@@ -694,6 +701,13 @@ def assign_lead_service(
     existing_lead = lead_repository.get_lead_by_id(lead_id)
     if not existing_lead:
         raise LeadNotFoundError()
+
+    if existing_lead.status in ("converted", "enrolled"):
+        raise LeadServiceError(
+            "LEAD_IMMUTABLE",
+            "Khách hàng đã nhập học, không thể thay đổi phân công.",
+            400,
+        )
 
     target_user_id: str | None = None
     target_user = None
@@ -1084,6 +1098,13 @@ def update_lead_info_service(lead_id: str, payload: dict[str, Any]) -> dict[str,
     existing_lead = lead_repository.get_lead_by_id(lead_id)
     if not existing_lead:
         raise LeadNotFoundError()
+
+    if existing_lead.status in ("converted", "enrolled"):
+        raise LeadServiceError(
+            "LEAD_IMMUTABLE",
+            "Khách hàng đã nhập học, không thể chỉnh sửa thông tin.",
+            400,
+        )
 
     full_name, phone, email, source, interested_program_id, message = _validate_manual_lead_payload(payload)
 

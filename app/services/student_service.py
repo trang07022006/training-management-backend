@@ -58,7 +58,9 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
     if not lead:
         raise LeadNotFoundError()
 
-    # Kiểm tra Lead phải ở trạng thái Chốt (won)
+    # Kiểm tra Lead phải ở trạng thái Chốt (won) và chưa Đã nhập học (converted)
+    if lead.status in ("converted", "enrolled"):
+        raise LeadAlreadyConvertedError("Khách hàng đã nhập học / đã được chuyển thành hồ sơ học viên trước đó.")
     if lead.status != "won":
         raise LeadNotWonError()
 
@@ -167,16 +169,24 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
                 type(email_err).__name__,
             )
 
+    # 4. Chuyển trạng thái Lead sang Đã nhập học (SCRUM-215 - Sub-task 215-04)
+    updated_lead = lead_repository.update_lead_status(lead.id, "converted", updated_at=now)
+    if updated_lead:
+        lead = updated_lead
+    else:
+        lead.status = "converted"
+
     # Lấy thông tin đầy đủ sau khi tạo (kèm tên chương trình đào tạo)
     full_student = student_repository.get_student_by_id(created_student.id) or created_student
 
     logger.info(
-        "Chuyển đổi Lead %s thành Student %s (Code: %s, User: %s, EmailSent: %s) bởi actor %s",
+        "Chuyển đổi Lead %s thành Student %s (Code: %s, User: %s, EmailSent: %s, LeadStatus: %s) bởi actor %s",
         lead_id,
         student_id,
         student_code,
         user_id,
         email_sent,
+        lead.status,
         actor_user_id,
     )
 
@@ -187,4 +197,5 @@ def convert_lead_to_student_service(lead_id: str, actor_user_id: str | None = No
         "account_created": account_created,
         "email_sent": email_sent,
     }
+
 
