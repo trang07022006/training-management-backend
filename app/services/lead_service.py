@@ -17,8 +17,15 @@ from app.models.lead import (
     LEAD_SOURCE_DIRECT,
     LEAD_SOURCE_PUBLIC_FORM,
     LEAD_STATUS_NEW,
+    LEAD_STATUS_REJECTED,
+    PIPELINE_LEAD_STATUSES,
     VALID_LEAD_SOURCES,
+    VALID_LEAD_STATUSES,
+    VALID_REJECTION_REASONS,
+    VALID_INTERACTION_TYPES,
+    INTERACTION_TYPE_LABELS,
     Lead,
+    format_datetime_utc_iso,
 )
 from app.repositories import (
     lead_repository,
@@ -49,6 +56,24 @@ def is_user_consultant(user_id: str) -> bool:
         return False
 
     return "consultant" in roles
+
+
+def _is_restricted_consultant(actor_id: str | None) -> bool:
+    """
+    Kiểm tra người thao tác có bị giới hạn phạm vi dữ liệu theo vai trò Tư vấn tuyển sinh không (SCRUM-127/213).
+    Nếu là consultant và KHÔNG có quyền admin/training_manager thì chỉ xem/sửa Lead được giao cho mình.
+    """
+    if not actor_id:
+        return False
+    actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_id))
+    actor_user = user_repository.get_user_by_id(actor_id)
+    if actor_user and actor_user.role:
+        actor_roles.add(actor_user.role)
+
+    is_privileged = bool(actor_roles.intersection({"admin", "training_manager"}))
+    is_consultant = "consultant" in actor_roles
+    return is_consultant and not is_privileged
+
 
 
 
@@ -134,6 +159,13 @@ class LeadNotFoundError(LeadServiceError):
 
     def __init__(self, message: str = "Không tìm thấy thông tin Lead."):
         super().__init__(code="LEAD_NOT_FOUND", message=message, status_code=404)
+
+
+class LeadPermissionError(LeadServiceError):
+    """Lỗi không có quyền thao tác trên Lead (403)."""
+
+    def __init__(self, message: str = "Bạn không có quyền thao tác trên Lead này."):
+        super().__init__(code="FORBIDDEN", message=message, status_code=403)
 
 
 def _normalize_phone_key(phone: str) -> str:
@@ -618,13 +650,305 @@ def get_lead_by_id_service(lead_id: str, actor_id: str | None = None) -> dict[st
 
 
 
-def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def get_lead_pipeline_service(actor_id: str | None = None) -> dict[str, Any]:
     """
-    Cập nhật trạng thái của một Lead (SCRUM-126 - Activity A3).
-    - Chỉ cho phép sửa trường 'status'.
-    - Chặn mọi nỗ lực can thiệp các trường hệ thống (id, created_at, source, v.v.).
-    - Xác thực trạng thái nằm trong danh mục VALID_LEAD_STATUSES.
-    - Cập nhật thời gian updated_at theo UTC server.
+    Lấy dữ liệu bảng phễu Lead (Kanban) với 6 trạng thái nghiệp vụ chuẩn (SCRUM-213).
+    - Phân quyền: Tư vấn tuyển sinh chỉ nhìn thấy Lead được giao cho mình.
+    - Sắp xếp và gom nhóm theo đúng thứ tự 6 cột.
+    """
+    assigned_to_user_id = None
+    if _is_restricted_consultant(actor_id):
+        assigned_to_user_id = actor_id
+
+    leads = lead_repository.get_pipeline_leads(assigned_to_user_id=assigned_to_user_id)
+
+    status_columns = [
+        {"status": "new", "label": "Mới"},
+        {"status": "contacted", "label": "Đã liên hệ"},
+        {"status": "consulting", "label": "Đang tư vấn"},
+        {"status": "trial_scheduled", "label": "Hẹn học thử"},
+        {"status": "won", "label": "Chốt"},
+        {"status": "rejected", "label": "Từ chối"},
+    ]
+
+    grouped: dict[str, list[dict[str, Any]]] = {col["status"]: [] for col in status_columns}
+    for lead in leads:
+        lead_dict = lead.to_dict()
+        if lead.status in grouped:
+            grouped[lead.status].append(lead_dict)
+
+    columns = []
+    counts = {}
+    for col in status_columns:
+        s_key = col["status"]
+        col_leads = grouped[s_key]
+        counts[s_key] = len(col_leads)
+        columns.append({
+            "status": s_key,
+            "label": col["label"],
+            "count": len(col_leads),
+            "leads": col_leads,
+        })
+
+    return {
+        "status": "success",
+        "data": {
+            "columns": columns,
+            "leads": [l.to_dict() for l in leads],
+            "counts": counts,
+            "total": len(leads),
+        },
+    }
+
+
+def get_lead_status_history_service(
+    lead_id: str,
+    actor_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Lấy danh sách lịch sử thay đổi trạng thái của một Lead (SCRUM-213).
+    - Kiểm tra ID hợp lệ.
+    - Phân quyền: Tư vấn tuyển sinh chỉ xem Lead được phân công cho mình.
+    - Sắp xếp mới nhất ở trên.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    if _is_restricted_consultant(actor_id):
+        if lead.assigned_to_user_id != actor_id:
+            raise LeadServiceError(
+                "FORBIDDEN",
+                "Bạn không có quyền truy cập thông tin Lead này.",
+                status_code=403,
+            )
+
+    history = lead_repository.get_lead_status_history(lead_id)
+    return [
+        {
+            "id": h["id"],
+            "lead_id": h["lead_id"],
+            "old_status": h["old_status"],
+            "new_status": h["new_status"],
+            "reason": h.get("reason"),
+            "notes": h.get("notes"),
+            "performed_by_user_id": h.get("performed_by_user_id"),
+            "performed_by_name": h.get("performed_by_name"),
+            "created_at": (
+                format_datetime_utc_iso(h.get("created_at"))
+                if isinstance(h.get("created_at"), datetime)
+                else h.get("created_at")
+            ),
+        }
+        for h in history
+    ]
+
+
+def create_lead_care_log_service(
+    lead_id: str,
+    payload: dict[str, Any],
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Ghi nhận một lượt tương tác chăm sóc Lead (SCRUM-214 - Activity A1).
+    - Kiểm tra ID hợp lệ.
+    - Phân quyền: Tư vấn tuyển sinh chỉ ghi nhận cho Lead được phân công cho mình.
+    - Xác thực loại tương tác (chỉ chấp nhận 'call', 'message', 'meeting').
+    - Xác thực nội dung (không được để trống).
+    - Xác thực thời điểm tương tác (interaction_at).
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    if _is_restricted_consultant(actor_id):
+        if lead.assigned_to_user_id != actor_id:
+            raise LeadServiceError(
+                "FORBIDDEN",
+                "Bạn không có quyền thao tác trên Lead này.",
+                status_code=403,
+            )
+
+    if not isinstance(payload, dict):
+        raise LeadValidationError("INVALID_PARAMS", "Dữ liệu yêu cầu không hợp lệ.")
+
+    interaction_type = payload.get("interaction_type")
+    if not interaction_type or not isinstance(interaction_type, str):
+        raise LeadValidationError("INVALID_PARAMS", "Vui lòng chọn loại tương tác.")
+
+    clean_type = interaction_type.strip().lower()
+    if clean_type not in VALID_INTERACTION_TYPES:
+        raise LeadValidationError(
+            "INVALID_PARAMS",
+            "Loại tương tác không hợp lệ. Chỉ chấp nhận Gọi, Nhắn hoặc Gặp.",
+        )
+
+    content = payload.get("content")
+    if not content or not isinstance(content, str) or not content.strip():
+        raise LeadValidationError("INVALID_PARAMS", "Nội dung tương tác không được để trống.")
+    clean_content = content.strip()
+
+    raw_time = payload.get("interaction_at")
+    interaction_at = None
+    if raw_time:
+        if isinstance(raw_time, datetime):
+            interaction_at = raw_time
+        elif isinstance(raw_time, str):
+            t_str = raw_time.strip()
+            try:
+                interaction_at = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
+            except ValueError:
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+                    try:
+                        interaction_at = datetime.strptime(t_str, fmt).replace(tzinfo=timezone.utc)
+                        break
+                    except ValueError:
+                        pass
+    else:
+        interaction_at = datetime.now(timezone.utc)
+
+    if interaction_at is None:
+        raise LeadValidationError("INVALID_PARAMS", "Thời điểm tương tác không hợp lệ.")
+
+    care_log = lead_repository.create_lead_care_log(
+        lead_id=lead_id,
+        interaction_type=clean_type,
+        content=clean_content,
+        interaction_at=interaction_at,
+        performed_by_user_id=actor_id,
+    )
+
+    return {
+        "id": care_log["id"],
+        "lead_id": care_log["lead_id"],
+        "interaction_type": care_log["interaction_type"],
+        "interaction_type_label": INTERACTION_TYPE_LABELS.get(
+            care_log["interaction_type"], care_log["interaction_type"]
+        ),
+        "content": care_log["content"],
+        "interaction_at": (
+            format_datetime_utc_iso(care_log["interaction_at"])
+            if isinstance(care_log["interaction_at"], datetime)
+            else care_log["interaction_at"]
+        ),
+        "performed_by_user_id": care_log.get("performed_by_user_id"),
+        "performed_by_name": care_log.get("performed_by_name"),
+        "created_at": (
+            format_datetime_utc_iso(care_log["created_at"])
+            if isinstance(care_log["created_at"], datetime)
+            else care_log["created_at"]
+        ),
+    }
+
+
+def get_lead_care_logs_service(
+    lead_id: str,
+    actor_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Lấy danh sách nhật ký tương tác chăm sóc Lead, sắp xếp mới nhất ở trên (SCRUM-214).
+    - Phân quyền: Tư vấn tuyển sinh chỉ xem Lead được phân công cho mình.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    if _is_restricted_consultant(actor_id):
+        if lead.assigned_to_user_id != actor_id:
+            raise LeadServiceError(
+                "FORBIDDEN",
+                "Bạn không có quyền truy cập thông tin Lead này.",
+                status_code=403,
+            )
+
+    care_logs = lead_repository.get_lead_care_logs(lead_id)
+    return [
+        {
+            "id": c["id"],
+            "lead_id": c["lead_id"],
+            "interaction_type": c["interaction_type"],
+            "interaction_type_label": INTERACTION_TYPE_LABELS.get(
+                c["interaction_type"], c["interaction_type"]
+            ),
+            "content": c["content"],
+            "interaction_at": (
+                format_datetime_utc_iso(c.get("interaction_at"))
+                if isinstance(c.get("interaction_at"), datetime)
+                else c.get("interaction_at")
+            ),
+            "performed_by_user_id": c.get("performed_by_user_id"),
+            "performed_by_name": c.get("performed_by_name"),
+            "created_at": (
+                format_datetime_utc_iso(c.get("created_at"))
+                if isinstance(c.get("created_at"), datetime)
+                else c.get("created_at")
+            ),
+        }
+        for c in care_logs
+    ]
+
+
+def update_lead_callback_date_service(
+    lead_id: str,
+    callback_date: str | None,
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Cập nhật ngày nhắc gọi lại của Lead (SCRUM-214 - Activity A2).
+    - Phân quyền: Tư vấn viên chỉ cập nhật Lead của chính mình.
+    """
+    if not is_valid_uuid(lead_id):
+        raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
+
+    lead = lead_repository.get_lead_by_id(lead_id)
+    if not lead:
+        raise LeadNotFoundError()
+
+    if _is_restricted_consultant(actor_id):
+        if lead.assigned_to_user_id != actor_id:
+            raise LeadServiceError(
+                "FORBIDDEN",
+                "Bạn không có quyền thao tác trên Lead này.",
+                status_code=403,
+            )
+
+    clean_date = None
+    if callback_date:
+        clean_date = str(callback_date).strip()
+        try:
+            datetime.strptime(clean_date, "%Y-%m-%d")
+        except ValueError:
+            raise LeadValidationError("INVALID_PARAMS", "Định dạng ngày nhắc gọi lại không hợp lệ (YYYY-MM-DD).")
+
+    updated = lead_repository.update_lead_callback_date(lead_id, clean_date)
+    if not updated:
+        raise LeadNotFoundError()
+
+    return updated.to_dict()
+
+
+def update_lead_status_service(
+    lead_id: str,
+    payload: dict[str, Any],
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Cập nhật trạng thái của một Lead (SCRUM-126 / SCRUM-213).
+    - Cho phép các trường: 'status', 'reason' / 'rejection_reason', 'notes'.
+    - Bắt buộc lý do khi chuyển sang trạng thái Từ chối ('rejected').
+    - Nếu chọn 'Khác', bắt buộc nhập ghi chú chi tiết.
+    - Phân quyền: Tư vấn viên chỉ cập nhật Lead của chính mình.
+    - Ghi nhận lịch sử vào bảng lead_status_history khi trạng thái thực sự thay đổi.
+    - Nếu trạng thái không thay đổi, không tạo lịch sử giả.
     """
     if not is_valid_uuid(lead_id):
         raise LeadValidationError("INVALID_PARAMS", "Mã Lead không hợp lệ.")
@@ -632,11 +956,12 @@ def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[st
     if not isinstance(payload, dict):
         raise LeadValidationError("INVALID_JSON", "Dữ liệu yêu cầu phải là đối tượng JSON.")
 
-    disallowed_fields = set(payload.keys()) - {"status"}
+    allowed_fields = {"status", "reason", "rejection_reason", "notes"}
+    disallowed_fields = set(payload.keys()) - allowed_fields
     if disallowed_fields:
         raise LeadValidationError(
             "INVALID_PARAMS",
-            f"Không được phép sửa đổi các trường: {', '.join(sorted(disallowed_fields))}. Chỉ cho phép cập nhật 'status'.",
+            f"Không được phép sửa đổi các trường: {', '.join(sorted(disallowed_fields))}. Chỉ cho phép cập nhật trạng thái và lý do từ chối.",
         )
 
     raw_status = payload.get("status")
@@ -647,13 +972,39 @@ def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[st
         raise LeadValidationError("INVALID_STATUS", "Trạng thái phải là chuỗi văn bản.")
 
     status = raw_status.strip().lower()
-    from app.models.lead import VALID_LEAD_STATUSES
-
     if status not in VALID_LEAD_STATUSES:
         raise LeadValidationError(
             "INVALID_STATUS",
             f"Trạng thái '{status}' không hợp lệ. Các trạng thái hợp lệ: {', '.join(sorted(VALID_LEAD_STATUSES))}.",
         )
+
+    reason: str | None = None
+    notes: str | None = None
+
+    if status == LEAD_STATUS_REJECTED:
+        raw_reason = payload.get("reason") or payload.get("rejection_reason")
+        if not raw_reason or not isinstance(raw_reason, str) or not raw_reason.strip():
+            raise LeadValidationError("REJECTION_REASON_REQUIRED", "Vui lòng chọn lý do từ chối.")
+        reason = raw_reason.strip()
+        if reason not in VALID_REJECTION_REASONS:
+            raise LeadValidationError(
+                "INVALID_REJECTION_REASON",
+                f"Lý do từ chối không hợp lệ. Các lý do hợp lệ: {', '.join(VALID_REJECTION_REASONS)}.",
+            )
+
+        raw_notes = payload.get("notes")
+        if reason == "Khác":
+            if not raw_notes or not isinstance(raw_notes, str) or not raw_notes.strip():
+                raise LeadValidationError(
+                    "REJECTION_NOTE_REQUIRED",
+                    "Vui lòng nhập lý do cụ thể khi chọn 'Khác'.",
+                )
+        if raw_notes and isinstance(raw_notes, str):
+            notes = raw_notes.strip()
+    else:
+        raw_notes = payload.get("notes")
+        if raw_notes and isinstance(raw_notes, str):
+            notes = raw_notes.strip()
 
     existing = lead_repository.get_lead_by_id(lead_id)
     if not existing:
@@ -666,10 +1017,41 @@ def update_lead_status_service(lead_id: str, payload: dict[str, Any]) -> dict[st
             400,
         )
 
+    if _is_restricted_consultant(actor_id):
+        if existing.assigned_to_user_id != actor_id:
+            raise LeadServiceError(
+                "FORBIDDEN",
+                "Bạn không có quyền cập nhật Lead này.",
+                status_code=403,
+            )
+
+    old_status = existing.status
+    if old_status == status:
+        return {
+            "status": "success",
+            "message": "Trạng thái Lead không thay đổi.",
+            "data": existing.to_dict(),
+        }
+
     now = datetime.now(timezone.utc)
-    updated = lead_repository.update_lead_status(lead_id, status, updated_at=now)
+    updated = lead_repository.update_lead_status(
+        lead_id=lead_id,
+        new_status=status,
+        rejection_reason=reason if status == LEAD_STATUS_REJECTED else None,
+        updated_at=now,
+    )
     if not updated:
         raise LeadNotFoundError()
+
+    lead_repository.create_lead_status_history(
+        lead_id=lead_id,
+        old_status=old_status,
+        new_status=status,
+        performed_by_user_id=actor_id,
+        reason=reason,
+        notes=notes,
+        created_at=now,
+    )
 
     return {
         "status": "success",

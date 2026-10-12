@@ -150,6 +150,62 @@ def list_assignable_users():
         }), 500
 
 
+@lead_bp.get("/v1/leads/pipeline")
+@lead_bp.get("/leads/pipeline")
+@permission_required("course.manage")
+def get_lead_pipeline_endpoint():
+    """
+    API xem bảng phễu Lead (Kanban) theo 6 trạng thái chuẩn (SCRUM-213).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Tư vấn tuyển sinh chỉ thấy Lead được phân công cho mình.
+    - Quản lý đào tạo và Admin xem toàn bộ dữ liệu Lead trong pipeline.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        result = lead_service.get_lead_pipeline_service(actor_id=actor_id)
+        return jsonify(result), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tải bảng phễu Lead: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi tải bảng phễu Lead: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
 @lead_bp.get("/v1/leads/<lead_id>")
 @lead_bp.get("/leads/<lead_id>")
 @permission_required("course.manage")
@@ -231,8 +287,14 @@ def update_lead_status_endpoint(lead_id: str):
             },
         }), 400
 
+    actor_id = None
     try:
-        result = lead_service.update_lead_status_service(lead_id, body)
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        result = lead_service.update_lead_status_service(lead_id, body, actor_id=actor_id)
         return jsonify(result), 200
 
     except LeadServiceError as err:
@@ -516,6 +578,64 @@ def get_lead_history_endpoint(lead_id: str):
         }), 500
 
 
+@lead_bp.get("/v1/leads/<lead_id>/status-history")
+@lead_bp.get("/leads/<lead_id>/status-history")
+@permission_required("course.manage")
+def get_lead_status_history_endpoint(lead_id: str):
+    """
+    API xem lịch sử thay đổi trạng thái của một Lead (SCRUM-213).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        history = lead_service.get_lead_status_history_service(lead_id, actor_id=actor_id)
+        return jsonify({
+            "status": "success",
+            "data": history,
+        }), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy lịch sử trạng thái Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi lấy lịch sử trạng thái Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+
 
 @lead_bp.get("/v1/leads/check-phone")
 @lead_bp.get("/leads/check-phone")
@@ -716,6 +836,206 @@ def delete_lead_endpoint(lead_id: str):
         }), 500
 
 
+@lead_bp.post("/v1/leads/<lead_id>/care-logs")
+@lead_bp.post("/leads/<lead_id>/care-logs")
+@permission_required("course.manage")
+def create_lead_care_log_endpoint(lead_id: str):
+    """
+    API ghi nhận một lượt tương tác chăm sóc Lead (SCRUM-214 - Activity A1).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Body JSON: { interaction_type: 'call'|'message'|'meeting', content, interaction_at? }.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            "error": {
+                "code": "INVALID_JSON",
+                "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            },
+        }), 400
+
+    try:
+        result = lead_service.create_lead_care_log_service(lead_id, body, actor_id=actor_id)
+        return jsonify({
+            "status": "success",
+            "message": "Ghi nhận tương tác chăm sóc thành công.",
+            "data": result,
+        }), 201
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tạo nhật ký chăm sóc Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi tạo nhật ký chăm sóc Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+@lead_bp.get("/v1/leads/<lead_id>/care-logs")
+@lead_bp.get("/leads/<lead_id>/care-logs")
+@permission_required("course.manage")
+def get_lead_care_logs_endpoint(lead_id: str):
+    """
+    API xem danh sách nhật ký tương tác chăm sóc Lead (SCRUM-214 - Activity A1).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    try:
+        care_logs = lead_service.get_lead_care_logs_service(lead_id, actor_id=actor_id)
+        return jsonify({
+            "status": "success",
+            "data": care_logs,
+        }), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy nhật ký chăm sóc Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi lấy nhật ký chăm sóc Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
+
+@lead_bp.patch("/v1/leads/<lead_id>/callback-date")
+@lead_bp.patch("/leads/<lead_id>/callback-date")
+@permission_required("course.manage")
+def update_lead_callback_date_endpoint(lead_id: str):
+    """
+    API cập nhật ngày nhắc gọi lại cho Lead (SCRUM-214 - Activity A2).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'.
+    - Body JSON: { callback_date: 'YYYY-MM-DD' | null }.
+    """
+    actor_id = None
+    try:
+        actor_id = get_jwt_identity()
+    except Exception:
+        pass
+
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            "error": {
+                "code": "INVALID_JSON",
+                "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+            },
+        }), 400
+
+    callback_date = body.get("callback_date")
+
+    try:
+        result = lead_service.update_lead_callback_date_service(lead_id, callback_date, actor_id=actor_id)
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật ngày nhắc gọi lại thành công.",
+            "data": result,
+        }), 200
+
+    except LeadServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "error": {
+                "code": err.code,
+                "message": err.message,
+            },
+        }), err.status_code
+
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật ngày nhắc gọi lại Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            "error": {
+                "code": "DATABASE_ERROR",
+                "message": "Đã xảy ra lỗi cơ sở dữ liệu. Vui lòng thử lại sau.",
+            },
+        }), 500
+
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật ngày nhắc gọi lại Lead %s: %s", lead_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
+            },
+        }), 500
+
 @lead_bp.post("/v1/leads/<lead_id>/convert-to-student")
 @lead_bp.post("/leads/<lead_id>/convert-to-student")
 @permission_required("course.manage")
@@ -775,7 +1095,3 @@ def convert_lead_to_student(lead_id: str):
                 "message": "Đã xảy ra lỗi hệ thống máy chủ nội bộ.",
             },
         }), 500
-
-
-
-

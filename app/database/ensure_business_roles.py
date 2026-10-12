@@ -49,7 +49,83 @@ def ensure_business_roles() -> None:
                     ('role-id-consultant', 'perm-id-session-view', NOW()),
                     ('role-id-admin', 'perm-id-lead-delete', NOW());
             """)
-            # 4. Đảm bảo bảng students và bảng sequence (SCRUM-215)
+
+            # 4. SCRUM-213: Bổ sung bảng lead_status_history và trường rejection_reason
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lead_status_history (
+                    id VARCHAR(36) PRIMARY KEY,
+                    lead_id VARCHAR(36) NOT NULL,
+                    old_status VARCHAR(50) NOT NULL,
+                    new_status VARCHAR(50) NOT NULL,
+                    reason VARCHAR(255) NULL,
+                    notes TEXT NULL,
+                    performed_by_user_id VARCHAR(36) NULL,
+                    created_at DATETIME NOT NULL,
+                    seq BIGINT AUTO_INCREMENT UNIQUE,
+                    CONSTRAINT fk_lsh_lead FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_lsh_performed_user FOREIGN KEY (performed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+                );
+            """)
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.statistics 
+                WHERE table_schema = DATABASE() AND table_name = 'lead_status_history' AND index_name = 'idx_lsh_lead_id';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("CREATE INDEX idx_lsh_lead_id ON lead_status_history (lead_id);")
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.statistics 
+                WHERE table_schema = DATABASE() AND table_name = 'lead_status_history' AND index_name = 'idx_lsh_created_at';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("CREATE INDEX idx_lsh_created_at ON lead_status_history (created_at);")
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_schema = DATABASE() AND table_name = 'leads' AND column_name = 'rejection_reason';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE leads ADD COLUMN rejection_reason VARCHAR(255) NULL AFTER status;")
+
+            # 5. SCRUM-214: Bổ sung bảng lead_care_logs và trường callback_date
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS lead_care_logs (
+                    id VARCHAR(36) PRIMARY KEY,
+                    lead_id VARCHAR(36) NOT NULL,
+                    interaction_type VARCHAR(20) NOT NULL,
+                    content TEXT NOT NULL,
+                    interaction_at DATETIME NOT NULL,
+                    performed_by_user_id VARCHAR(36) NULL,
+                    created_at DATETIME NOT NULL,
+                    seq BIGINT AUTO_INCREMENT UNIQUE,
+                    CONSTRAINT fk_lcl_lead FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_lcl_performed_user FOREIGN KEY (performed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+                );
+            """)
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.statistics 
+                WHERE table_schema = DATABASE() AND table_name = 'lead_care_logs' AND index_name = 'idx_lcl_lead_id';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("CREATE INDEX idx_lcl_lead_id ON lead_care_logs (lead_id);")
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.statistics 
+                WHERE table_schema = DATABASE() AND table_name = 'lead_care_logs' AND index_name = 'idx_lcl_interaction_at';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("CREATE INDEX idx_lcl_interaction_at ON lead_care_logs (interaction_at);")
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_schema = DATABASE() AND table_name = 'leads' AND column_name = 'callback_date';
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE leads ADD COLUMN callback_date DATE NULL AFTER rejection_reason;")
+
+            # 6. SCRUM-215: Đảm bảo bảng students và bảng sequence
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS students (
                     id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -77,8 +153,9 @@ def ensure_business_roles() -> None:
                     current_val INT UNSIGNED NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles and permissions ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, and student schemas ensured successfully.")
     except Exception as e:
-        logger.warning("Could not auto-ensure business roles: %s", e)
+        logger.warning("Could not auto-ensure business roles and schemas: %s", e)
