@@ -222,10 +222,13 @@ def list_classes_service(
     program_id: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    instructor_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
-    """Danh sách các lớp học có phân trang và tìm kiếm."""
+    """Danh sách các lớp học có phân trang và bộ lọc (SCRUM-217 & SCRUM-219)."""
     page = max(1, page)
     page_size = max(1, min(100, page_size))
     if status:
@@ -235,6 +238,9 @@ def list_classes_service(
         program_id=program_id,
         status=status,
         search=search,
+        date_from=date_from,
+        date_to=date_to,
+        instructor_id=instructor_id,
         page=page,
         page_size=page_size,
     )
