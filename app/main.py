@@ -18,6 +18,8 @@ from app.routes.lead_routes import lead_bp
 from app.routes.student_routes import student_bp
 from app.routes.class_routes import class_bp
 from app.routes.enrollment_routes import enrollment_bp
+from app.routes.holiday_routes import holiday_bp
+from app.routes.schedule_routes import schedule_bp
 
 
 app = Flask(__name__)
@@ -42,6 +44,8 @@ app.register_blueprint(lead_bp)
 app.register_blueprint(student_bp)
 app.register_blueprint(class_bp)
 app.register_blueprint(enrollment_bp)
+app.register_blueprint(holiday_bp)
+app.register_blueprint(schedule_bp)
 
 from app.database.ensure_business_roles import ensure_business_roles
 ensure_business_roles()
