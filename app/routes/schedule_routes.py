@@ -11,7 +11,7 @@ from flask import Blueprint, jsonify, request
 from mysql.connector import Error as MySQLError
 
 from app.services import schedule_service
-from app.services.schedule_service import ScheduleServiceError
+from app.services.schedule_service import ScheduleConflictError, ScheduleServiceError
 from app.utils.rbac_auth import permission_required
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,15 @@ def generate_schedule_endpoint(class_id: str):
             "message": "Lưu thời khóa biểu lớp học thành công.",
             "data": saved_data,
         }), 201
+    except ScheduleConflictError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "data": {
+                "conflicts": err.conflicts,
+            },
+        }), err.status_code
     except ScheduleServiceError as err:
         return jsonify({
             "status": "error",

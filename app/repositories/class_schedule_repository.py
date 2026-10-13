@@ -2,7 +2,8 @@
 Repository quản lý Thời khóa biểu lớp học (ClassSchedule Repository) - SCRUM-224.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from typing import Any
 import uuid
 from app.database.connection import get_db_connection
 from app.models.class_schedule import ClassSchedule
@@ -172,3 +173,91 @@ def delete_schedules_by_class_id(class_id: str) -> int:
             return cursor.rowcount
     finally:
         conn.close()
+
+
+def find_conflicts_for_slot(
+    learning_date: date | str,
+    start_time: str,
+    end_time: str,
+    instructor_id: str | None = None,
+    room_id: str | None = None,
+    exclude_class_id: str | None = None,
+    exclude_schedule_id: str | None = None,
+) -> list[dict]:
+    """
+    Truy vấn các buổi học trong DB xung đột thời gian (start < existing.end AND end > existing.start)
+    với giảng viên hoặc phòng học đã chỉ định (SCRUM-225 - AC 1, AC 2).
+    """
+    # Nếu không có cả giảng viên và phòng học thì không có căn cứ xét xung đột GV/phòng
+    if not instructor_id and not room_id:
+        return []
+
+    conn = get_db_connection()
+    try:
+        date_str = learning_date.strftime("%Y-%m-%d") if hasattr(learning_date, "strftime") else str(learning_date)
+        start_str = str(start_time)
+        end_str = str(end_time)
+
+        sql = """
+            SELECT cs.id, cs.class_id, cs.session_number, cs.topic, cs.learning_date,
+                   cs.shift, cs.start_time, cs.end_time, cs.room_id, cs.instructor_id, cs.status,
+                   c.class_code, u.name AS instructor_name
+            FROM class_schedules cs
+            LEFT JOIN classes c ON cs.class_id = c.id
+            LEFT JOIN users u ON cs.instructor_id = u.id
+            WHERE cs.learning_date = %s
+              AND cs.status != 'cancelled'
+              AND (cs.start_time < %s AND cs.end_time > %s)
+        """
+        params: list[Any] = [date_str, end_str, start_str]
+
+        # Điều kiện giảng viên hoặc phòng học
+        target_conditions = []
+        if instructor_id:
+            target_conditions.append("cs.instructor_id = %s")
+            params.append(instructor_id)
+        if room_id:
+            target_conditions.append("cs.room_id = %s")
+            params.append(room_id)
+
+        if target_conditions:
+            sql += f" AND ({' OR '.join(target_conditions)})"
+
+        if exclude_class_id:
+            sql += " AND cs.class_id != %s"
+            params.append(exclude_class_id)
+
+        if exclude_schedule_id:
+            sql += " AND cs.id != %s"
+            params.append(exclude_schedule_id)
+
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+
+            results = []
+            for r in rows:
+                learning_date_val = r["learning_date"]
+                ld_str = learning_date_val.strftime("%Y-%m-%d") if hasattr(learning_date_val, "strftime") else str(learning_date_val)
+                st_str = r["start_time"].strftime("%H:%M:%S") if hasattr(r["start_time"], "strftime") else str(r["start_time"])
+                et_str = r["end_time"].strftime("%H:%M:%S") if hasattr(r["end_time"], "strftime") else str(r["end_time"])
+
+                results.append({
+                    "id": r["id"],
+                    "class_id": r["class_id"],
+                    "class_code": r["class_code"] or r["class_id"],
+                    "session_number": r["session_number"],
+                    "topic": r["topic"],
+                    "learning_date": ld_str,
+                    "shift": r["shift"],
+                    "start_time": st_str,
+                    "end_time": et_str,
+                    "room_id": r["room_id"],
+                    "instructor_id": r["instructor_id"],
+                    "instructor_name": r["instructor_name"] or r["instructor_id"],
+                    "status": r["status"],
+                })
+            return results
+    finally:
+        conn.close()
+

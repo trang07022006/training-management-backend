@@ -49,6 +49,12 @@ class ScheduleServiceError(Exception):
         self.status_code = status_code
 
 
+class ScheduleConflictError(ScheduleServiceError):
+    def __init__(self, message: str, conflicts: list[dict]):
+        super().__init__("SCHEDULE_CONFLICT_DETECTED", message, status_code=409)
+        self.conflicts = conflicts
+
+
 def parse_day_of_week(val: Any) -> int | None:
     """
     Chuẩn hóa thứ trong tuần sang số nguyên 0..6 (theo chuẩn Python datetime.weekday: 0=Thứ 2, 6=Chủ nhật).
@@ -247,16 +253,166 @@ def _build_schedule_sessions(
     return generated_sessions, skipped_holidays
 
 
+def detect_schedule_conflicts(
+    sessions: list[dict],
+    exclude_class_id: str | None = None,
+    exclude_schedule_id: str | None = None,
+) -> list[dict]:
+    """
+    Kiểm tra xung đột lịch giảng viên và phòng học (SCRUM-225 - AC 1, AC 2).
+    - Kiểm tra giao nhau thời gian (start_1 < end_2 AND end_1 > start_2).
+    - Kiểm tra xung đột nội bộ giữa các buổi trong cùng đợt tạo.
+    - Kiểm tra xung đột với các buổi học đã lưu trong cơ sở dữ liệu.
+    """
+    conflicts: list[dict] = []
+    seen_conflict_keys = set()
+
+    def add_conflict(c: dict):
+        key = (
+            c["conflict_type"],
+            c["session_number"],
+            c["learning_date"],
+            c.get("conflicting_schedule_id") or c.get("conflicting_session_number"),
+        )
+        if key not in seen_conflict_keys:
+            seen_conflict_keys.add(key)
+            conflicts.append(c)
+
+    # 1. Kiểm tra xung đột nội bộ giữa các buổi trong chính đợt tạo
+    n = len(sessions)
+    for i in range(n):
+        si = sessions[i]
+        for j in range(i + 1, n):
+            sj = sessions[j]
+            if si["learning_date"] == sj["learning_date"]:
+                # Kiểm tra giao nhau thời gian thực tế
+                if si["start_time"] < sj["end_time"] and si["end_time"] > sj["start_time"]:
+                    # Xung đột giảng viên
+                    if si.get("instructor_id") and si.get("instructor_id") == sj.get("instructor_id"):
+                        add_conflict({
+                            "conflict_type": "instructor",
+                            "session_number": si["session_number"],
+                            "learning_date": si["learning_date"],
+                            "start_time": si["start_time"],
+                            "end_time": si["end_time"],
+                            "instructor_id": si.get("instructor_id"),
+                            "room_id": None,
+                            "conflicting_session_number": sj["session_number"],
+                            "conflicting_class_code": "Đợt tạo hiện tại",
+                            "conflicting_start_time": sj["start_time"],
+                            "conflicting_end_time": sj["end_time"],
+                            "message": (
+                                f"Buổi #{si['session_number']} và Buổi #{sj['session_number']} "
+                                f"bị trùng Giảng viên trong cùng khung giờ "
+                                f"({si['learning_date']} {si['start_time']} - {si['end_time']})."
+                            ),
+                        })
+                    # Xung đột phòng học
+                    if si.get("room_id") and si.get("room_id") == sj.get("room_id"):
+                        add_conflict({
+                            "conflict_type": "room",
+                            "session_number": si["session_number"],
+                            "learning_date": si["learning_date"],
+                            "start_time": si["start_time"],
+                            "end_time": si["end_time"],
+                            "instructor_id": None,
+                            "room_id": si.get("room_id"),
+                            "conflicting_session_number": sj["session_number"],
+                            "conflicting_class_code": "Đợt tạo hiện tại",
+                            "conflicting_start_time": sj["start_time"],
+                            "conflicting_end_time": sj["end_time"],
+                            "message": (
+                                f"Buổi #{si['session_number']} và Buổi #{sj['session_number']} "
+                                f"bị trùng Phòng học ({si['room_id']}) trong cùng khung giờ "
+                                f"({si['learning_date']} {si['start_time']} - {si['end_time']})."
+                            ),
+                        })
+
+    # 2. Kiểm tra xung đột với lịch đã lưu trong database
+    for s in sessions:
+        inst_id = s.get("instructor_id")
+        r_id = s.get("room_id")
+        if inst_id or r_id:
+            db_conflicts = class_schedule_repository.find_conflicts_for_slot(
+                learning_date=s["learning_date"],
+                start_time=s["start_time"],
+                end_time=s["end_time"],
+                instructor_id=inst_id,
+                room_id=r_id,
+                exclude_class_id=exclude_class_id,
+                exclude_schedule_id=exclude_schedule_id,
+            )
+            for db_c in db_conflicts:
+                # Xung đột giảng viên
+                if inst_id and db_c.get("instructor_id") == inst_id:
+                    add_conflict({
+                        "conflict_type": "instructor",
+                        "session_number": s["session_number"],
+                        "learning_date": s["learning_date"],
+                        "start_time": s["start_time"],
+                        "end_time": s["end_time"],
+                        "instructor_id": inst_id,
+                        "instructor_name": db_c.get("instructor_name") or inst_id,
+                        "room_id": None,
+                        "conflicting_schedule_id": db_c["id"],
+                        "conflicting_class_id": db_c["class_id"],
+                        "conflicting_class_code": db_c["class_code"],
+                        "conflicting_session_number": db_c["session_number"],
+                        "conflicting_start_time": db_c["start_time"],
+                        "conflicting_end_time": db_c["end_time"],
+                        "message": (
+                            f"Buổi #{s['session_number']} ({s['learning_date']} {s['start_time']} - {s['end_time']}) "
+                            f"bị trùng Giảng viên ({db_c.get('instructor_name') or inst_id}) "
+                            f"với Buổi #{db_c['session_number']} của Lớp {db_c['class_code']} "
+                            f"({db_c['start_time']} - {db_c['end_time']})."
+                        ),
+                    })
+                # Xung đột phòng học
+                if r_id and db_c.get("room_id") == r_id:
+                    add_conflict({
+                        "conflict_type": "room",
+                        "session_number": s["session_number"],
+                        "learning_date": s["learning_date"],
+                        "start_time": s["start_time"],
+                        "end_time": s["end_time"],
+                        "instructor_id": None,
+                        "room_id": r_id,
+                        "conflicting_schedule_id": db_c["id"],
+                        "conflicting_class_id": db_c["class_id"],
+                        "conflicting_class_code": db_c["class_code"],
+                        "conflicting_session_number": db_c["session_number"],
+                        "conflicting_start_time": db_c["start_time"],
+                        "conflicting_end_time": db_c["end_time"],
+                        "message": (
+                            f"Buổi #{s['session_number']} ({s['learning_date']} {s['start_time']} - {s['end_time']}) "
+                            f"bị trùng Phòng học ({r_id}) "
+                            f"với Buổi #{db_c['session_number']} của Lớp {db_c['class_code']} "
+                            f"({db_c['start_time']} - {db_c['end_time']})."
+                        ),
+                    })
+
+    return conflicts
+
+
 def preview_schedule_service(class_id: str, payload: dict) -> dict:
     """
-    API xem trước danh sách buổi học trước khi lưu (SCRUM-224 - AC 3).
+    API xem trước danh sách buổi học trước khi lưu (SCRUM-224 - AC 3, SCRUM-225 - AC 1, AC 2).
     Không ghi bất kỳ dữ liệu nào vào cơ sở dữ liệu.
+    Cảnh báo rõ ràng các buổi đang xung đột giảng viên hoặc phòng học.
     """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
         raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
 
     sessions, skipped = _build_schedule_sessions(class_id, payload)
+
+    # Kiểm tra xung đột (SCRUM-225)
+    overwrite = bool(payload.get("overwrite", False))
+    conflicts = detect_schedule_conflicts(
+        sessions,
+        exclude_class_id=class_id if overwrite else None,
+    )
+
     return {
         "class_id": class_id,
         "class_code": class_obj.class_code,
@@ -266,13 +422,17 @@ def preview_schedule_service(class_id: str, payload: dict) -> dict:
         "end_date": sessions[-1]["learning_date"] if sessions else None,
         "schedules": sessions,
         "skipped_holidays": skipped,
+        "conflicts": conflicts,
+        "has_conflicts": len(conflicts) > 0,
     }
 
 
 def generate_schedule_service(class_id: str, payload: dict) -> dict:
     """
-    API lưu thời khóa biểu chính thức vào cơ sở dữ liệu (SCRUM-224 - AC 1, 2, 3, 4).
-    Kiểm tra idempotency / chống lặp: nếu lớp đã có lịch mà không có flag overwrite=True thì chặn.
+    API lưu thời khóa biểu chính thức vào cơ sở dữ liệu (SCRUM-224 & SCRUM-225).
+    - SCRUM-224: Kiểm tra chống lặp / cờ overwrite.
+    - SCRUM-225: Kiểm tra xung đột lịch giảng viên / phòng học. Trùng là lỗi chặn,
+      không cho lưu, trừ khi Quản lý đào tạo xác nhận ghi đè (allow_conflict_override=True).
     """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
@@ -291,6 +451,30 @@ def generate_schedule_service(class_id: str, payload: dict) -> dict:
 
     # Sinh danh sách buổi học
     session_dicts, skipped = _build_schedule_sessions(class_id, payload)
+
+    # Kiểm tra xung đột lịch tại thời điểm lưu (SCRUM-225 - AC 1, AC 2, AC 3)
+    conflicts = detect_schedule_conflicts(
+        session_dicts,
+        exclude_class_id=class_id if overwrite else None,
+    )
+
+    allow_conflict_override = bool(payload.get("allow_conflict_override", False))
+    if conflicts and not allow_conflict_override:
+        # Trùng là lỗi chặn, không cho lưu trừ khi xác nhận ghi đè (AC 3)
+        conflict_msg = (
+            f"Phát hiện {len(conflicts)} xung đột lịch về giảng viên hoặc phòng học. "
+            f"Hệ thống đã chặn lưu để tránh trùng giờ dạy. "
+            f"Quản lý đào tạo cần xác nhận ghi đè để lưu lịch này."
+        )
+        raise ScheduleConflictError(conflict_msg, conflicts)
+
+    if conflicts and allow_conflict_override:
+        logger.warning(
+            "Quản lý đào tạo đã xác nhận ghi đè %d xung đột lịch cho lớp %s (%s)",
+            len(conflicts),
+            class_id,
+            class_obj.class_code,
+        )
 
     # Nếu overwrite, xoá lịch cũ
     if existing_count > 0 and overwrite:
@@ -329,6 +513,8 @@ def generate_schedule_service(class_id: str, payload: dict) -> dict:
         "end_date": session_dicts[-1]["learning_date"] if session_dicts else None,
         "schedules": [m.to_dict() for m in saved_models],
         "skipped_holidays": skipped,
+        "conflicts": conflicts,
+        "overridden_conflicts_count": len(conflicts) if allow_conflict_override else 0,
     }
 
 
