@@ -149,6 +149,7 @@ def current_session():
         "role": display_role,
         "roles": user_roles,
         "permissions": effective_permissions,
+        "must_change_password": bool(user.must_change_password) if user else False,
     })
     response.headers["Cache-Control"] = "no-store"
 
