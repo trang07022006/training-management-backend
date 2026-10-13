@@ -874,3 +874,118 @@ def get_schedule_detail_service(schedule_id: str) -> dict[str, Any]:
     return detail
 
 
+def get_my_personal_schedule_service(
+    user_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    ref_date: str | None = None,
+    ref_time: str | None = None,
+) -> dict[str, Any]:
+    """
+    Lấy thời khóa biểu cá nhân của học viên đăng nhập (SCRUM-228 AC 1, 2).
+    - Xác thực học viên từ user_id của phiên đăng nhập.
+    - Lấy danh sách các lớp học viên đã ghi danh thực tế.
+    - Trả về buổi học kế tiếp (next_session) sắp diễn ra theo thời gian thực (không lấy tùy ý).
+    - Trả về danh sách các buổi học trong tuần hiện tại (hoặc khoảng ngày yêu cầu).
+    - Xử lý trạng thái rỗng khi chưa có lịch hoặc chưa ghi danh.
+    - Hiển thị phòng học hoặc liên kết học trực tuyến.
+    """
+    # 1. Xác định thời gian mốc (cho phép truyền ref_date/ref_time phục vụ test)
+    if ref_date and ref_date.strip():
+        try:
+            today = datetime.strptime(ref_date.strip(), "%Y-%m-%d").date()
+        except Exception:
+            today = datetime.now().date()
+    else:
+        today = datetime.now().date()
+
+    if ref_time and ref_time.strip():
+        current_time_str = ref_time.strip()
+    else:
+        current_time_str = datetime.now().strftime("%H:%M:%S")
+
+    today_str = today.strftime("%Y-%m-%d")
+
+    # 2. Xác định khoảng tuần (mặc định Thứ 2 -> Chủ nhật của tuần hiện tại)
+    if date_from and date_from.strip() and date_to and date_to.strip():
+        from_str = date_from.strip()
+        to_str = date_to.strip()
+    else:
+        # Thứ 2 là weekday = 0
+        monday = today - timedelta(days=today.weekday())
+        sunday = monday + timedelta(days=6)
+        from_str = monday.strftime("%Y-%m-%d")
+        to_str = sunday.strftime("%Y-%m-%d")
+
+    # 3. Tra cứu học viên theo user_id
+    student = class_schedule_repository.get_student_by_user_id(user_id)
+    if not student:
+        return {
+            "student": None,
+            "enrolled_classes": [],
+            "next_session": None,
+            "week_sessions": [],
+            "total_week_sessions": 0,
+            "date_from": from_str,
+            "date_to": to_str,
+            "period_title": f"Tuần từ {from_str} đến {to_str}",
+        }
+
+    # 4. Tra cứu danh sách lớp đã ghi danh hợp lệ
+    enrolled_classes = class_schedule_repository.get_enrolled_classes_for_student(student["id"])
+    if not enrolled_classes:
+        return {
+            "student": {
+                "id": student["id"],
+                "student_code": student["student_code"],
+                "full_name": student["full_name"],
+                "email": student["email"],
+                "phone": student["phone"],
+                "program_name": student.get("program_name"),
+            },
+            "enrolled_classes": [],
+            "next_session": None,
+            "week_sessions": [],
+            "total_week_sessions": 0,
+            "date_from": from_str,
+            "date_to": to_str,
+            "period_title": f"Tuần từ {from_str} đến {to_str}",
+        }
+
+    # 5. Lấy danh sách class_id
+    class_ids = [c["class_id"] for c in enrolled_classes]
+
+    # 6. Buổi học kế tiếp theo thời gian thực (loại trừ buổi đã hủy)
+    next_session = class_schedule_repository.get_student_next_session(
+        class_ids=class_ids,
+        current_date=today_str,
+        current_time=current_time_str,
+    )
+
+    # 7. Danh sách các buổi học trong tuần
+    week_sessions = class_schedule_repository.get_student_week_sessions(
+        class_ids=class_ids,
+        date_from=from_str,
+        date_to=to_str,
+    )
+
+    return {
+        "student": {
+            "id": student["id"],
+            "student_code": student["student_code"],
+            "full_name": student["full_name"],
+            "email": student["email"],
+            "phone": student["phone"],
+            "program_name": student.get("program_name"),
+        },
+        "enrolled_classes": enrolled_classes,
+        "next_session": next_session,
+        "week_sessions": week_sessions,
+        "total_week_sessions": len(week_sessions),
+        "date_from": from_str,
+        "date_to": to_str,
+        "period_title": f"Tuần từ {from_str} đến {to_str}",
+    }
+
+
+

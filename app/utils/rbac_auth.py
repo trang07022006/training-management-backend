@@ -119,6 +119,8 @@ def permission_required(permission_code: str):
                     "message": "Bạn không có quyền thực hiện thao tác này.",
                 }), 403
 
+            g.user_id = user_id
+            g.session_id = session_id
             return view(*args, **kwargs)
 
         return wrapped

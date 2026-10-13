@@ -6,10 +6,11 @@ Các endpoint API Quản lý hồ sơ học viên (Student Routes) - SCRUM-216.
 """
 
 import logging
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
+from flask_jwt_extended import get_jwt_identity
 from mysql.connector import Error as MySQLError
 
-from app.services import student_service
+from app.services import schedule_service, student_service
 from app.services.student_service import StudentServiceError
 from app.utils.rbac_auth import permission_required
 
@@ -61,6 +62,45 @@ def list_students_endpoint():
         }), 500
     except Exception as err:
         logger.exception("Lỗi không mong muốn khi đọc danh sách học viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+
+@student_bp.get("/v1/students/my-schedule")
+@student_bp.get("/students/my-schedule")
+@permission_required("course.view")
+def get_my_schedule_endpoint():
+    """
+    API xem thời khóa biểu cá nhân của học viên đăng nhập (SCRUM-228).
+    - Xác thực từ JWT session (get_jwt_identity)
+    - Chỉ lấy buổi học của các lớp học viên đã ghi danh
+    - Trả về buổi kế tiếp và danh sách buổi trong tuần
+    """
+    user_id = getattr(g, "user_id", None)
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
+    ref_date = request.args.get("ref_date")
+    ref_time = request.args.get("ref_time")
+
+    try:
+        data = schedule_service.get_my_personal_schedule_service(
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            ref_date=ref_date,
+            ref_time=ref_time,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "MY_SCHEDULE_RETRIEVED",
+            "data": data,
+        }), 200
+    except Exception as err:
+        logger.exception("Lỗi khi lấy lịch học của học viên %s: %s", user_id, err)
         return jsonify({
             "status": "error",
             "code": "INTERNAL_ERROR",

@@ -7,7 +7,8 @@ Routes API quản lý Thời khóa biểu lớp học (Schedule Routes) - SCRUM-
 """
 
 import logging
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
+from flask_jwt_extended import get_jwt_identity
 from mysql.connector import Error as MySQLError
 
 from app.services import schedule_service
@@ -317,6 +318,41 @@ def get_calendar_schedules_endpoint():
             "status": "error",
             "code": "DATABASE_ERROR",
             "message": "Lỗi cơ sở dữ liệu khi lấy lịch học.",
+        }), 500
+
+
+@schedule_bp.get("/v1/schedules/my-schedule")
+@schedule_bp.get("/schedules/my-schedule")
+@permission_required("course.view")
+def get_my_schedule_alias_endpoint():
+    """
+    API xem thời khóa biểu cá nhân của học viên đăng nhập (SCRUM-228).
+    """
+    user_id = getattr(g, "user_id", None)
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
+    ref_date = request.args.get("ref_date")
+    ref_time = request.args.get("ref_time")
+
+    try:
+        data = schedule_service.get_my_personal_schedule_service(
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            ref_date=ref_date,
+            ref_time=ref_time,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "MY_SCHEDULE_RETRIEVED",
+            "data": data,
+        }), 200
+    except Exception as err:
+        logger.exception("Lỗi khi lấy lịch học của học viên %s: %s", user_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
         }), 500
 
 
