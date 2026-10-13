@@ -164,3 +164,113 @@ def delete_class_schedules_endpoint(class_id: str):
             "code": "DATABASE_ERROR",
             "message": "Lỗi cơ sở dữ liệu khi xóa lịch học.",
         }), 500
+
+
+@schedule_bp.put("/v1/classes/<class_id>/schedules/<schedule_id>")
+@schedule_bp.put("/classes/<class_id>/schedules/<schedule_id>")
+@permission_required("course.manage")
+def update_schedule_item_endpoint(class_id: str, schedule_id: str):
+    """
+    API sửa hoặc dời một buổi học đơn lẻ (SCRUM-226 AC 1, AC 3, AC 4).
+    - Đổi ngày, giờ, ca, phòng, giảng viên dạy thay.
+    - Chặn sửa buổi học đã điểm danh (AC 4).
+    - Tái sử dụng kiểm tra xung đột SCRUM-225 (loại trừ chính buổi đang sửa).
+    - Gửi thông báo thay đổi tới học viên và giảng viên của lớp (AC 3).
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = schedule_service.update_single_schedule_service(class_id, schedule_id, payload)
+        return jsonify({
+            "status": "success",
+            "code": "SCHEDULE_UPDATED",
+            "message": "Cập nhật buổi học thành công.",
+            "data": data,
+        }), 200
+    except ScheduleConflictError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "data": {
+                "conflicts": err.conflicts,
+                "has_conflicts": True,
+            },
+        }), err.status_code
+    except ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi DB khi cập nhật buổi học: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật lịch học.",
+        }), 500
+
+
+@schedule_bp.post("/v1/classes/<class_id>/schedules/<schedule_id>/cancel")
+@schedule_bp.post("/classes/<class_id>/schedules/<schedule_id>/cancel")
+@permission_required("course.manage")
+def cancel_schedule_item_endpoint(class_id: str, schedule_id: str):
+    """
+    API hủy một buổi học đơn lẻ (SCRUM-226 AC 2, AC 3, AC 4).
+    - Bắt buộc nhập lý do hủy (cancellation_reason) (AC 2).
+    - Chặn hủy nếu buổi học đã điểm danh (AC 4).
+    - Gửi thông báo hủy tới học viên và giảng viên của lớp (AC 3).
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = schedule_service.cancel_single_schedule_service(class_id, schedule_id, payload)
+        return jsonify({
+            "status": "success",
+            "code": "SCHEDULE_CANCELLED",
+            "message": "Hủy buổi học thành công.",
+            "data": data,
+        }), 200
+    except ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi DB khi hủy buổi học: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi hủy buổi học.",
+        }), 500
+
+
+@schedule_bp.get("/v1/classes/<class_id>/schedules/<schedule_id>/notifications")
+@schedule_bp.get("/classes/<class_id>/schedules/<schedule_id>/notifications")
+@permission_required("course.manage")
+def get_schedule_notifications_endpoint(class_id: str, schedule_id: str):
+    """
+    API lấy danh sách thông báo đã phát cho một buổi học (SCRUM-226 AC 3).
+    """
+    try:
+        data = schedule_service.list_schedule_notifications_service(class_id, schedule_id)
+        return jsonify({
+            "status": "success",
+            "code": "NOTIFICATIONS_FETCHED",
+            "message": "Lấy danh sách thông báo thành công.",
+            "data": data,
+        }), 200
+    except ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi DB khi lấy thông báo buổi học: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi lấy thông báo.",
+        }), 500
+

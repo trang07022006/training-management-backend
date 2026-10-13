@@ -55,6 +55,21 @@ class ScheduleConflictError(ScheduleServiceError):
         self.conflicts = conflicts
 
 
+class ScheduleNotFoundError(ScheduleServiceError):
+    def __init__(self, message: str = "Không tìm thấy buổi học."):
+        super().__init__("SCHEDULE_NOT_FOUND", message, status_code=404)
+
+
+class ScheduleAttendanceCheckedError(ScheduleServiceError):
+    def __init__(self, message: str = "Không thể sửa hoặc hủy buổi học đã được điểm danh."):
+        super().__init__("SCHEDULE_ATTENDANCE_ALREADY_CHECKED", message, status_code=400)
+
+
+class ScheduleValidationError(ScheduleServiceError):
+    def __init__(self, message: str, code: str = "INVALID_SCHEDULE_DATA", status_code: int = 400):
+        super().__init__(code, message, status_code=status_code)
+
+
 def parse_day_of_week(val: Any) -> int | None:
     """
     Chuẩn hóa thứ trong tuần sang số nguyên 0..6 (theo chuẩn Python datetime.weekday: 0=Thứ 2, 6=Chủ nhật).
@@ -545,3 +560,264 @@ def delete_class_schedules_service(class_id: str) -> dict:
         "class_code": class_obj.class_code,
         "deleted_count": deleted_count,
     }
+
+
+def dispatch_schedule_change_notifications(
+    class_id: str,
+    schedule: ClassSchedule,
+    change_type: str,
+    cancellation_reason: str | None = None,
+    old_instructor_id: str | None = None,
+) -> int:
+    """
+    Gửi thông báo thay đổi buổi học tới giảng viên và toàn bộ học viên của lớp (SCRUM-226 AC 3).
+    Lưu bản ghi vào schedule_notifications và ghi log nghiệp vụ.
+    """
+    class_obj = class_repository.get_class_by_id(class_id)
+    class_code = class_obj.class_code if class_obj else class_id
+
+    # Định dạng ngày giờ hiển thị
+    ld_str = schedule.learning_date.strftime("%d/%m/%Y") if hasattr(schedule.learning_date, "strftime") else str(schedule.learning_date)
+    st_str = str(schedule.start_time)[:5]
+    et_str = str(schedule.end_time)[:5]
+
+    if change_type == "cancelled":
+        title = f"[ICTU] Thông báo hủy buổi học #{schedule.session_number} - Lớp {class_code}"
+        message = (
+            f"Buổi học #{schedule.session_number} ({schedule.topic}) của lớp {class_code} "
+            f"dự kiến ngày {ld_str} ({st_str} - {et_str}) đã bị hủy.\n"
+            f"Lý do: {cancellation_reason or schedule.cancellation_reason or 'Không có lý do cụ thể'}."
+        )
+    elif change_type == "rescheduled":
+        title = f"[ICTU] Thông báo dời lịch buổi học #{schedule.session_number} - Lớp {class_code}"
+        message = (
+            f"Buổi học #{schedule.session_number} ({schedule.topic}) của lớp {class_code} "
+            f"đã được dời sang ngày {ld_str}, khung giờ {st_str} - {et_str}"
+            f"{f', phòng {schedule.room_id}' if schedule.room_id else ''}."
+        )
+    else:
+        title = f"[ICTU] Thông báo cập nhật buổi học #{schedule.session_number} - Lớp {class_code}"
+        message = (
+            f"Buổi học #{schedule.session_number} ({schedule.topic}) của lớp {class_code} ngày {ld_str} "
+            f"đã được cập nhật thông tin giảng viên / phòng học."
+        )
+
+    notifications_to_save: list[dict] = []
+    seen_recipient_ids = set()
+
+    # 1. Học viên ghi danh trong lớp
+    students = class_schedule_repository.get_class_enrollment_recipients(class_id)
+    for s in students:
+        rec_id = s.get("id") or s.get("user_id")
+        if rec_id and rec_id not in seen_recipient_ids:
+            seen_recipient_ids.add(rec_id)
+            notifications_to_save.append({
+                "schedule_id": schedule.id,
+                "class_id": class_id,
+                "recipient_type": "student",
+                "recipient_id": rec_id,
+                "recipient_name": s.get("full_name") or "Học viên",
+                "recipient_email": s.get("email"),
+                "change_type": change_type,
+                "title": title,
+                "message": message,
+            })
+
+    # 2. Giảng viên phụ trách hiện tại
+    if schedule.instructor_id and schedule.instructor_id not in seen_recipient_ids:
+        seen_recipient_ids.add(schedule.instructor_id)
+        inst_info = class_schedule_repository.get_user_info_by_id(schedule.instructor_id)
+        notifications_to_save.append({
+            "schedule_id": schedule.id,
+            "class_id": class_id,
+            "recipient_type": "instructor",
+            "recipient_id": schedule.instructor_id,
+            "recipient_name": inst_info.get("name") if inst_info else "Giảng viên",
+            "recipient_email": inst_info.get("email") if inst_info else None,
+            "change_type": change_type,
+            "title": title,
+            "message": message,
+        })
+
+    # 3. Giảng viên cũ (nếu thay đổi giảng viên dạy thay)
+    if old_instructor_id and old_instructor_id != schedule.instructor_id and old_instructor_id not in seen_recipient_ids:
+        seen_recipient_ids.add(old_instructor_id)
+        old_inst_info = class_schedule_repository.get_user_info_by_id(old_instructor_id)
+        notifications_to_save.append({
+            "schedule_id": schedule.id,
+            "class_id": class_id,
+            "recipient_type": "instructor",
+            "recipient_id": old_instructor_id,
+            "recipient_name": old_inst_info.get("name") if old_inst_info else "Giảng viên",
+            "recipient_email": old_inst_info.get("email") if old_inst_info else None,
+            "change_type": change_type,
+            "title": title,
+            "message": message + " (Bạn đã được gỡ khỏi buổi học này do có giảng viên dạy thay).",
+        })
+
+    if notifications_to_save:
+        class_schedule_repository.insert_schedule_notifications_batch(notifications_to_save)
+        logger.info(
+            "Đã phát %d thông báo thay đổi TKB (loại: %s) cho lớp %s buổi #%s",
+            len(notifications_to_save),
+            change_type,
+            class_code,
+            schedule.session_number,
+        )
+
+    return len(notifications_to_save)
+
+
+def update_single_schedule_service(class_id: str, schedule_id: str, payload: dict) -> dict:
+    """
+    Sửa hoặc dời một buổi học đơn lẻ (SCRUM-226 AC 1, AC 3, AC 4):
+    - Đổi được ngày, giờ, phòng, giảng viên dạy thay.
+    - Chặn sửa buổi học đã điểm danh (AC 4).
+    - Tái sử dụng kiểm tra xung đột của SCRUM-225 (loại trừ chính buổi đang sửa).
+    - Gửi thông báo tới học viên và giảng viên của lớp (AC 3).
+    """
+    class_obj = class_repository.get_class_by_id(class_id)
+    if not class_obj:
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
+
+    schedule = class_schedule_repository.get_schedule_by_id(schedule_id)
+    if not schedule or str(schedule.class_id) != str(class_id):
+        raise ScheduleNotFoundError("Không tìm thấy buổi học trong lớp này.")
+
+    # AC 4: Không sửa được buổi đã điểm danh
+    if schedule.attendance_checked:
+        raise ScheduleAttendanceCheckedError("Không thể sửa hoặc dời buổi học đã được điểm danh.")
+
+    # Thu thập dữ liệu cập nhật
+    new_date = payload.get("learning_date") or schedule.learning_date
+    if isinstance(new_date, str):
+        try:
+            datetime.strptime(new_date, "%Y-%m-%d")
+        except ValueError:
+            raise ScheduleValidationError("Định dạng ngày học không hợp lệ (cần YYYY-MM-DD).")
+
+    new_shift = payload.get("shift") if "shift" in payload else schedule.shift
+    new_start = payload.get("start_time") or schedule.start_time
+    new_end = payload.get("end_time") or schedule.end_time
+
+    if new_shift and new_shift in DEFAULT_SHIFTS and ("start_time" not in payload or not payload["start_time"]):
+        new_start = DEFAULT_SHIFTS[new_shift]["start_time"]
+        new_end = DEFAULT_SHIFTS[new_shift]["end_time"]
+
+    str_start = str(new_start)[:8]
+    str_end = str(new_end)[:8]
+    if str_start >= str_end:
+        raise ScheduleValidationError("Giờ bắt đầu phải trước giờ kết thúc buổi học.")
+
+    new_room = payload.get("room_id") if "room_id" in payload else schedule.room_id
+    new_instructor = payload.get("instructor_id") if "instructor_id" in payload else schedule.instructor_id
+    new_topic = payload.get("topic") if "topic" in payload else schedule.topic
+    allow_conflict_override = bool(payload.get("allow_conflict_override", False))
+
+    # Tái sử dụng kiểm tra xung đột SCRUM-225 (loại trừ chính buổi đang sửa)
+    conflicts = class_schedule_repository.find_conflicts_for_slot(
+        learning_date=new_date,
+        start_time=str_start,
+        end_time=str_end,
+        instructor_id=new_instructor or None,
+        room_id=new_room or None,
+        exclude_schedule_id=schedule.id,
+    )
+
+    if conflicts and not allow_conflict_override:
+        raise ScheduleConflictError(
+            f"Phát hiện xung đột lịch cho buổi học #{schedule.session_number}. Cần Quản lý đào tạo xác nhận ghi đè.",
+            conflicts,
+        )
+
+    # Xác định trạng thái mới: nếu ngày hoặc giờ thay đổi thì là 'rescheduled'
+    date_changed = str(new_date) != str(schedule.learning_date)
+    time_changed = str(new_start)[:5] != str(schedule.start_time)[:5]
+    if date_changed or time_changed:
+        change_type = "rescheduled"
+    else:
+        change_type = "updated"
+
+    old_instructor = schedule.instructor_id
+
+    # Cập nhật thông tin
+    schedule.learning_date = new_date
+    schedule.start_time = str_start
+    schedule.end_time = str_end
+    schedule.shift = new_shift
+    schedule.room_id = new_room
+    schedule.instructor_id = new_instructor
+    if new_topic:
+        schedule.topic = str(new_topic).strip()
+    schedule.status = change_type
+
+    updated_schedule = class_schedule_repository.update_schedule_item(schedule)
+
+    # Gửi thông báo tới học viên và giảng viên (AC 3)
+    recipients_count = dispatch_schedule_change_notifications(
+        class_id=class_id,
+        schedule=updated_schedule,
+        change_type=change_type,
+        old_instructor_id=old_instructor,
+    )
+
+    return {
+        "class_id": class_id,
+        "class_code": class_obj.class_code,
+        "schedule": updated_schedule.to_dict(),
+        "notifications_sent": recipients_count,
+        "overridden_conflicts_count": len(conflicts) if allow_conflict_override else 0,
+        "conflicts": conflicts if allow_conflict_override else [],
+    }
+
+
+def cancel_single_schedule_service(class_id: str, schedule_id: str, payload: dict) -> dict:
+    """
+    Hủy một buổi học đơn lẻ (SCRUM-226 AC 2, AC 3, AC 4):
+    - Bắt buộc nhập lý do hủy (cancellation_reason) (AC 2).
+    - Chặn hủy nếu buổi học đã điểm danh (AC 4).
+    - Học viên và giảng viên của lớp nhận được thông báo thay đổi (AC 3).
+    """
+    class_obj = class_repository.get_class_by_id(class_id)
+    if not class_obj:
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
+
+    schedule = class_schedule_repository.get_schedule_by_id(schedule_id)
+    if not schedule or str(schedule.class_id) != str(class_id):
+        raise ScheduleNotFoundError("Không tìm thấy buổi học trong lớp này.")
+
+    # AC 4: Không hủy được buổi đã điểm danh
+    if schedule.attendance_checked:
+        raise ScheduleAttendanceCheckedError("Không thể hủy buổi học đã được điểm danh.")
+
+    # AC 2: Bắt buộc nhập lý do hủy
+    reason = (payload.get("reason") or payload.get("cancellation_reason") or "").strip()
+    if not reason:
+        raise ScheduleValidationError("Lý do hủy buổi học là bắt buộc.", code="MISSING_CANCELLATION_REASON", status_code=400)
+
+    schedule.status = "cancelled"
+    schedule.cancellation_reason = reason
+
+    updated_schedule = class_schedule_repository.update_schedule_item(schedule)
+
+    # AC 3: Gửi thông báo hủy tới học viên và giảng viên
+    recipients_count = dispatch_schedule_change_notifications(
+        class_id=class_id,
+        schedule=updated_schedule,
+        change_type="cancelled",
+        cancellation_reason=reason,
+    )
+
+    return {
+        "class_id": class_id,
+        "class_code": class_obj.class_code,
+        "schedule": updated_schedule.to_dict(),
+        "notifications_sent": recipients_count,
+        "cancellation_reason": reason,
+    }
+
+
+def list_schedule_notifications_service(class_id: str, schedule_id: str | None = None) -> list[dict]:
+    """Lấy danh sách thông báo thay đổi lịch học đã phát (SCRUM-226 AC 3)."""
+    return class_schedule_repository.list_schedule_notifications(schedule_id=schedule_id, class_id=class_id)
+
