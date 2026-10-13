@@ -261,3 +261,200 @@ def find_conflicts_for_slot(
     finally:
         conn.close()
 
+
+def get_schedule_by_id(schedule_id: str) -> ClassSchedule | None:
+    """Lấy chi tiết một buổi học theo ID (SCRUM-226)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT id, class_id, class_subject_id, subject_id, subject_session_id,
+                       session_number, topic, learning_date, shift, start_time, end_time,
+                       room_id, instructor_id, status, cancellation_reason, attendance_checked,
+                       created_at, updated_at
+                FROM class_schedules
+                WHERE id = %s
+                """,
+                (schedule_id,),
+            )
+            r = cursor.fetchone()
+            if not r:
+                return None
+            return ClassSchedule(
+                id=r["id"],
+                class_id=r["class_id"],
+                class_subject_id=r["class_subject_id"],
+                subject_id=r["subject_id"],
+                subject_session_id=r["subject_session_id"],
+                session_number=r["session_number"],
+                topic=r["topic"],
+                learning_date=r["learning_date"],
+                shift=r["shift"],
+                start_time=r["start_time"],
+                end_time=r["end_time"],
+                room_id=r["room_id"],
+                instructor_id=r["instructor_id"],
+                status=r["status"],
+                cancellation_reason=r["cancellation_reason"],
+                attendance_checked=bool(r["attendance_checked"]),
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+    finally:
+        conn.close()
+
+
+def update_schedule_item(schedule: ClassSchedule) -> ClassSchedule:
+    """Cập nhật thông tin một buổi học đơn lẻ (SCRUM-226 AC 1, AC 2)."""
+    conn = get_db_connection()
+    try:
+        now = datetime.now(timezone.utc)
+        schedule.updated_at = now
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE class_schedules
+                SET learning_date = %s,
+                    start_time = %s,
+                    end_time = %s,
+                    shift = %s,
+                    room_id = %s,
+                    instructor_id = %s,
+                    topic = %s,
+                    status = %s,
+                    cancellation_reason = %s,
+                    attendance_checked = %s,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (
+                    schedule.learning_date,
+                    schedule.start_time,
+                    schedule.end_time,
+                    schedule.shift,
+                    schedule.room_id,
+                    schedule.instructor_id,
+                    schedule.topic,
+                    schedule.status,
+                    schedule.cancellation_reason,
+                    schedule.attendance_checked,
+                    now,
+                    schedule.id,
+                ),
+            )
+            conn.commit()
+        return schedule
+    finally:
+        conn.close()
+
+
+def insert_schedule_notifications_batch(notifications: list[dict]) -> list[dict]:
+    """Lưu danh sách thông báo thay đổi TKB gửi tới học viên và giảng viên (SCRUM-226 AC 3)."""
+    if not notifications:
+        return []
+
+    conn = get_db_connection()
+    try:
+        now = datetime.now(timezone.utc)
+        for n in notifications:
+            if not n.get("id"):
+                n["id"] = str(uuid.uuid4())
+            n["created_at"] = n.get("created_at") or now
+
+        with conn.cursor() as cursor:
+            sql = """
+                INSERT INTO schedule_notifications (
+                    id, schedule_id, class_id, recipient_type, recipient_id,
+                    recipient_name, recipient_email, change_type, title, message, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            values = [
+                (
+                    n["id"],
+                    n["schedule_id"],
+                    n["class_id"],
+                    n["recipient_type"],
+                    n["recipient_id"],
+                    n.get("recipient_name"),
+                    n.get("recipient_email"),
+                    n["change_type"],
+                    n["title"],
+                    n["message"],
+                    n["created_at"],
+                )
+                for n in notifications
+            ]
+            cursor.executemany(sql, values)
+            conn.commit()
+        return notifications
+    finally:
+        conn.close()
+
+
+def list_schedule_notifications(
+    schedule_id: str | None = None,
+    class_id: str | None = None,
+) -> list[dict]:
+    """Truy vấn lịch sử thông báo thay đổi thời khóa biểu (SCRUM-226 AC 3)."""
+    conn = get_db_connection()
+    try:
+        conditions = []
+        params = []
+        if schedule_id:
+            conditions.append("schedule_id = %s")
+            params.append(schedule_id)
+        if class_id:
+            conditions.append("class_id = %s")
+            params.append(class_id)
+
+        sql = """
+            SELECT id, schedule_id, class_id, recipient_type, recipient_id,
+                   recipient_name, recipient_email, change_type, title, message, created_at
+            FROM schedule_notifications
+        """
+        if conditions:
+            sql += f" WHERE {' AND '.join(conditions)}"
+        sql += " ORDER BY created_at DESC"
+
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+            for r in rows:
+                if hasattr(r["created_at"], "isoformat"):
+                    r["created_at"] = r["created_at"].isoformat()
+            return rows
+    finally:
+        conn.close()
+
+
+def get_class_enrollment_recipients(class_id: str) -> list[dict]:
+    """Lấy danh sách học viên đang ghi danh của lớp để gửi thông báo (SCRUM-226 AC 3)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT s.id, s.user_id, s.full_name, s.email, 'student' AS recipient_type
+                FROM class_enrollments ce
+                JOIN students s ON ce.student_id = s.id
+                WHERE ce.class_id = %s AND ce.status = 'enrolled'
+                """,
+                (class_id,),
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_user_info_by_id(user_id: str) -> dict | None:
+    """Lấy thông tin người dùng (tên, email) để gửi thông báo (SCRUM-226 AC 3)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT id, name, email FROM users WHERE id = %s", (user_id,))
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
