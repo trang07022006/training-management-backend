@@ -75,6 +75,9 @@ def list_classes_endpoint():
     program_id = request.args.get("program_id")
     status = request.args.get("status")
     search = request.args.get("search")
+    date_from = request.args.get("date_from") or request.args.get("from_date")
+    date_to = request.args.get("date_to") or request.args.get("to_date")
+    instructor_id = request.args.get("instructor_id")
     try:
         page = int(request.args.get("page", 1))
     except (ValueError, TypeError):
@@ -89,6 +92,9 @@ def list_classes_endpoint():
             program_id=program_id,
             status=status,
             search=search,
+            date_from=date_from,
+            date_to=date_to,
+            instructor_id=instructor_id,
             page=page,
             page_size=page_size,
         )

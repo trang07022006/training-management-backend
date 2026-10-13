@@ -27,6 +27,7 @@ def _row_to_class(row: dict) -> ClassEntity:
         program_code=row.get("program_code"),
         program_name=row.get("program_name"),
         enrolled_count=int(row.get("enrolled_count") or 0),
+        session_progress=row.get("session_progress"),
     )
 
 
@@ -236,28 +237,61 @@ def list_classes(
     program_id: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    instructor_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[ClassEntity], int]:
-    """Lấy danh sách lớp học có lọc và phân trang."""
+    """Lấy danh sách lớp học có lọc và phân trang (SCRUM-217 & SCRUM-219)."""
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
             where_clauses = ["1=1"]
             params = []
 
-            if program_id:
+            if program_id and program_id.strip():
                 where_clauses.append("c.program_id = %s")
                 params.append(program_id.strip())
 
-            if status:
+            if status and status.strip():
                 where_clauses.append("c.status = %s")
                 params.append(status.strip())
 
-            if search:
+            if search and search.strip():
                 term = f"%{search.strip()}%"
                 where_clauses.append("(c.class_code LIKE %s OR tp.name LIKE %s OR tp.code LIKE %s)")
                 params.extend([term, term, term])
+
+            # Lọc theo khoảng thời gian khai giảng dự kiến (SCRUM-219)
+            if date_from and date_from.strip():
+                where_clauses.append("c.expected_start_date >= %s")
+                params.append(date_from.strip())
+
+            if date_to and date_to.strip():
+                where_clauses.append("c.expected_start_date <= %s")
+                params.append(date_to.strip())
+
+            # Lọc theo giảng viên được phân công (SCRUM-219 / liên kết SCRUM-220)
+            if instructor_id and instructor_id.strip():
+                has_instructor_table = False
+                try:
+                    cursor.execute("SHOW TABLES LIKE 'class_subject_instructors'")
+                    has_instructor_table = cursor.fetchone() is not None
+                except Exception:
+                    has_instructor_table = False
+
+                if has_instructor_table:
+                    where_clauses.append(
+                        """EXISTS (
+                            SELECT 1 FROM class_subjects cs
+                            INNER JOIN class_subject_instructors csi ON cs.id = csi.class_subject_id
+                            WHERE cs.class_id = c.id AND csi.instructor_id = %s
+                        )"""
+                    )
+                    params.append(instructor_id.strip())
+                else:
+                    where_clauses.append("1=0")
 
             where_sql = " AND ".join(where_clauses)
 

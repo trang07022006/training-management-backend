@@ -55,6 +55,7 @@ class ClassEntity:
     program_code: str | None = None
     program_name: str | None = None
     enrolled_count: int = 0
+    session_progress: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         start_date_str = None
@@ -76,6 +77,7 @@ class ClassEntity:
             "status": self.status,
             "status_label": CLASS_STATUS_LABELS.get(self.status, self.status),
             "enrolled_count": self.enrolled_count,
+            "session_progress": self.session_progress,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
