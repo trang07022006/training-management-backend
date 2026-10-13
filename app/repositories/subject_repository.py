@@ -315,6 +315,7 @@ def is_subject_in_use(subject_id: str) -> bool:
     Sử dụng danh sách bảng whitelist được định nghĩa nội bộ, không nhận input từ client.
     """
     dependency_specs = [
+        ("class_subjects", "subject_id"),
         ("classes", "subject_id"),
         ("course_classes", "subject_id"),
         ("class_sections", "subject_id"),
@@ -327,14 +328,14 @@ def is_subject_in_use(subject_id: str) -> bool:
             cursor.execute(
                 """
                 SELECT COUNT(*) as cnt
-                FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
                 """,
-                (table_name,),
+                (table_name, col_name),
             )
             row = cursor.fetchone()
             if row and row.get("cnt", 0) > 0:
-                # Bảng tồn tại, kiểm tra xem subject_id có đang được tham chiếu không
+                # Bảng và cột tồn tại, kiểm tra xem subject_id có đang được tham chiếu không
                 cursor.execute(
                     f"SELECT 1 FROM {table_name} WHERE {col_name} = %s LIMIT 1",
                     (subject_id,),
@@ -348,27 +349,27 @@ def get_subject_usage_info(subject_id: str) -> dict | None:
     """
     Xác định chi tiết lý do môn học đang được sử dụng ở các bảng liên kết thực tế.
     Phân loại theo các trường hợp:
-    - CLASS_EXISTS: Đã có lớp học phát sinh (classes, course_classes, class_sections, subject_classes).
+    - CLASS_EXISTS: Đã có lớp học phát sinh (class_subjects, classes, course_classes, class_sections, subject_classes).
     - PREREQUISITE_EXISTS: Đang được dùng làm điều kiện tiên quyết trong program_subject_prerequisites.
     - PROGRAM_ASSOCIATION: Đang được sử dụng trong chương trình đào tạo (program_subjects).
     - SESSION_EXISTS: Đang có các buổi học trong môn học (subject_sessions).
     """
     with _database_cursor() as cursor:
         # 1. Kiểm tra lớp học
-        class_tables = ["classes", "course_classes", "class_sections", "subject_classes"]
-        for table_name in class_tables:
+        class_tables = [("class_subjects", "subject_id"), ("classes", "subject_id"), ("course_classes", "subject_id"), ("class_sections", "subject_id"), ("subject_classes", "subject_id")]
+        for table_name, col_name in class_tables:
             cursor.execute(
                 """
                 SELECT COUNT(*) as cnt
-                FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
                 """,
-                (table_name,),
+                (table_name, col_name),
             )
             row = cursor.fetchone()
             if row and row.get("cnt", 0) > 0:
                 cursor.execute(
-                    f"SELECT 1 FROM {table_name} WHERE subject_id = %s LIMIT 1",
+                    f"SELECT 1 FROM {table_name} WHERE {col_name} = %s LIMIT 1",
                     (subject_id,),
                 )
                 if cursor.fetchone() is not None:
