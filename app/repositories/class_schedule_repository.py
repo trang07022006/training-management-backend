@@ -458,3 +458,185 @@ def get_user_info_by_id(user_id: str) -> dict | None:
         conn.close()
 
 
+DAY_OF_WEEK_NAMES = {
+    0: "Thứ 2",
+    1: "Thứ 3",
+    2: "Thứ 4",
+    3: "Thứ 5",
+    4: "Thứ 6",
+    5: "Thứ 7",
+    6: "Chủ nhật",
+}
+
+
+def list_calendar_schedules(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    class_id: str | None = None,
+    instructor_id: str | None = None,
+    room_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Lấy danh sách thời khóa biểu dạng lịch theo khoảng ngày và bộ lọc (SCRUM-227 AC 1, 2, 3).
+    Hỗ trợ lọc theo:
+    - Khoảng ngày: date_from <= learning_date <= date_to
+    - Lớp học: class_id
+    - Giảng viên: instructor_id
+    - Phòng học: room_id
+    """
+    conn = get_db_connection()
+    try:
+        sql = """
+            SELECT cs.id, cs.class_id, cs.class_subject_id, cs.subject_id, cs.subject_session_id,
+                   cs.session_number, cs.topic, cs.learning_date, cs.shift, cs.start_time, cs.end_time,
+                   cs.room_id, cs.instructor_id, cs.status, cs.cancellation_reason, cs.attendance_checked,
+                   c.class_code,
+                   u.name AS instructor_name, u.email AS instructor_email,
+                   s.subject_name, s.subject_code
+            FROM class_schedules cs
+            LEFT JOIN classes c ON cs.class_id = c.id
+            LEFT JOIN users u ON cs.instructor_id = u.id
+            LEFT JOIN subjects s ON cs.subject_id = s.id
+            WHERE 1=1
+        """
+        params: list[Any] = []
+
+        if date_from:
+            sql += " AND cs.learning_date >= %s"
+            params.append(date_from)
+        if date_to:
+            sql += " AND cs.learning_date <= %s"
+            params.append(date_to)
+        if class_id:
+            sql += " AND cs.class_id = %s"
+            params.append(class_id)
+        if instructor_id:
+            sql += " AND cs.instructor_id = %s"
+            params.append(instructor_id)
+        if room_id:
+            sql += " AND cs.room_id = %s"
+            params.append(room_id)
+
+        sql += " ORDER BY cs.learning_date ASC, cs.start_time ASC, cs.session_number ASC"
+
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(sql, tuple(params))
+            rows = cursor.fetchall()
+
+            results = []
+            for r in rows:
+                ld = r["learning_date"]
+                ld_str = ld.strftime("%Y-%m-%d") if hasattr(ld, "strftime") else str(ld)
+                st = r["start_time"]
+                st_str = st.strftime("%H:%M:%S") if hasattr(st, "strftime") else str(st)
+                et = r["end_time"]
+                et_str = et.strftime("%H:%M:%S") if hasattr(et, "strftime") else str(et)
+
+                day_name = ""
+                if hasattr(ld, "weekday"):
+                    day_name = DAY_OF_WEEK_NAMES.get(ld.weekday(), "")
+                else:
+                    try:
+                        parsed_d = datetime.strptime(ld_str, "%Y-%m-%d").date()
+                        day_name = DAY_OF_WEEK_NAMES.get(parsed_d.weekday(), "")
+                    except Exception:
+                        pass
+
+                results.append({
+                    "id": r["id"],
+                    "class_id": r["class_id"],
+                    "class_code": r["class_code"] or r["class_id"],
+                    "class_subject_id": r["class_subject_id"],
+                    "subject_id": r["subject_id"],
+                    "subject_name": r["subject_name"] or "",
+                    "subject_code": r["subject_code"] or "",
+                    "subject_session_id": r["subject_session_id"],
+                    "session_number": r["session_number"],
+                    "topic": r["topic"],
+                    "learning_date": ld_str,
+                    "day_of_week": day_name,
+                    "shift": r["shift"],
+                    "start_time": st_str,
+                    "end_time": et_str,
+                    "room_id": r["room_id"],
+                    "instructor_id": r["instructor_id"],
+                    "instructor_name": r["instructor_name"] or r["instructor_id"] or "",
+                    "instructor_email": r["instructor_email"] or "",
+                    "status": r["status"],
+                    "cancellation_reason": r["cancellation_reason"],
+                    "attendance_checked": bool(r["attendance_checked"]),
+                })
+            return results
+    finally:
+        conn.close()
+
+
+def get_schedule_detail_by_id(schedule_id: str) -> dict[str, Any] | None:
+    """Lấy thông tin chi tiết một buổi học kèm thông tin lớp, GV, môn học (SCRUM-227 AC 3)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT cs.id, cs.class_id, cs.class_subject_id, cs.subject_id, cs.subject_session_id,
+                       cs.session_number, cs.topic, cs.learning_date, cs.shift, cs.start_time, cs.end_time,
+                       cs.room_id, cs.instructor_id, cs.status, cs.cancellation_reason, cs.attendance_checked,
+                       c.class_code,
+                       u.name AS instructor_name, u.email AS instructor_email,
+                       s.subject_name, s.subject_code
+                FROM class_schedules cs
+                LEFT JOIN classes c ON cs.class_id = c.id
+                LEFT JOIN users u ON cs.instructor_id = u.id
+                LEFT JOIN subjects s ON cs.subject_id = s.id
+                WHERE cs.id = %s
+                """,
+                (schedule_id,),
+            )
+            r = cursor.fetchone()
+            if not r:
+                return None
+            ld = r["learning_date"]
+            ld_str = ld.strftime("%Y-%m-%d") if hasattr(ld, "strftime") else str(ld)
+            st = r["start_time"]
+            st_str = st.strftime("%H:%M:%S") if hasattr(st, "strftime") else str(st)
+            et = r["end_time"]
+            et_str = et.strftime("%H:%M:%S") if hasattr(et, "strftime") else str(et)
+            day_name = ""
+            if hasattr(ld, "weekday"):
+                day_name = DAY_OF_WEEK_NAMES.get(ld.weekday(), "")
+            else:
+                try:
+                    parsed_d = datetime.strptime(ld_str, "%Y-%m-%d").date()
+                    day_name = DAY_OF_WEEK_NAMES.get(parsed_d.weekday(), "")
+                except Exception:
+                    pass
+
+            return {
+                "id": r["id"],
+                "class_id": r["class_id"],
+                "class_code": r["class_code"] or r["class_id"],
+                "class_subject_id": r["class_subject_id"],
+                "subject_id": r["subject_id"],
+                "subject_name": r["subject_name"] or "",
+                "subject_code": r["subject_code"] or "",
+                "subject_session_id": r["subject_session_id"],
+                "session_number": r["session_number"],
+                "topic": r["topic"],
+                "learning_date": ld_str,
+                "day_of_week": day_name,
+                "shift": r["shift"],
+                "start_time": st_str,
+                "end_time": et_str,
+                "room_id": r["room_id"],
+                "instructor_id": r["instructor_id"],
+                "instructor_name": r["instructor_name"] or r["instructor_id"] or "",
+                "instructor_email": r["instructor_email"] or "",
+                "status": r["status"],
+                "cancellation_reason": r["cancellation_reason"],
+                "attendance_checked": bool(r["attendance_checked"]),
+            }
+    finally:
+        conn.close()
+
+
+

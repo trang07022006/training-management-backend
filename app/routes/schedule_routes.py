@@ -274,3 +274,79 @@ def get_schedule_notifications_endpoint(class_id: str, schedule_id: str):
             "message": "Lỗi cơ sở dữ liệu khi lấy thông báo.",
         }), 500
 
+
+@schedule_bp.get("/v1/schedules/calendar")
+@schedule_bp.get("/schedules/calendar")
+@permission_required("course.view")
+def get_calendar_schedules_endpoint():
+    """
+    API xem thời khóa biểu dạng lịch theo tuần và theo tháng kèm bộ lọc (SCRUM-227 AC 1, 2, 4).
+    Query parameters:
+    - date_from (YYYY-MM-DD): Ngày bắt đầu khoảng thời gian
+    - date_to (YYYY-MM-DD): Ngày kết thúc khoảng thời gian
+    - class_id: Lọc theo lớp học
+    - instructor_id: Lọc theo giảng viên
+    - room_id: Lọc theo phòng học
+    - view_mode: Chế độ xem ('week' hoặc 'month')
+    """
+    params = {
+        "date_from": request.args.get("date_from"),
+        "date_to": request.args.get("date_to"),
+        "class_id": request.args.get("class_id"),
+        "instructor_id": request.args.get("instructor_id"),
+        "room_id": request.args.get("room_id"),
+        "view_mode": request.args.get("view_mode", "week"),
+    }
+    try:
+        data = schedule_service.get_calendar_schedules_service(params)
+        return jsonify({
+            "status": "success",
+            "code": "CALENDAR_SCHEDULES_RETRIEVED",
+            "message": "Lấy lịch thời khóa biểu thành công.",
+            "data": data,
+        }), 200
+    except ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi DB khi lấy lịch thời khóa biểu: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi lấy lịch học.",
+        }), 500
+
+
+@schedule_bp.get("/v1/schedules/<schedule_id>")
+@schedule_bp.get("/schedules/<schedule_id>")
+@permission_required("course.view")
+def get_schedule_detail_endpoint(schedule_id: str):
+    """
+    API lấy chi tiết một buổi học theo ID khi bấm vào buổi trên lịch (SCRUM-227 AC 3).
+    """
+    try:
+        data = schedule_service.get_schedule_detail_service(schedule_id)
+        return jsonify({
+            "status": "success",
+            "code": "SCHEDULE_DETAIL_RETRIEVED",
+            "message": "Lấy chi tiết buổi học thành công.",
+            "data": data,
+        }), 200
+    except ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi DB khi lấy chi tiết buổi học: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi lấy chi tiết buổi học.",
+        }), 500
+
+

@@ -821,3 +821,56 @@ def list_schedule_notifications_service(class_id: str, schedule_id: str | None =
     """Lấy danh sách thông báo thay đổi lịch học đã phát (SCRUM-226 AC 3)."""
     return class_schedule_repository.list_schedule_notifications(schedule_id=schedule_id, class_id=class_id)
 
+
+def get_calendar_schedules_service(params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Lấy danh sách thời khóa biểu dạng lịch tuần/tháng kèm bộ lọc (SCRUM-227 AC 1, 2, 4).
+    Params:
+    - date_from: YYYY-MM-DD
+    - date_to: YYYY-MM-DD
+    - class_id: ID lớp học
+    - instructor_id: ID giảng viên
+    - room_id: Mã / Tên phòng học
+    - view_mode: 'week' | 'month' (mặc định 'week')
+    """
+    date_from = (params.get("date_from") or "").strip() or None
+    date_to = (params.get("date_to") or "").strip() or None
+    class_id = (params.get("class_id") or "").strip() or None
+    instructor_id = (params.get("instructor_id") or "").strip() or None
+    room_id = (params.get("room_id") or "").strip() or None
+    view_mode = (params.get("view_mode") or "week").strip().lower()
+    if view_mode not in ("week", "month"):
+        view_mode = "week"
+
+    schedules = class_schedule_repository.list_calendar_schedules(
+        date_from=date_from,
+        date_to=date_to,
+        class_id=class_id,
+        instructor_id=instructor_id,
+        room_id=room_id,
+    )
+
+    return {
+        "total": len(schedules),
+        "date_from": date_from,
+        "date_to": date_to,
+        "view_mode": view_mode,
+        "filters": {
+            "class_id": class_id,
+            "instructor_id": instructor_id,
+            "room_id": room_id,
+        },
+        "schedules": schedules,
+    }
+
+
+def get_schedule_detail_service(schedule_id: str) -> dict[str, Any]:
+    """
+    Lấy chi tiết một buổi học theo ID phục vụ popup xem chi tiết trên lịch (SCRUM-227 AC 3).
+    """
+    detail = class_schedule_repository.get_schedule_detail_by_id(schedule_id)
+    if not detail:
+        raise ScheduleNotFoundError("Không tìm thấy buổi học.")
+    return detail
+
+
