@@ -20,3 +20,21 @@ CREATE TABLE IF NOT EXISTS lead_status_history (
 
 CREATE INDEX idx_lsh_lead_id ON lead_status_history (lead_id);
 CREATE INDEX idx_lsh_created_at ON lead_status_history (created_at);
+
+-- Lead APIs use this field for rejected leads. Add it here, after the base
+-- leads table exists and before migration 020 adds callback_date after it.
+SET @has_rejection_reason = (
+    SELECT COUNT(*)
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'leads'
+      AND column_name = 'rejection_reason'
+);
+SET @add_rejection_reason_sql = IF(
+    @has_rejection_reason = 0,
+    'ALTER TABLE leads ADD COLUMN rejection_reason VARCHAR(255) NULL AFTER status',
+    'DO 0'
+);
+PREPARE add_rejection_reason FROM @add_rejection_reason_sql;
+EXECUTE add_rejection_reason;
+DEALLOCATE PREPARE add_rejection_reason;

@@ -319,6 +319,8 @@ def is_subject_in_use(subject_id: str) -> bool:
         ("course_classes", "subject_id"),
         ("class_sections", "subject_id"),
         ("subject_classes", "subject_id"),
+        ("class_subjects", "subject_id"),
+        ("class_schedules", "subject_id"),
         ("program_subjects", "subject_id"),
         ("subject_sessions", "subject_id"),
     ]
@@ -327,10 +329,10 @@ def is_subject_in_use(subject_id: str) -> bool:
             cursor.execute(
                 """
                 SELECT COUNT(*) as cnt
-                FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
                 """,
-                (table_name,),
+                (table_name, col_name),
             )
             row = cursor.fetchone()
             if row and row.get("cnt", 0) > 0:
@@ -355,20 +357,27 @@ def get_subject_usage_info(subject_id: str) -> dict | None:
     """
     with _database_cursor() as cursor:
         # 1. Kiểm tra lớp học
-        class_tables = ["classes", "course_classes", "class_sections", "subject_classes"]
-        for table_name in class_tables:
+        class_dependencies = [
+            ("classes", "subject_id"),
+            ("course_classes", "subject_id"),
+            ("class_sections", "subject_id"),
+            ("subject_classes", "subject_id"),
+            ("class_subjects", "subject_id"),
+            ("class_schedules", "subject_id"),
+        ]
+        for table_name, column_name in class_dependencies:
             cursor.execute(
                 """
                 SELECT COUNT(*) as cnt
-                FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
                 """,
-                (table_name,),
+                (table_name, column_name),
             )
             row = cursor.fetchone()
             if row and row.get("cnt", 0) > 0:
                 cursor.execute(
-                    f"SELECT 1 FROM {table_name} WHERE subject_id = %s LIMIT 1",
+                    f"SELECT 1 FROM {table_name} WHERE {column_name} = %s LIMIT 1",
                     (subject_id,),
                 )
                 if cursor.fetchone() is not None:

@@ -21,4 +21,18 @@ CREATE INDEX idx_lcl_lead_id ON lead_care_logs (lead_id);
 CREATE INDEX idx_lcl_interaction_at ON lead_care_logs (interaction_at);
 
 -- Bổ sung trường callback_date (ngày nhắc gọi lại) cho Lead (SCRUM-214-02)
-ALTER TABLE leads ADD COLUMN IF NOT EXISTS callback_date DATE NULL AFTER rejection_reason;
+SET @has_callback_date = (
+    SELECT COUNT(*)
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'leads'
+      AND column_name = 'callback_date'
+);
+SET @add_callback_date_sql = IF(
+    @has_callback_date = 0,
+    'ALTER TABLE leads ADD COLUMN callback_date DATE NULL AFTER rejection_reason',
+    'DO 0'
+);
+PREPARE add_callback_date FROM @add_callback_date_sql;
+EXECUTE add_callback_date;
+DEALLOCATE PREPARE add_callback_date;

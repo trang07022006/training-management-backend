@@ -171,13 +171,18 @@ def create_user_service(
         logger.warning(f"Could not assign initial role {selected_role} to user {user_id}: {e}")
 
     # Gửi email thông tin tài khoản cho người dùng mới qua email_service
+
+    # Gửi email thông tin tài khoản cho người dùng mới
     try:
         from flask import current_app
         from app.services import email_service
+
         is_testing = bool(current_app and current_app.config.get("TESTING"))
-        is_mocked = hasattr(email_service.send_account_creation_email, "assert_called") or hasattr(
-            email_service.send_account_creation_email, "mock"
+        is_mocked = (
+            hasattr(email_service.send_account_creation_email, "assert_called")
+            or hasattr(email_service.send_account_creation_email, "mock")
         )
+
         if not is_testing or is_mocked:
             email_service.send_account_creation_email(
                 to_email=normalized_email,
@@ -185,9 +190,14 @@ def create_user_service(
                 raw_password=password,
             )
     except Exception as mail_err:
-        logger.warning("Không thể gửi email tạo tài khoản tới %s: %s", normalized_email, mail_err)
+        logger.warning(
+            "Không thể gửi email tạo tài khoản tới %s: %s",
+            normalized_email,
+            mail_err,
+        )
 
     return created_user
+
 
 
 def update_user_service(user_id: str, updates: dict) -> User:

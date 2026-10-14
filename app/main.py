@@ -47,10 +47,6 @@ app.register_blueprint(enrollment_bp)
 app.register_blueprint(holiday_bp)
 app.register_blueprint(schedule_bp)
 
-from app.database.ensure_business_roles import ensure_business_roles
-ensure_business_roles()
-
-
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({
