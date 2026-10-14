@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
 PHONE_REGEX = re.compile(r"^\+?[0-9]{9,15}$")
-VALID_ROLES = {"admin", "trainer", "trainee", "user"}
+VALID_ROLES = {
+    "admin",
+    "trainer",
+    "trainee",
+    "user",
+    "consultant",
+    "training_manager",
+}
 VALID_STATUSES = {"active", "inactive", "locked"}
 
 
@@ -91,103 +98,103 @@ def validate_phone_number(phone: str | None) -> str | None:
     return cleaned
 
 
-    def create_user_service(
-        email: str,
-        password: str,
-        name: str | None = None,
-        phone: str | None = None,
-        role: str = "user",
-        status: str = "active",
-    ) -> User:
-        """
-        Tạo người dùng mới:
-        1. Validate required fields & format
-        2. Check duplicate email (case-insensitive)
-        3. Hash password bằng werkzeug generate_password_hash
-        4. Ghi DB với parameterized query
-        5. Gán initial role nếu có trong roles table
-        """
-        normalized_email = validate_email_format(email)
-        validate_password_policy(password)
+def create_user_service(
+    email: str,
+    password: str,
+    name: str | None = None,
+    phone: str | None = None,
+    role: str = "user",
+    status: str = "active",
+) -> User:
+    """
+    Tạo người dùng mới:
+    1. Validate required fields & format
+    2. Check duplicate email (case-insensitive)
+    3. Hash password bằng werkzeug generate_password_hash
+    4. Ghi DB với parameterized query
+    5. Gán initial role nếu có trong roles table
+    """
+    normalized_email = validate_email_format(email)
+    validate_password_policy(password)
 
-        cleaned_name = name.strip() if isinstance(name, str) and name.strip() else None
-        if not cleaned_name:
-            raise UserValidationError("NAME_REQUIRED", "Họ và tên là bắt buộc.")
+    cleaned_name = name.strip() if isinstance(name, str) and name.strip() else None
+    if not cleaned_name:
+        raise UserValidationError("NAME_REQUIRED", "Họ và tên là bắt buộc.")
 
-        cleaned_phone = validate_phone_number(phone)
+    cleaned_phone = validate_phone_number(phone)
 
-        selected_role = (role or "user").strip().lower()
-        if selected_role not in VALID_ROLES:
-            raise UserValidationError("INVALID_ROLE", f"Vai trò không hợp lệ: {selected_role}.")
+    selected_role = (role or "user").strip().lower()
+    if selected_role not in VALID_ROLES:
+        raise UserValidationError("INVALID_ROLE", f"Vai trò không hợp lệ: {selected_role}.")
 
-        selected_status = (status or "active").strip().lower()
-        if selected_status not in VALID_STATUSES:
-            raise UserValidationError("INVALID_STATUS", f"Trạng thái không hợp lệ: {selected_status}.")
+    selected_status = (status or "active").strip().lower()
+    if selected_status not in VALID_STATUSES:
+        raise UserValidationError("INVALID_STATUS", f"Trạng thái không hợp lệ: {selected_status}.")
 
-        # Check duplicate email
-        if user_repository.check_email_exists(normalized_email):
+    # Check duplicate email
+    if user_repository.check_email_exists(normalized_email):
+        raise DuplicateEmailError()
+
+    password_hash = generate_password_hash(password)
+    user_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    user = User(
+        id=user_id,
+        email=normalized_email,
+        password_hash=password_hash,
+        name=cleaned_name,
+        phone=cleaned_phone,
+        role=selected_role,
+        status=selected_status,
+        failed_login_attempts=0,
+        locked_until=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    try:
+        created_user = user_repository.create_user(user)
+    except Exception as e:
+        err_msg = str(e).lower()
+        err_no = getattr(e, "errno", None)
+        if err_no == 1062 or "duplicate" in err_msg or "unique" in err_msg:
             raise DuplicateEmailError()
+        raise
 
-        password_hash = generate_password_hash(password)
-        user_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+    # Assign initial role mapping in user_roles table if role exists
+    try:
+        role_obj = role_repository.get_role_by_code(selected_role)
+        if role_obj:
+            user_role_repository.assign_role_to_user(user_id, role_obj.id)
+    except Exception as e:
+        logger.warning(f"Could not assign initial role {selected_role} to user {user_id}: {e}")
 
-        user = User(
-            id=user_id,
-            email=normalized_email,
-            password_hash=password_hash,
-            name=cleaned_name,
-            phone=cleaned_phone,
-            role=selected_role,
-            status=selected_status,
-            failed_login_attempts=0,
-            locked_until=None,
-            created_at=now,
-            updated_at=now,
+    # Gửi email thông tin tài khoản cho người dùng mới qua email_service
+
+    # Gửi email thông tin tài khoản cho người dùng mới
+    try:
+        from flask import current_app
+        from app.services import email_service
+
+        is_testing = bool(current_app and current_app.config.get("TESTING"))
+        is_mocked = (
+            hasattr(email_service.send_account_creation_email, "assert_called")
+            or hasattr(email_service.send_account_creation_email, "mock")
         )
 
-        try:
-            created_user = user_repository.create_user(user)
-        except Exception as e:
-            err_msg = str(e).lower()
-            err_no = getattr(e, "errno", None)
-            if err_no == 1062 or "duplicate" in err_msg or "unique" in err_msg:
-                raise DuplicateEmailError()
-            raise
-
-        # Assign initial role mapping in user_roles table if role exists
-        try:
-            role_obj = role_repository.get_role_by_code(selected_role)
-            if role_obj:
-                user_role_repository.assign_role_to_user(user_id, role_obj.id)
-        except Exception as e:
-            logger.warning(f"Could not assign initial role {selected_role} to user {user_id}: {e}")
-
-        # Gửi email thông tin tài khoản cho người dùng mới qua email_service
-
-        # Gửi email thông tin tài khoản cho người dùng mới
-        try:
-            from flask import current_app
-            from app.services import email_service
-
-            is_testing = bool(current_app and current_app.config.get("TESTING"))
-            is_mocked = (
-                hasattr(email_service.send_account_creation_email, "assert_called")
-                or hasattr(email_service.send_account_creation_email, "mock")
+        if not is_testing or is_mocked:
+            email_service.send_account_creation_email(
+                to_email=normalized_email,
+                name=cleaned_name,
+                raw_password=password,
             )
-
-            if not is_testing or is_mocked:
-                email_service.send_account_creation_email(
-                    to_email=normalized_email,
-                    name=cleaned_name,
-                    raw_password=password,
-                )
-        except Exception as mail_err:
-            logger.warning(
-                "Không thể gửi email tạo tài khoản tới %s: %s",
-                normalized_email,
-                mail_err,
-            )
+    except Exception as mail_err:
+        logger.warning(
+            "Không thể gửi email tạo tài khoản tới %s: %s",
+            normalized_email,
+            mail_err,
+        )
 
     return created_user
 
@@ -375,6 +382,9 @@ def get_user_profile_service(user_id: str) -> dict:
 
     profile_data = user.to_profile_dict()
     profile_data["role"] = display_role
+    profile_data["avatar_url"] = (
+        "/api/v1/users/profile/avatar" if user.avatar_path else None
+    )
 
     return profile_data
 

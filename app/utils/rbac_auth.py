@@ -86,6 +86,18 @@ def permission_required(permission_code: str):
                         "message": "Hệ thống lưu trữ phiên tạm thời không khả dụng",
                     }), 503
 
+            # 2.5 Kiểm tra bắt buộc đổi mật khẩu khi đăng nhập lần đầu (SCRUM-215)
+            try:
+                from app.repositories import user_repository
+                user_record = user_repository.get_user_by_id(user_id)
+                if user_record and getattr(user_record, "must_change_password", False):
+                    return jsonify({
+                        "code": "PASSWORD_CHANGE_REQUIRED",
+                        "message": "Bạn cần đổi mật khẩu trước khi tiếp tục sử dụng hệ thống.",
+                    }), 403
+            except Exception:
+                pass
+
             # 3. Kiểm tra Authorization từ database (Default Deny)
             # Tuyệt đối không lấy user_id hoặc permission từ request body/headers/params
             try:
