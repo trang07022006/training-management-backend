@@ -61,6 +61,80 @@ def get_already_enrolled_student_ids(class_id: str, student_ids: list[str]) -> l
         conn.close()
 
 
+def create_enrollments_atomic(
+    class_id: str,
+    enrollments: list[Enrollment],
+    student_ids: list[str],
+) -> tuple[list[Enrollment], int, int]:
+    """
+    Ghi danh học viên với kiểm tra sĩ số và chống trùng lặp nguyên tử (Atomic Transaction với FOR UPDATE) - SCRUM-218.
+    Bảo vệ chống race condition khi hai yêu cầu đồng thời ghi danh cùng lúc.
+    Trả về: (created_enrollments, new_total_enrolled, max_capacity).
+    Raise RuntimeError nếu lớp đầy hoặc học viên đã được ghi danh.
+    """
+    if not enrollments:
+        return [], 0, 0
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. Khóa hàng lớp học để kiểm soát sĩ số đồng thời
+            cursor.execute("SELECT max_capacity FROM classes WHERE id = %s FOR UPDATE", (class_id,))
+            class_row = cursor.fetchone()
+            if not class_row:
+                raise RuntimeError("CLASS_NOT_FOUND: Không tìm thấy lớp học.")
+            max_capacity = int(class_row[0])
+
+            # 2. Kiểm tra trùng lặp trong chính transaction bị khóa
+            placeholders = ", ".join(["%s"] * len(student_ids))
+            cursor.execute(
+                f"SELECT student_id FROM class_enrollments WHERE class_id = %s AND student_id IN ({placeholders})",
+                [class_id] + student_ids,
+            )
+            already_enrolled = [r[0] for r in cursor.fetchall()]
+            if already_enrolled:
+                raise RuntimeError(f"STUDENT_ALREADY_ENROLLED:{already_enrolled[0]}")
+
+            # 3. Đếm sĩ số hiện tại trong transaction bị khóa
+            cursor.execute("SELECT COUNT(*) FROM class_enrollments WHERE class_id = %s", (class_id,))
+            current_enrolled = int(cursor.fetchone()[0])
+
+            if current_enrolled + len(enrollments) > max_capacity:
+                raise RuntimeError(
+                    f"CLASS_CAPACITY_FULL:{current_enrolled}:{max_capacity}:{len(enrollments)}"
+                )
+
+            # 4. Lưu bản ghi ghi danh
+            for item in enrollments:
+                cursor.execute(
+                    """
+                    INSERT INTO class_enrollments (
+                        id, class_id, student_id, status,
+                        enrolled_at, enrolled_by, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        item.id,
+                        item.class_id,
+                        item.student_id,
+                        item.status,
+                        item.enrolled_at,
+                        item.enrolled_by,
+                        item.created_at,
+                        item.updated_at,
+                    ),
+                )
+
+            conn.commit()
+            return enrollments, current_enrolled + len(enrollments), max_capacity
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def create_enrollments(enrollments: list[Enrollment]) -> list[Enrollment]:
     """
     Ghi danh học viên vào lớp theo cơ chế transaction All-or-Nothing.

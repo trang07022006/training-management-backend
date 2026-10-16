@@ -3,7 +3,7 @@ Model thực thể Lớp học (Class Entity) - SCRUM-217.
 Vòng đời: Chuẩn bị -> Đang học -> Kết thúc -> Huỷ.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
@@ -96,6 +96,8 @@ class ClassSubject:
     subject_code: str | None = None
     subject_name: str | None = None
     credits: int | None = None
+    main_instructor: dict | None = None
+    assistants: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +110,8 @@ class ClassSubject:
             "semester": self.semester,
             "is_mandatory": self.is_mandatory,
             "order_index": self.order_index,
+            "main_instructor": self.main_instructor,
+            "assistants": self.assistants or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

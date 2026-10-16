@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.main import app
-from app.models.class_entity import ClassEntity
+from app.models.class_entity import ClassEntity, ClassSubject
 from app.models.class_schedule import ClassSchedule
 from app.models.holiday import Holiday
 from app.models.subject_session import SubjectSession
@@ -55,6 +55,7 @@ class TestScheduleGenerationApi:
     @patch("app.utils.rbac_auth.get_jwt_identity")
     @patch("app.utils.rbac_auth.get_jwt")
     @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    @patch("app.repositories.class_repository.get_class_subjects")
     @patch("app.repositories.class_repository.get_class_by_id")
     @patch("app.repositories.holiday_repository.list_holidays")
     @patch("app.repositories.subject_session_repository.list_subject_sessions_by_subject")
@@ -63,6 +64,7 @@ class TestScheduleGenerationApi:
         mock_list_lessons,
         mock_list_holidays,
         mock_get_class,
+        mock_get_subjects,
         mock_verify,
         mock_get_jwt,
         mock_get_identity,
@@ -73,6 +75,18 @@ class TestScheduleGenerationApi:
     ):
         """AC 1, AC 2, AC 3, AC 4: Preview sinh đủ số buổi, bỏ qua ngày lễ, gắn bài học, không ghi DB."""
         _mock_auth(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, mock_has_perm)
+        mock_get_subjects.return_value = [
+            ClassSubject(
+                id="cs-1",
+                class_id="class-101",
+                subject_id="sub-1",
+                semester=1,
+                is_mandatory=True,
+                order_index=1,
+                created_at=datetime(2026, 10, 1),
+                updated_at=datetime(2026, 10, 1),
+            )
+        ]
 
         # Mock lớp học
         mock_get_class.return_value = ClassEntity(
@@ -205,16 +219,14 @@ class TestScheduleGenerationApi:
     @patch("app.utils.rbac_auth.verify_jwt_in_request")
     @patch("app.repositories.class_repository.get_class_by_id")
     @patch("app.repositories.class_schedule_repository.count_schedules_by_class_id")
-    @patch("app.repositories.class_schedule_repository.delete_schedules_by_class_id")
-    @patch("app.repositories.class_schedule_repository.insert_schedules_batch")
+    @patch("app.repositories.class_schedule_repository.replace_schedules_in_transaction")
     @patch("app.repositories.holiday_repository.list_holidays")
     @patch("app.repositories.subject_session_repository.list_subject_sessions_by_subject")
     def test_generate_schedule_saves_when_overwrite_true(
         self,
         mock_list_lessons,
         mock_list_holidays,
-        mock_insert_batch,
-        mock_delete,
+        mock_replace,
         mock_count,
         mock_get_class,
         mock_verify,
@@ -225,7 +237,7 @@ class TestScheduleGenerationApi:
         client,
         auth_headers,
     ):
-        """Xác nhận lưu khi overwrite=True thì xoá lịch cũ và lưu batch thành công."""
+        """Xác nhận lưu khi overwrite=True thì thay thế lịch trong một transaction an toàn."""
         _mock_auth(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, mock_has_perm)
 
         mock_get_class.return_value = ClassEntity(
@@ -243,9 +255,9 @@ class TestScheduleGenerationApi:
         mock_list_holidays.return_value = []
         mock_list_lessons.return_value = []
 
-        def fake_insert(schedules):
+        def fake_replace(class_id, schedules):
             return schedules
-        mock_insert_batch.side_effect = fake_insert
+        mock_replace.side_effect = fake_replace
 
         payload = {
             "days_of_week": [2, 4, 6],
@@ -264,8 +276,10 @@ class TestScheduleGenerationApi:
         assert resp.status_code == 201
         data = resp.get_json()["data"]
         assert data["total_saved"] == 3
-        mock_delete.assert_called_once_with("class-101")
-        mock_insert_batch.assert_called_once()
+        mock_replace.assert_called_once()
+        call_args = mock_replace.call_args[0]
+        assert call_args[0] == "class-101"
+        assert len(call_args[1]) == 3
 
     @patch("app.utils.rbac_auth.has_permission")
     @patch("app.utils.rbac_auth.get_session_by_id")

@@ -19,7 +19,7 @@ from app.models.class_entity import (
     VIETNAMESE_TO_STATUS,
     ClassEntity,
 )
-from app.repositories import class_repository, training_program_repository
+from app.repositories import class_repository, training_program_repository, user_repository, user_role_repository
 
 logger = logging.getLogger(__name__)
 
@@ -251,3 +251,115 @@ def list_classes_service(
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if total > 0 else 0,
     }
+
+
+def get_class_subject_instructors_service(class_id: str, class_subject_id: str) -> dict:
+    """Lấy danh sách giảng viên chính và trợ giảng của một môn trong lớp (SCRUM-220)."""
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError("Không tìm thấy lớp học.")
+
+    cs = class_repository.get_class_subject_by_id(class_subject_id)
+    if not cs or cs["class_id"] != class_id:
+        raise ClassServiceError("SUBJECT_NOT_FOUND", "Môn học không tồn tại trong lớp này.", 404)
+
+    rows = class_repository.get_class_subject_instructors(class_subject_id)
+    main_instructor = None
+    assistants = []
+    for r in rows:
+        info = {
+            "id": r["instructor_id"],
+            "name": r["instructor_name"],
+            "email": r["instructor_email"],
+            "role": r["instructor_role"],
+        }
+        if r["role_type"] == "main":
+            main_instructor = info
+        else:
+            assistants.append(info)
+
+    return {
+        "class_id": class_id,
+        "class_subject_id": class_subject_id,
+        "main_instructor": main_instructor,
+        "assistants": assistants,
+    }
+
+
+def get_instructor_candidates_service() -> list[dict]:
+    """Lấy danh sách các ứng viên giảng viên đủ điều kiện để phân công (SCRUM-220)."""
+    return class_repository.list_instructor_candidates()
+
+
+def _get_user_roles(user_id: str, user_record=None) -> set[str]:
+    """Lấy tập hợp tất cả các mã vai trò của người dùng từ bảng users và user_roles."""
+    roles = set(user_role_repository.get_role_codes_by_user_id(user_id))
+    if user_record and getattr(user_record, "role", None):
+        roles.add(user_record.role)
+    elif not user_record:
+        u = user_repository.get_user_by_id(user_id)
+        if u and getattr(u, "role", None):
+            roles.add(u.role)
+    return roles
+
+
+def assign_instructors_service(class_id: str, class_subject_id: str, payload: dict) -> dict:
+    """
+    Phân công giảng viên chính và trợ giảng cho môn học của lớp (SCRUM-220).
+    - Giảng viên chính: tối đa 1 người, tài khoản phải có vai trò 'trainer' (220-02).
+    - Trợ giảng: 0..n người, tài khoản phải có vai trò 'trainer' (không dùng blacklist).
+    """
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError("Không tìm thấy lớp học.")
+
+    cs = class_repository.get_class_subject_by_id(class_subject_id)
+    if not cs or cs["class_id"] != class_id:
+        raise ClassServiceError("SUBJECT_NOT_FOUND", "Môn học không tồn tại trong lớp này.", 404)
+
+    main_instructor_id = payload.get("main_instructor_id")
+    if main_instructor_id is not None and str(main_instructor_id).strip():
+        main_instructor_id = str(main_instructor_id).strip()
+        user_record = user_repository.get_user_by_id(main_instructor_id)
+        if not user_record:
+            raise ClassServiceError("INSTRUCTOR_NOT_FOUND", "Tài khoản giảng viên chính không tồn tại trong hệ thống.", 404)
+        roles = _get_user_roles(main_instructor_id, user_record)
+        if "trainer" not in roles:
+            raise ClassServiceError(
+                "INVALID_INSTRUCTOR_ROLE",
+                "Chỉ tài khoản có vai trò Giảng viên (trainer) mới được phân công làm giảng viên chính.",
+                400,
+            )
+    else:
+        main_instructor_id = None
+
+    assistant_ids_raw = payload.get("assistant_ids", [])
+    if not isinstance(assistant_ids_raw, list):
+        raise ClassServiceError("INVALID_ASSISTANT_LIST", "Danh sách trợ giảng phải là một mảng.", 400)
+
+    validated_assistant_ids = []
+    for asst_id in assistant_ids_raw:
+        if not asst_id:
+            continue
+        asst_id_str = str(asst_id).strip()
+        asst_user = user_repository.get_user_by_id(asst_id_str)
+        if not asst_user:
+            raise ClassServiceError("ASSISTANT_NOT_FOUND", "Tài khoản trợ giảng không tồn tại trong hệ thống.", 404)
+        # Kiểm tra vai trò của trợ giảng (SCRUM-220): Phải có vai trò trainer
+        asst_roles = _get_user_roles(asst_id_str, asst_user)
+        if "trainer" not in asst_roles:
+            raise ClassServiceError(
+                "INVALID_ASSISTANT_ROLE",
+                "Chỉ tài khoản có vai trò Giảng viên (trainer) mới được phân công làm trợ giảng.",
+                400,
+            )
+        if asst_id_str not in validated_assistant_ids:
+            validated_assistant_ids.append(asst_id_str)
+
+    class_repository.assign_instructors_to_class_subject(
+        class_subject_id=class_subject_id,
+        main_instructor_id=main_instructor_id,
+        assistant_ids=validated_assistant_ids,
+    )
+
+    return get_class_subject_instructors_service(class_id, class_subject_id)

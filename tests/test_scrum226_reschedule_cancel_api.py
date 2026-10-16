@@ -428,3 +428,126 @@ class TestScheduleRescheduleCancelApi:
         assert data["schedule"]["cancellation_reason"] == "Giảng viên báo ốm đột xuất"
         assert data["notifications_sent"] >= 2
         mock_insert_notifs.assert_called_once()
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    @patch("app.repositories.class_repository.get_class_by_id")
+    @patch("app.repositories.class_schedule_repository.get_schedule_by_id")
+    @patch("app.repositories.class_schedule_repository.update_schedule_item")
+    @patch("app.repositories.class_schedule_repository.get_class_enrollment_recipients")
+    @patch("app.repositories.class_schedule_repository.get_user_info_by_id")
+    @patch("app.repositories.class_schedule_repository.insert_schedule_notifications_batch")
+    def test_unlinked_students_do_not_get_in_app_notifications(
+        self,
+        mock_insert_notifs,
+        mock_get_user,
+        mock_get_students,
+        mock_update_item,
+        mock_get_schedule,
+        mock_get_class,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Học viên chưa liên kết tài khoản (user_id=None) không được cấp recipient_id bằng student.id và không tạo thông báo giao diện."""
+        _mock_auth(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, mock_has_perm)
+
+        mock_get_class.return_value = ClassEntity(
+            id="class-226",
+            class_code="L01-JAVA",
+            program_id="prog-1",
+            expected_start_date=date(2026, 11, 2),
+            max_capacity=30,
+            learning_mode="offline",
+            status="active",
+            created_at=datetime(2026, 10, 1),
+            updated_at=datetime(2026, 10, 1),
+        )
+        mock_get_schedule.return_value = ClassSchedule(
+            id="sched-cancel-2",
+            class_id="class-226",
+            session_number=3,
+            topic="OOP",
+            learning_date=date(2026, 11, 6),
+            shift="Ca 1",
+            start_time="07:30:00",
+            end_time="09:30:00",
+            room_id="P101",
+            instructor_id=None,
+            status="scheduled",
+            attendance_checked=False,
+        )
+        mock_update_item.side_effect = lambda s: s
+        # 1 học viên có tài khoản, 1 học viên chưa liên kết (user_id=None)
+        mock_get_students.return_value = [
+            {"id": "st-linked", "user_id": "usr-st-linked-01", "full_name": "HV Đã Liên Kết", "email": "hv1@ictu.vn"},
+            {"id": "st-unlinked", "user_id": None, "full_name": "HV Chưa Tài Khoản", "email": "hv2@ictu.vn"},
+        ]
+        mock_get_user.return_value = None
+        mock_insert_notifs.side_effect = lambda notifs: notifs
+
+        resp = client.post(
+            "/api/v1/classes/class-226/schedules/sched-cancel-2/cancel",
+            data=json.dumps({"reason": "Hủy buổi học bảo trì"}),
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 200
+        mock_insert_notifs.assert_called_once()
+        saved_notifs = mock_insert_notifs.call_args[0][0]
+        # Chỉ có đúng 1 thông báo cho học viên có tài khoản
+        assert len(saved_notifs) == 1
+        assert saved_notifs[0]["recipient_id"] == "usr-st-linked-01"
+        assert saved_notifs[0]["recipient_type"] == "student"
+        # Tuyệt đối không dùng student.id làm recipient_id
+        for n in saved_notifs:
+            assert n["recipient_id"] != "st-unlinked"
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    @patch("app.services.schedule_service.list_my_notifications_service")
+    def test_get_my_notifications_strictly_filters_by_current_user(
+        self,
+        mock_list_my_notifs,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """API /api/v1/schedules/notifications/my chỉ cho phép đọc thông báo của chính actor_user_id từ token, không để lộ thông báo người khác."""
+        _mock_auth(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, mock_has_perm)
+        mock_get_identity.return_value = "student-logged-in-user-999"
+        mock_get_sess.return_value.user_id = "student-logged-in-user-999"
+        mock_list_my_notifs.return_value = [
+            {
+                "id": "notif-999",
+                "recipient_id": "student-logged-in-user-999",
+                "title": "Thông báo cá nhân",
+                "message": "Nội dung chỉ của bạn",
+            }
+        ]
+
+        resp = client.get(
+            "/api/v1/schedules/notifications/my",
+            headers=auth_headers,
+        )
+
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert len(data) == 1
+        assert data[0]["recipient_id"] == "student-logged-in-user-999"
+        # Khẳng định service được gọi chính xác với ID của người gọi trong token
+        mock_list_my_notifs.assert_called_once_with("student-logged-in-user-999")

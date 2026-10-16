@@ -1,32 +1,33 @@
 """
-Service quáº£n lĂ½ Thá»i khĂ³a biá»ƒu lá»›p há»c (Schedule Service) - SCRUM-224.
-- Sinh thá»i khĂ³a biá»ƒu tá»± Ä‘á»™ng theo máº«u láº·p (thá»© trong tuáº§n, ca há»c, ngĂ y báº¯t Ä‘áº§u, sá»‘ buá»•i).
-- Tá»± Ä‘á»™ng bá» qua ngĂ y nghá»‰ lá»… Ä‘Ă£ khai bĂ¡o vĂ  sinh Ä‘á»§ sá»‘ buá»•i yĂªu cáº§u.
-- Xem trÆ°á»›c thá»i khĂ³a biá»ƒu (preview) khĂ´ng lÆ°u DB.
-- Gáº¯n tá»«ng buá»•i há»c vá»›i bĂ i há»c trong mĂ´n há»c.
-- LÆ°u lá»‹ch há»c chĂ­nh thá»©c vá»›i kiá»ƒm tra idempotency / chá»‘ng láº·p.
+Service quản lý Thời khóa biểu lớp học (Schedule Service) - SCRUM-224.
+- Sinh thời khóa biểu tự động theo mẫu lặp (thứ trong tuần, ca học, ngày bắt đầu, số buổi).
+- Tự động bỏ qua ngày nghỉ lễ đã khai báo và sinh đủ số buổi yêu cầu.
+- Xem trước thời khóa biểu (preview) không lưu DB.
+- Gắn từng buổi học với bài học trong môn học.
+- Lưu lịch học chính thức với kiểm tra idempotency / chống lặp.
 """
 
-from datetime import date, datetime, timedelta, time, timezone
+from datetime import date, datetime, timedelta, time
 import logging
 from typing import Any
 
-from mysql.connector.errors import IntegrityError
-
 from app.models.class_schedule import ClassSchedule
+from app.database.connection import get_db_connection
+from app.repositories import schedule_repository
 from app.repositories import (
     class_repository,
     class_schedule_repository,
     holiday_repository,
     subject_session_repository,
-    schedule_repository,
+    user_repository,
+    user_role_repository,
 )
-
+from app.services import authorization_service
 from app.services.email_service import send_email
 
 logger = logging.getLogger(__name__)
 
-# Äá»‹nh nghÄ©a cĂ¡c ca há»c tiĂªu chuáº©n
+# Định nghĩa các ca học tiêu chuẩn
 DEFAULT_SHIFTS = {
     "shift_1": {"code": "shift_1", "name": "Ca 1 (07:30 - 09:30)", "start_time": "07:30:00", "end_time": "09:30:00"},
     "shift_2": {"code": "shift_2", "name": "Ca 2 (09:45 - 11:45)", "start_time": "09:45:00", "end_time": "11:45:00"},
@@ -36,81 +37,137 @@ DEFAULT_SHIFTS = {
 }
 
 WEEKDAY_NAMES_VI = {
-    0: "Thá»© 2",
-    1: "Thá»© 3",
-    2: "Thá»© 4",
-    3: "Thá»© 5",
-    4: "Thá»© 6",
-    5: "Thá»© 7",
-    6: "Chá»§ nháº­t",
+    0: "Thứ 2",
+    1: "Thứ 3",
+    2: "Thứ 4",
+    3: "Thứ 5",
+    4: "Thứ 6",
+    5: "Thứ 7",
+    6: "Chủ nhật",
 }
 
 
 class ScheduleServiceError(Exception):
-    def __init__(self, code: str, message: str, status_code: int = 400):
+    def __init__(self, code: str, message: str, status_code: int = 400, field: str | None = None, data: Any = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.field = field
+        self.data = data
 
 
 class ScheduleConflictError(ScheduleServiceError):
-    def __init__(self, message: str, conflicts: list[dict]):
-        super().__init__("SCHEDULE_CONFLICT_DETECTED", message, status_code=409)
+    def __init__(self, message: str, conflicts: list[dict], code: str = "SCHEDULE_CONFLICT_DETECTED"):
+        super().__init__(code, message, status_code=409, data={"conflicts": conflicts})
         self.conflicts = conflicts
 
 
 class ScheduleNotFoundError(ScheduleServiceError):
-    def __init__(self, message: str = "KhĂ´ng tĂ¬m tháº¥y buá»•i há»c."):
+    def __init__(self, message: str = "Không tìm thấy buổi học."):
         super().__init__("SCHEDULE_NOT_FOUND", message, status_code=404)
 
 
 class ScheduleAttendanceCheckedError(ScheduleServiceError):
-    def __init__(
-        self,
-        message: str = "Không thể sửa hoặc hủy buổi học đã được điểm danh.",
-    ):
-        super().__init__(
-            "SCHEDULE_ATTENDANCE_ALREADY_CHECKED",
-            message,
-            status_code=400,
-        )
+    def __init__(self, message: str = "Không thể sửa hoặc hủy buổi học đã được điểm danh."):
+        super().__init__("SCHEDULE_ATTENDANCE_ALREADY_CHECKED", message, status_code=400)
+
+
 class ScheduleValidationError(ScheduleServiceError):
     def __init__(self, message: str, code: str = "INVALID_SCHEDULE_DATA", status_code: int = 400):
         super().__init__(code, message, status_code=status_code)
 
 
+def normalize_time_str(val: Any) -> str:
+    """Chuẩn hóa giá trị thời gian (time, timedelta, str) thành chuỗi HH:MM:SS có zero-padding (SCRUM-224/226)."""
+    if val is None:
+        return ""
+    if isinstance(val, (datetime, time)):
+        return val.strftime("%H:%M:%S")
+    if isinstance(val, timedelta):
+        total_seconds = int(val.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    s = str(val).strip()
+    parts = s.split(":")
+    if len(parts) >= 2:
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            sec = int(parts[2]) if len(parts) > 2 else 0
+            return f"{h:02d}:{m:02d}:{sec:02d}"
+        except ValueError:
+            pass
+    return s
+
+
+def parse_time_obj(val: Any) -> time:
+    """Chuyển đổi giá trị thời gian thành đối tượng datetime.time để so sánh chính xác theo giờ phút giây."""
+    if isinstance(val, time):
+        return val
+    if isinstance(val, datetime):
+        return val.time()
+    norm_s = normalize_time_str(val)
+    return datetime.strptime(norm_s, "%H:%M:%S").time()
+
+
+def check_conflict_override_permission(actor_user_id: str | None) -> None:
+    """
+    Kiểm tra quyền ghi đè xung đột lịch học (SCRUM-225).
+    Chỉ Quản trị viên (admin) hoặc Quản lý đào tạo (training_manager) mới được phép ghi đè.
+    """
+    if not actor_user_id:
+        raise ScheduleServiceError(
+            "SCHEDULE_OVERRIDE_FORBIDDEN",
+            "Bạn không có quyền ghi đè xung đột lịch. Thao tác này chỉ dành cho Quản lý đào tạo hoặc Quản trị viên.",
+            status_code=403,
+        )
+    actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_user_id))
+    u = user_repository.get_user_by_id(actor_user_id)
+    if u and u.role:
+        actor_roles.add(u.role)
+    if not actor_roles.intersection({"admin", "training_manager"}):
+        raise ScheduleServiceError(
+            "SCHEDULE_OVERRIDE_FORBIDDEN",
+            "Bạn không có quyền ghi đè xung đột lịch. Thao tác này chỉ dành cho Quản lý đào tạo hoặc Quản trị viên.",
+            status_code=403,
+        )
+
+
 def parse_day_of_week(val: Any) -> int | None:
     """
-    Chuáº©n hĂ³a thá»© trong tuáº§n sang sá»‘ nguyĂªn 0..6 (theo chuáº©n Python datetime.weekday: 0=Thá»© 2, 6=Chá»§ nháº­t).
-    Há»— trá»£ cáº£ format tiáº¿ng Viá»‡t vĂ  ISO:
-    - 2, "2", "thu 2", "thá»© 2", "t2", "mon", "monday" -> 0
-    - 3, "3", "thu 3", "thá»© 3", "t3", "tue", "tuesday" -> 1
-    - 4, "4", "thu 4", "thá»© 4", "t4", "wed", "wednesday" -> 2
-    - 5, "5", "thu 5", "thá»© 5", "t5", "thu", "thursday" -> 3
-    - 6, "6", "thu 6", "thá»© 6", "t6", "fri", "friday" -> 4
-    - 7, "7", "thu 7", "thá»© 7", "t7", "sat", "saturday" -> 5
-    - 8, "8", "cn", "chu nhat", "chá»§ nháº­t", "sun", "sunday", 0, "0" -> 6
+    Chuẩn hóa thứ trong tuần sang số nguyên 0..6 (theo chuẩn Python datetime.weekday: 0=Thứ 2, 6=Chủ nhật).
+    Hỗ trợ cả format tiếng Việt và ISO:
+    - 2, "2", "thu 2", "thứ 2", "t2", "mon", "monday" -> 0
+    - 3, "3", "thu 3", "thứ 3", "t3", "tue", "tuesday" -> 1
+    - 4, "4", "thu 4", "thứ 4", "t4", "wed", "wednesday" -> 2
+    - 5, "5", "thu 5", "thứ 5", "t5", "thu", "thursday" -> 3
+    - 6, "6", "thu 6", "thứ 6", "t6", "fri", "friday" -> 4
+    - 7, "7", "thu 7", "thứ 7", "t7", "sat", "saturday" -> 5
+    - 8, "8", "cn", "chu nhat", "chủ nhật", "sun", "sunday", 0, "0" -> 6
     """
     if val is None:
         return None
     s = str(val).strip().lower()
     mapping = {
-        "2": 0, "thu 2": 0, "thá»© 2": 0, "t2": 0, "mon": 0, "monday": 0,
-        "3": 1, "thu 3": 1, "thá»© 3": 1, "t3": 1, "tue": 1, "tuesday": 1,
-        "4": 2, "thu 4": 2, "thá»© 4": 2, "t4": 2, "wed": 2, "wednesday": 2,
-        "5": 3, "thu 5": 3, "thá»© 5": 3, "t5": 3, "thu": 3, "thursday": 3,
-        "6": 4, "thu 6": 4, "thá»© 6": 4, "t6": 4, "fri": 4, "friday": 4,
-        "7": 5, "thu 7": 5, "thá»© 7": 5, "t7": 5, "sat": 5, "saturday": 5,
-        "8": 6, "cn": 6, "chu nhat": 6, "chá»§ nháº­t": 6, "sun": 6, "sunday": 6,
-        "0": 6, # Nhiá»u thÆ° viá»‡n dĂ¹ng 0 lĂ  Sunday
+        "2": 0, "thu 2": 0, "thứ 2": 0, "t2": 0, "mon": 0, "monday": 0,
+        "3": 1, "thu 3": 1, "thứ 3": 1, "t3": 1, "tue": 1, "tuesday": 1,
+        "4": 2, "thu 4": 2, "thứ 4": 2, "t4": 2, "wed": 2, "wednesday": 2,
+        "5": 3, "thu 5": 3, "thứ 5": 3, "t5": 3, "thu": 3, "thursday": 3,
+        "6": 4, "thu 6": 4, "thứ 6": 4, "t6": 4, "fri": 4, "friday": 4,
+        "7": 5, "thu 7": 5, "thứ 7": 5, "t7": 5, "sat": 5, "saturday": 5,
+        "8": 6, "cn": 6, "chu nhat": 6, "chủ nhật": 6, "sun": 6, "sunday": 6,
+        "0": 6, # Nhiều thư viện dùng 0 là Sunday
     }
     return mapping.get(s)
 
 
 def resolve_shift_and_time(payload: dict) -> tuple[str, str, str]:
     """
-    XĂ¡c Ä‘á»‹nh tĂªn ca há»c, giá» báº¯t Ä‘áº§u vĂ  giá» káº¿t thĂºc tá»« payload.
+    Xác định tên ca học, giờ bắt đầu và giờ kết thúc từ payload (SCRUM-224 - AC 1).
+    Validation: Giờ bắt đầu phải trước giờ kết thúc buổi học.
     """
     shift_code = payload.get("shift")
     start_time_in = payload.get("start_time")
@@ -121,26 +178,36 @@ def resolve_shift_and_time(payload: dict) -> tuple[str, str, str]:
         shift_name = shift_data["name"]
         start_time = start_time_in or shift_data["start_time"]
         end_time = end_time_in or shift_data["end_time"]
-        return shift_name, str(start_time), str(end_time)
-
-    # Náº¿u ngÆ°á»i dĂ¹ng truyá»n tĂªn ca tuá»³ Ă½
-    shift_name = str(shift_code) if shift_code else "TĂ¹y chá»‰nh"
-    if not start_time_in or not end_time_in:
-        # Náº¿u chá»‰ cĂ³ shift_name dáº¡ng Ca 1, Ca 2
-        norm = str(shift_code).strip().lower()
+    elif not start_time_in or not end_time_in:
+        norm = str(shift_code).strip().lower() if shift_code else ""
         if "ca 1" in norm or norm == "1":
-            return DEFAULT_SHIFTS["shift_1"]["name"], DEFAULT_SHIFTS["shift_1"]["start_time"], DEFAULT_SHIFTS["shift_1"]["end_time"]
+            shift_name, start_time, end_time = DEFAULT_SHIFTS["shift_1"]["name"], DEFAULT_SHIFTS["shift_1"]["start_time"], DEFAULT_SHIFTS["shift_1"]["end_time"]
         elif "ca 2" in norm or norm == "2":
-            return DEFAULT_SHIFTS["shift_2"]["name"], DEFAULT_SHIFTS["shift_2"]["start_time"], DEFAULT_SHIFTS["shift_2"]["end_time"]
+            shift_name, start_time, end_time = DEFAULT_SHIFTS["shift_2"]["name"], DEFAULT_SHIFTS["shift_2"]["start_time"], DEFAULT_SHIFTS["shift_2"]["end_time"]
         elif "ca 3" in norm or norm == "3":
-            return DEFAULT_SHIFTS["shift_3"]["name"], DEFAULT_SHIFTS["shift_3"]["start_time"], DEFAULT_SHIFTS["shift_3"]["end_time"]
+            shift_name, start_time, end_time = DEFAULT_SHIFTS["shift_3"]["name"], DEFAULT_SHIFTS["shift_3"]["start_time"], DEFAULT_SHIFTS["shift_3"]["end_time"]
         elif "ca 4" in norm or norm == "4":
-            return DEFAULT_SHIFTS["shift_4"]["name"], DEFAULT_SHIFTS["shift_4"]["start_time"], DEFAULT_SHIFTS["shift_4"]["end_time"]
+            shift_name, start_time, end_time = DEFAULT_SHIFTS["shift_4"]["name"], DEFAULT_SHIFTS["shift_4"]["start_time"], DEFAULT_SHIFTS["shift_4"]["end_time"]
         elif "ca 5" in norm or norm == "5":
-            return DEFAULT_SHIFTS["shift_5"]["name"], DEFAULT_SHIFTS["shift_5"]["start_time"], DEFAULT_SHIFTS["shift_5"]["end_time"]
-        raise ScheduleServiceError("INVALID_SHIFT_TIME", "Vui lĂ²ng chá»n ca há»c hoáº·c nháº­p giá» báº¯t Ä‘áº§u vĂ  káº¿t thĂºc há»£p lá»‡.")
+            shift_name, start_time, end_time = DEFAULT_SHIFTS["shift_5"]["name"], DEFAULT_SHIFTS["shift_5"]["start_time"], DEFAULT_SHIFTS["shift_5"]["end_time"]
+        else:
+            raise ScheduleServiceError("INVALID_SHIFT_TIME", "Vui lòng chọn ca học hoặc nhập giờ bắt đầu và kết thúc hợp lệ.", field="shift")
+    else:
+        shift_name = str(shift_code) if shift_code else "Tùy chỉnh"
+        start_time = start_time_in
+        end_time = end_time_in
 
-    return shift_name, str(start_time_in), str(end_time_in)
+    norm_start = normalize_time_str(start_time)
+    norm_end = normalize_time_str(end_time)
+    try:
+        t_start = parse_time_obj(norm_start)
+        t_end = parse_time_obj(norm_end)
+        if t_start >= t_end:
+            raise ScheduleServiceError("INVALID_TIME_RANGE", "Giờ bắt đầu phải trước giờ kết thúc buổi học.", status_code=400, field="end_time")
+    except ValueError:
+        raise ScheduleServiceError("INVALID_SHIFT_TIME", "Định dạng giờ học không hợp lệ (HH:MM:SS).", status_code=400, field="shift")
+
+    return shift_name, norm_start, norm_end
 
 
 def _build_schedule_sessions(
@@ -148,18 +215,18 @@ def _build_schedule_sessions(
     payload: dict,
 ) -> tuple[list[dict], list[dict]]:
     """
-    HĂ m lĂµi sinh danh sĂ¡ch cĂ¡c buá»•i há»c theo máº«u láº·p vĂ  bá» qua ngĂ y lá»… (AC 1, 2, 4).
-    Tráº£ vá»: (generated_sessions, skipped_holidays)
+    Hàm lõi sinh danh sách các buổi học theo mẫu lặp và bỏ qua ngày lễ (AC 1, 2, 4).
+    Trả về: (generated_sessions, skipped_holidays)
     """
-    # 1. Kiá»ƒm tra lá»›p há»c
+    # 1. Kiểm tra lớp học
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy thông tin lớp học.", status_code=404)
 
-    # 2. Kiá»ƒm tra cĂ¡c thá»© trong tuáº§n
+    # 2. Kiểm tra các thứ trong tuần
     raw_days = payload.get("days_of_week")
     if not raw_days or not isinstance(raw_days, (list, tuple)):
-        raise ScheduleServiceError("INVALID_DAYS_OF_WEEK", "Vui lĂ²ng chá»n Ă­t nháº¥t má»™t thá»© trong tuáº§n Ä‘á»ƒ sinh lá»‹ch.")
+        raise ScheduleServiceError("DAYS_OF_WEEK_REQUIRED", "Vui lòng chọn ít nhất một thứ trong tuần để sinh lịch.", status_code=400, field="days_of_week")
 
     days_set = set()
     for d in raw_days:
@@ -168,66 +235,112 @@ def _build_schedule_sessions(
             days_set.add(parsed_day)
 
     if not days_set:
-        raise ScheduleServiceError("INVALID_DAYS_OF_WEEK", "Danh sĂ¡ch thá»© trong tuáº§n khĂ´ng há»£p lá»‡.")
+        raise ScheduleServiceError("INVALID_DAYS_OF_WEEK", "Danh sách thứ trong tuần không hợp lệ. Vui lòng chọn lại.", status_code=400, field="days_of_week")
 
-    # 3. Kiá»ƒm tra ngĂ y báº¯t Ä‘áº§u
+    # 3. Kiểm tra ngày bắt đầu
     start_date_str = payload.get("start_date")
     if not start_date_str:
-        raise ScheduleServiceError("START_DATE_REQUIRED", "NgĂ y báº¯t Ä‘áº§u khĂ´ng Ä‘Æ°á»£c Ä‘á»ƒ trá»‘ng.")
+        raise ScheduleServiceError("START_DATE_REQUIRED", "Ngày bắt đầu không được để trống.", status_code=400, field="start_date")
     try:
         if isinstance(start_date_str, date):
             start_date_val = start_date_str
         else:
             start_date_val = datetime.strptime(str(start_date_str).strip(), "%Y-%m-%d").date()
     except ValueError:
-        raise ScheduleServiceError("INVALID_START_DATE", "NgĂ y báº¯t Ä‘áº§u pháº£i theo Ä‘á»‹nh dáº¡ng YYYY-MM-DD.")
+        raise ScheduleServiceError("INVALID_START_DATE", "Ngày bắt đầu phải theo định dạng YYYY-MM-DD.", status_code=400, field="start_date")
 
-    # 4. Kiá»ƒm tra sá»‘ buá»•i
+    # 4. Kiểm tra số buổi
     raw_total = payload.get("total_sessions")
-    if raw_total is None:
-        raise ScheduleServiceError("TOTAL_SESSIONS_REQUIRED", "Sá»‘ buá»•i há»c khĂ´ng Ä‘Æ°á»£c Ä‘á»ƒ trá»‘ng.")
+    if raw_total is None or str(raw_total).strip() == "":
+        raise ScheduleServiceError("TOTAL_SESSIONS_REQUIRED", "Số buổi học không được để trống.", status_code=400, field="total_sessions")
     try:
         total_sessions = int(raw_total)
     except (ValueError, TypeError):
-        raise ScheduleServiceError("INVALID_TOTAL_SESSIONS", "Sá»‘ buá»•i há»c pháº£i lĂ  sá»‘ nguyĂªn dÆ°Æ¡ng.")
+        raise ScheduleServiceError("INVALID_TOTAL_SESSIONS", "Số buổi học phải là số nguyên dương.", status_code=400, field="total_sessions")
 
     if total_sessions < 1 or total_sessions > 200:
-        raise ScheduleServiceError("INVALID_TOTAL_SESSIONS", "Sá»‘ buá»•i há»c pháº£i tá»« 1 Ä‘áº¿n 200 buá»•i.")
+        raise ScheduleServiceError("INVALID_TOTAL_SESSIONS", "Số buổi học phải từ 1 đến 200 buổi.", status_code=400, field="total_sessions")
 
-    # 5. XĂ¡c Ä‘á»‹nh ca há»c & thá»i gian
+    # 5. Xác định ca học & thời gian
     shift_name, start_time, end_time = resolve_shift_and_time(payload)
 
-    # 6. Láº¥y danh sĂ¡ch ngĂ y nghá»‰ lá»… Ä‘Ă£ khai bĂ¡o (AC 2)
+    # 6. Lấy danh sách ngày nghỉ lễ đã khai báo (AC 2)
     holidays = holiday_repository.list_holidays()
     holiday_map = {}
     for h in holidays:
         h_date_str = h.holiday_date.strftime("%Y-%m-%d") if isinstance(h.holiday_date, (date, datetime)) else str(h.holiday_date)
         holiday_map[h_date_str] = h.name
 
-    # 7. Láº¥y danh sĂ¡ch bĂ i há»c mĂ´n há»c (AC 4)
+    # 7. Lấy danh sách bài học môn học (AC 4)
     subject_id = payload.get("subject_id")
     class_subject_id = payload.get("class_subject_id")
-    if not subject_id and class_subject_id:
+
+    if subject_id or class_subject_id:
         class_subjects = class_repository.get_class_subjects(class_id)
-        for cs in class_subjects:
-            if cs.id == class_subject_id:
-                subject_id = cs.subject_id
-                break
+        if not class_subjects:
+            raise ScheduleServiceError(
+                "SUBJECT_NOT_IN_CLASS",
+                "Lớp học chưa có môn học nào hoặc môn học đã chọn không thuộc lớp này. Vui lòng cấu hình môn học cho lớp trước.",
+                status_code=400,
+                field="subject_id",
+            )
+
+        valid_subject_ids = {cs.subject_id for cs in class_subjects}
+        valid_cs_ids = {cs.id for cs in class_subjects}
+
+        matched = False
+        if class_subject_id and class_subject_id in valid_cs_ids:
+            matched = True
+            for cs in class_subjects:
+                if cs.id == class_subject_id:
+                    subject_id = cs.subject_id
+                    break
+        elif subject_id and subject_id in valid_subject_ids:
+            matched = True
+            for cs in class_subjects:
+                if cs.subject_id == subject_id:
+                    class_subject_id = cs.id
+                    break
+
+        if not matched:
+            raise ScheduleServiceError(
+                "SUBJECT_NOT_IN_CLASS",
+                "Môn học đã chọn không thuộc lớp này. Vui lòng chọn lại.",
+                status_code=400,
+                field="subject_id",
+            )
 
     lessons = []
     if subject_id:
         lessons = subject_session_repository.list_subject_sessions_by_subject(subject_id)
 
-    # ThĂ´ng tin phĂ²ng há»c & giáº£ng viĂªn máº·c Ä‘á»‹nh (náº¿u cĂ³)
-    room_id = payload.get("room_id")
+    # Thông tin phòng học & giảng viên mặc định (nếu có)
+    raw_room_id = payload.get("room_id")
+    canonical_room_id = None
+    if raw_room_id and str(raw_room_id).strip():
+        r_val = str(raw_room_id).strip()
+        from app.repositories import classroom_repository
+        cr_room, _ = classroom_repository.find_unique_classroom_by_code_or_name(r_val)
+        if not cr_room:
+            raise ScheduleServiceError("ROOM_NOT_FOUND", "Phòng học không tồn tại trong danh mục hệ thống.", status_code=400, field="room_id")
+        if cr_room.status != "active":
+            raise ScheduleServiceError(
+                "ROOM_NOT_ACTIVE",
+                f"Phòng học '{cr_room.room_name}' ({cr_room.room_code}) đang ở trạng thái không khả dụng ({cr_room.status}).",
+                status_code=400,
+                field="room_id",
+            )
+        canonical_room_id = cr_room.id
+
+    room_id = canonical_room_id
     instructor_id = payload.get("instructor_id")
 
-    # 8. VĂ²ng láº·p sinh lá»‹ch Ä‘á»§ sá»‘ buá»•i yĂªu cáº§u, bá» qua ngĂ y lá»…
+    # 8. Vòng lặp sinh lịch đủ số buổi yêu cầu, bỏ qua ngày lễ
     generated_sessions = []
     skipped_holidays = []
     curr_date = start_date_val
     generated_count = 0
-    max_days_guard = 1500  # NgÄƒn cháº·n infinite loop
+    max_days_guard = 1500  # Ngăn chặn infinite loop
 
     days_checked = 0
     while generated_count < total_sessions and days_checked < max_days_guard:
@@ -237,25 +350,25 @@ def _build_schedule_sessions(
 
         if curr_weekday in days_set:
             if curr_date_str in holiday_map:
-                # Bá» qua ngĂ y nghá»‰ lá»… nhÆ°ng khĂ´ng tÄƒng generated_count (AC 2)
+                # Bỏ qua ngày nghỉ lễ nhưng không tăng generated_count (AC 2)
                 skipped_holidays.append({
                     "date": curr_date_str,
                     "holiday_name": holiday_map[curr_date_str],
                     "day_of_week": WEEKDAY_NAMES_VI.get(curr_weekday, ""),
-                    "reason": f"Nghá»‰ lá»…: {holiday_map[curr_date_str]}",
+                    "reason": f"Nghỉ lễ: {holiday_map[curr_date_str]}",
                 })
             else:
                 generated_count += 1
-                # Gáº¯n bĂ i há»c mĂ´n há»c (AC 4)
-                topic = f"Buá»•i {generated_count}"
+                # Gắn bài học môn học (AC 4)
+                topic = f"Buổi {generated_count}"
                 subject_session_id = None
                 if lessons:
                     if generated_count <= len(lessons):
                         matched_lesson = lessons[generated_count - 1]
-                        topic = f"Buá»•i {generated_count}: {matched_lesson.topic}"
+                        topic = f"Buổi {generated_count}: {matched_lesson.topic}"
                         subject_session_id = matched_lesson.id
                     else:
-                        topic = f"Buá»•i {generated_count}: Ă”n táº­p / Thá»±c hĂ nh"
+                        topic = f"Buổi {generated_count}: Ôn tập / Thực hành"
 
                 session_dict = {
                     "session_number": generated_count,
@@ -284,10 +397,10 @@ def detect_schedule_conflicts(
     exclude_schedule_id: str | None = None,
 ) -> list[dict]:
     """
-    Kiá»ƒm tra xung Ä‘á»™t lá»‹ch giáº£ng viĂªn vĂ  phĂ²ng há»c (SCRUM-225 - AC 1, AC 2).
-    - Kiá»ƒm tra giao nhau thá»i gian (start_1 < end_2 AND end_1 > start_2).
-    - Kiá»ƒm tra xung Ä‘á»™t ná»™i bá»™ giá»¯a cĂ¡c buá»•i trong cĂ¹ng Ä‘á»£t táº¡o.
-    - Kiá»ƒm tra xung Ä‘á»™t vá»›i cĂ¡c buá»•i há»c Ä‘Ă£ lÆ°u trong cÆ¡ sá»Ÿ dá»¯ liá»‡u.
+    Kiểm tra xung đột lịch giảng viên và phòng học (SCRUM-225 - AC 1, AC 2).
+    - Kiểm tra giao nhau thời gian (start_1 < end_2 AND end_1 > start_2).
+    - Kiểm tra xung đột nội bộ giữa các buổi trong cùng đợt tạo.
+    - Kiểm tra xung đột với các buổi học đã lưu trong cơ sở dữ liệu.
     """
     conflicts: list[dict] = []
     seen_conflict_keys = set()
@@ -303,16 +416,16 @@ def detect_schedule_conflicts(
             seen_conflict_keys.add(key)
             conflicts.append(c)
 
-    # 1. Kiá»ƒm tra xung Ä‘á»™t ná»™i bá»™ giá»¯a cĂ¡c buá»•i trong chĂ­nh Ä‘á»£t táº¡o
+    # 1. Kiểm tra xung đột nội bộ giữa các buổi trong chính đợt tạo
     n = len(sessions)
     for i in range(n):
         si = sessions[i]
         for j in range(i + 1, n):
             sj = sessions[j]
             if si["learning_date"] == sj["learning_date"]:
-                # Kiá»ƒm tra giao nhau thá»i gian thá»±c táº¿
+                # Kiểm tra giao nhau thời gian thực tế
                 if si["start_time"] < sj["end_time"] and si["end_time"] > sj["start_time"]:
-                    # Xung Ä‘á»™t giáº£ng viĂªn
+                    # Xung đột giảng viên
                     if si.get("instructor_id") and si.get("instructor_id") == sj.get("instructor_id"):
                         add_conflict({
                             "conflict_type": "instructor",
@@ -323,16 +436,16 @@ def detect_schedule_conflicts(
                             "instructor_id": si.get("instructor_id"),
                             "room_id": None,
                             "conflicting_session_number": sj["session_number"],
-                            "conflicting_class_code": "Äá»£t táº¡o hiá»‡n táº¡i",
+                            "conflicting_class_code": "Đợt tạo hiện tại",
                             "conflicting_start_time": sj["start_time"],
                             "conflicting_end_time": sj["end_time"],
                             "message": (
-                                f"Buá»•i #{si['session_number']} vĂ  Buá»•i #{sj['session_number']} "
-                                f"bá»‹ trĂ¹ng Giáº£ng viĂªn trong cĂ¹ng khung giá» "
+                                f"Buổi #{si['session_number']} và Buổi #{sj['session_number']} "
+                                f"bị trùng Giảng viên trong cùng khung giờ "
                                 f"({si['learning_date']} {si['start_time']} - {si['end_time']})."
                             ),
                         })
-                    # Xung Ä‘á»™t phĂ²ng há»c
+                    # Xung đột phòng học
                     if si.get("room_id") and si.get("room_id") == sj.get("room_id"):
                         add_conflict({
                             "conflict_type": "room",
@@ -343,17 +456,17 @@ def detect_schedule_conflicts(
                             "instructor_id": None,
                             "room_id": si.get("room_id"),
                             "conflicting_session_number": sj["session_number"],
-                            "conflicting_class_code": "Äá»£t táº¡o hiá»‡n táº¡i",
+                            "conflicting_class_code": "Đợt tạo hiện tại",
                             "conflicting_start_time": sj["start_time"],
                             "conflicting_end_time": sj["end_time"],
                             "message": (
-                                f"Buá»•i #{si['session_number']} vĂ  Buá»•i #{sj['session_number']} "
-                                f"bá»‹ trĂ¹ng PhĂ²ng há»c ({si['room_id']}) trong cĂ¹ng khung giá» "
+                                f"Buổi #{si['session_number']} và Buổi #{sj['session_number']} "
+                                f"bị trùng Phòng học ({si['room_id']}) trong cùng khung giờ "
                                 f"({si['learning_date']} {si['start_time']} - {si['end_time']})."
                             ),
                         })
 
-    # 2. Kiá»ƒm tra xung Ä‘á»™t vá»›i lá»‹ch Ä‘Ă£ lÆ°u trong database
+    # 2. Kiểm tra xung đột với lịch đã lưu trong database
     for s in sessions:
         inst_id = s.get("instructor_id")
         r_id = s.get("room_id")
@@ -368,7 +481,7 @@ def detect_schedule_conflicts(
                 exclude_schedule_id=exclude_schedule_id,
             )
             for db_c in db_conflicts:
-                # Xung Ä‘á»™t giáº£ng viĂªn
+                # Xung đột giảng viên
                 if inst_id and db_c.get("instructor_id") == inst_id:
                     add_conflict({
                         "conflict_type": "instructor",
@@ -386,13 +499,13 @@ def detect_schedule_conflicts(
                         "conflicting_start_time": db_c["start_time"],
                         "conflicting_end_time": db_c["end_time"],
                         "message": (
-                            f"Buá»•i #{s['session_number']} ({s['learning_date']} {s['start_time']} - {s['end_time']}) "
-                            f"bá»‹ trĂ¹ng Giáº£ng viĂªn ({db_c.get('instructor_name') or inst_id}) "
-                            f"vá»›i Buá»•i #{db_c['session_number']} cá»§a Lá»›p {db_c['class_code']} "
+                            f"Buổi #{s['session_number']} ({s['learning_date']} {s['start_time']} - {s['end_time']}) "
+                            f"bị trùng Giảng viên ({db_c.get('instructor_name') or inst_id}) "
+                            f"với Buổi #{db_c['session_number']} của Lớp {db_c['class_code']} "
                             f"({db_c['start_time']} - {db_c['end_time']})."
                         ),
                     })
-                # Xung Ä‘á»™t phĂ²ng há»c
+                # Xung đột phòng học
                 if r_id and db_c.get("room_id") == r_id:
                     add_conflict({
                         "conflict_type": "room",
@@ -409,9 +522,9 @@ def detect_schedule_conflicts(
                         "conflicting_start_time": db_c["start_time"],
                         "conflicting_end_time": db_c["end_time"],
                         "message": (
-                            f"Buá»•i #{s['session_number']} ({s['learning_date']} {s['start_time']} - {s['end_time']}) "
-                            f"bá»‹ trĂ¹ng PhĂ²ng há»c ({r_id}) "
-                            f"vá»›i Buá»•i #{db_c['session_number']} cá»§a Lá»›p {db_c['class_code']} "
+                            f"Buổi #{s['session_number']} ({s['learning_date']} {s['start_time']} - {s['end_time']}) "
+                            f"bị trùng Phòng học ({r_id}) "
+                            f"với Buổi #{db_c['session_number']} của Lớp {db_c['class_code']} "
                             f"({db_c['start_time']} - {db_c['end_time']})."
                         ),
                     })
@@ -421,17 +534,17 @@ def detect_schedule_conflicts(
 
 def preview_schedule_service(class_id: str, payload: dict) -> dict:
     """
-    API xem trÆ°á»›c danh sĂ¡ch buá»•i há»c trÆ°á»›c khi lÆ°u (SCRUM-224 - AC 3, SCRUM-225 - AC 1, AC 2).
-    KhĂ´ng ghi báº¥t ká»³ dá»¯ liá»‡u nĂ o vĂ o cÆ¡ sá»Ÿ dá»¯ liá»‡u.
-    Cáº£nh bĂ¡o rĂµ rĂ ng cĂ¡c buá»•i Ä‘ang xung Ä‘á»™t giáº£ng viĂªn hoáº·c phĂ²ng há»c.
+    API xem trước danh sách buổi học trước khi lưu (SCRUM-224 - AC 3, SCRUM-225 - AC 1, AC 2).
+    Không ghi bất kỳ dữ liệu nào vào cơ sở dữ liệu.
+    Cảnh báo rõ ràng các buổi đang xung đột giảng viên hoặc phòng học.
     """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
 
     sessions, skipped = _build_schedule_sessions(class_id, payload)
 
-    # Kiá»ƒm tra xung Ä‘á»™t (SCRUM-225)
+    # Kiểm tra xung đột (SCRUM-225)
     overwrite = bool(payload.get("overwrite", False))
     conflicts = detect_schedule_conflicts(
         sessions,
@@ -452,60 +565,114 @@ def preview_schedule_service(class_id: str, payload: dict) -> dict:
     }
 
 
-def generate_schedule_service(class_id: str, payload: dict) -> dict:
+def generate_schedule_service(class_id: str, payload: dict, actor_user_id: str | None = None) -> dict:
     """
-    API lÆ°u thá»i khĂ³a biá»ƒu chĂ­nh thá»©c vĂ o cÆ¡ sá»Ÿ dá»¯ liá»‡u (SCRUM-224 & SCRUM-225).
-    - SCRUM-224: Kiá»ƒm tra chá»‘ng láº·p / cá» overwrite.
-    - SCRUM-225: Kiá»ƒm tra xung Ä‘á»™t lá»‹ch giáº£ng viĂªn / phĂ²ng há»c. TrĂ¹ng lĂ  lá»—i cháº·n,
-      khĂ´ng cho lÆ°u, trá»« khi Quáº£n lĂ½ Ä‘Ă o táº¡o xĂ¡c nháº­n ghi Ä‘Ă¨ (allow_conflict_override=True).
+    API lưu thời khóa biểu chính thức vào cơ sở dữ liệu (SCRUM-224 & SCRUM-225).
+    - SCRUM-224: Kiểm tra chống lặp / cờ overwrite trong một transaction nguyên tử có rollback.
+    - SCRUM-225: Kiểm tra xung đột lịch giảng viên / phòng học. Trùng là lỗi chặn,
+      không cho lưu, trừ khi Quản trị viên/Quản lý đào tạo xác nhận ghi đè (allow_conflict_override=True).
+    - Bảo vệ dữ liệu điểm danh: chặn ghi đè nếu lớp đã có buổi học được điểm danh.
     """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
 
-    # Kiá»ƒm tra lá»‹ch hiá»‡n cĂ³
+    # Kiểm tra lịch hiện có
     existing_count = class_schedule_repository.count_schedules_by_class_id(class_id)
     overwrite = bool(payload.get("overwrite", False))
 
     if existing_count > 0 and not overwrite:
+        date_range_str = ""
+        try:
+            existing_schedules = class_schedule_repository.list_schedules_by_class_id(class_id)
+            if existing_schedules:
+                min_date = existing_schedules[0].learning_date
+                max_date = existing_schedules[-1].learning_date
+                min_str = min_date.strftime("%d/%m/%Y") if hasattr(min_date, "strftime") else str(min_date)
+                max_str = max_date.strftime("%d/%m/%Y") if hasattr(max_date, "strftime") else str(max_date)
+                date_range_str = f" (từ ngày {min_str} đến ngày {max_str})"
+        except Exception:
+            pass
+
         raise ScheduleServiceError(
             "SCHEDULE_ALREADY_EXISTS",
-            f"Lá»›p há»c Ä‘Ă£ cĂ³ {existing_count} buá»•i há»c trong thá»i khĂ³a biá»ƒu. HĂ£y báº­t tĂ¹y chá»n ghi Ä‘Ă¨ náº¿u muá»‘n táº¡o láº¡i lá»‹ch.",
+            f"Lớp học đã có {existing_count} buổi học trong thời khóa biểu{date_range_str}. "
+            f"Nếu bạn có quyền quản lý và muốn thay thế toàn bộ lịch này, vui lòng bật tùy chọn 'Ghi đè lịch đã có'.",
             status_code=409,
         )
 
-    # Sinh danh sĂ¡ch buá»•i há»c
+    # Kiểm tra điểm danh trước khi cho phép ghi đè (SCRUM-224/226)
+    if existing_count > 0 and overwrite:
+        attended_count = class_schedule_repository.count_attendance_checked_by_class_id(class_id)
+        if attended_count > 0:
+            raise ScheduleAttendanceCheckedError(
+                f"Không thể ghi đè thời khóa biểu vì lớp học đã có {attended_count} buổi học được điểm danh. Thao tác bị chặn để bảo vệ dữ liệu điểm danh."
+            )
+
+    # Sinh danh sách buổi học
     session_dicts, skipped = _build_schedule_sessions(class_id, payload)
 
-    # Kiá»ƒm tra xung Ä‘á»™t lá»‹ch táº¡i thá»i Ä‘iá»ƒm lÆ°u (SCRUM-225 - AC 1, AC 2, AC 3)
+    # Kiểm tra xung đột lịch tại thời điểm lưu (SCRUM-225 - AC 1, AC 2, AC 3)
     conflicts = detect_schedule_conflicts(
         session_dicts,
         exclude_class_id=class_id if overwrite else None,
     )
 
     allow_conflict_override = bool(payload.get("allow_conflict_override", False))
+    if allow_conflict_override:
+        # Không tin cờ client: kiểm tra quyền hạn thực tế tại backend (SCRUM-225)
+        check_conflict_override_permission(actor_user_id)
+
     if conflicts and not allow_conflict_override:
-        # TrĂ¹ng lĂ  lá»—i cháº·n, khĂ´ng cho lÆ°u trá»« khi xĂ¡c nháº­n ghi Ä‘Ă¨ (AC 3)
-        conflict_msg = (
-            f"PhĂ¡t hiá»‡n {len(conflicts)} xung Ä‘á»™t lá»‹ch vá» giáº£ng viĂªn hoáº·c phĂ²ng há»c. "
-            f"Há»‡ thá»‘ng Ä‘Ă£ cháº·n lÆ°u Ä‘á»ƒ trĂ¡nh trĂ¹ng giá» dáº¡y. "
-            f"Quáº£n lĂ½ Ä‘Ă o táº¡o cáº§n xĂ¡c nháº­n ghi Ä‘Ă¨ Ä‘á»ƒ lÆ°u lá»‹ch nĂ y."
-        )
-        raise ScheduleConflictError(conflict_msg, conflicts)
+        has_instructor = any(c.get("conflict_type") == "instructor" for c in conflicts)
+        has_room = any(c.get("conflict_type") == "room" for c in conflicts)
+
+        if has_instructor and not has_room:
+            first_c = conflicts[0]
+            inst_name = first_c.get("instructor_name") or first_c.get("instructor_id") or "giảng viên"
+            date_val = first_c.get("learning_date")
+            time_val = f"{first_c.get('start_time')} - {first_c.get('end_time')}"
+            cls_code = first_c.get("conflicting_class_code") or "lớp khác"
+            if len(conflicts) == 1:
+                conflict_msg = (
+                    f"Trùng lịch giảng viên: Giảng viên {inst_name} đã có lịch dạy vào ngày {date_val} lúc {time_val} (Lớp {cls_code})."
+                )
+            else:
+                conflict_msg = (
+                    f"Trùng lịch giảng viên ({len(conflicts)} buổi): Giảng viên {inst_name} bị trùng lịch, ví dụ ngày {date_val} lúc {time_val} (Lớp {cls_code})."
+                )
+        elif has_room and not has_instructor:
+            first_c = conflicts[0]
+            r_id = first_c.get("room_id") or "phòng học"
+            date_val = first_c.get("learning_date")
+            time_val = f"{first_c.get('start_time')} - {first_c.get('end_time')}"
+            cls_code = first_c.get("conflicting_class_code") or "lớp khác"
+            if len(conflicts) == 1:
+                conflict_msg = (
+                    f"Trùng phòng học: Phòng {r_id} đã có lịch sử dụng vào ngày {date_val} lúc {time_val} (Lớp {cls_code})."
+                )
+            else:
+                conflict_msg = (
+                    f"Trùng phòng học ({len(conflicts)} buổi): Phòng {r_id} bị trùng lịch, ví dụ ngày {date_val} lúc {time_val} (Lớp {cls_code})."
+                )
+        else:
+            conflict_msg = (
+                f"Phát hiện {len(conflicts)} xung đột lịch về giảng viên hoặc phòng học. "
+                f"Hệ thống đã chặn lưu để tránh trùng giờ dạy. "
+                f"Quản lý đào tạo cần xác nhận ghi đè để lưu lịch này."
+            )
+        raise ScheduleConflictError(conflict_msg, conflicts, code="SCHEDULE_CONFLICT_DETECTED")
 
     if conflicts and allow_conflict_override:
         logger.warning(
-            "Quáº£n lĂ½ Ä‘Ă o táº¡o Ä‘Ă£ xĂ¡c nháº­n ghi Ä‘Ă¨ %d xung Ä‘á»™t lá»‹ch cho lá»›p %s (%s)",
+            "Người dùng %s đã xác nhận ghi đè %d xung đột lịch cho lớp %s (%s)",
+            actor_user_id or "unspecified",
             len(conflicts),
             class_id,
             class_obj.class_code,
         )
 
-    # Náº¿u overwrite, xoĂ¡ lá»‹ch cÅ©
-    if existing_count > 0 and overwrite:
-        class_schedule_repository.delete_schedules_by_class_id(class_id)
-
-    # Chuáº©n bá»‹ model ClassSchedule Ä‘á»ƒ lÆ°u batch
+    # Chuẩn bị model ClassSchedule để lưu batch
     schedule_models = []
     for s in session_dicts:
         model = ClassSchedule(
@@ -528,7 +695,29 @@ def generate_schedule_service(class_id: str, payload: dict) -> dict:
         )
         schedule_models.append(model)
 
-    saved_models = class_schedule_repository.insert_schedules_batch(schedule_models)
+    # Thực hiện thay thế hoặc chèn trong transaction nguyên tử có khóa hàng và rollback (SCRUM-224/226)
+    try:
+        saved_models = class_schedule_repository.replace_schedules_in_transaction(class_id, schedule_models)
+    except RuntimeError as err:
+        if "ATTENDANCE_CHECKED_LOCK" in str(err):
+            raise ScheduleAttendanceCheckedError(
+                "Không thể ghi đè thời khóa biểu vì lớp học đã có buổi học được điểm danh. Dữ liệu điểm danh được bảo vệ tuyệt đối."
+            )
+        raise
+
+    # Cảnh báo sức chứa lớp học nếu phòng được gán là phòng vật lý
+    capacity_warning = None
+    if session_dicts and session_dicts[0].get("room_id"):
+        from app.repositories import classroom_repository
+        first_r_id = session_dicts[0]["room_id"]
+        cr_room = classroom_repository.get_classroom_by_id(first_r_id)
+        if cr_room and cr_room.room_type == "physical" and cr_room.capacity:
+            effective_class_size = max(class_obj.max_capacity, class_obj.enrolled_count or 0)
+            if effective_class_size > cr_room.capacity:
+                capacity_warning = (
+                    f"Sĩ số lớp vượt sức chứa phòng. (Lớp: {effective_class_size} học viên – "
+                    f"Phòng: {cr_room.capacity} chỗ)"
+                )
 
     return {
         "class_id": class_id,
@@ -540,14 +729,15 @@ def generate_schedule_service(class_id: str, payload: dict) -> dict:
         "skipped_holidays": skipped,
         "conflicts": conflicts,
         "overridden_conflicts_count": len(conflicts) if allow_conflict_override else 0,
+        "capacity_warning": capacity_warning,
     }
 
 
 def get_class_schedules_service(class_id: str) -> dict:
-    """Láº¥y danh sĂ¡ch thá»i khĂ³a biá»ƒu cá»§a má»™t lá»›p há»c."""
+    """Lấy danh sách thời khóa biểu của một lớp học kèm thông tin giảng viên và phòng học."""
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
 
     schedules = class_schedule_repository.list_schedules_by_class_id(class_id)
     return {
@@ -559,10 +749,16 @@ def get_class_schedules_service(class_id: str) -> dict:
 
 
 def delete_class_schedules_service(class_id: str) -> dict:
-    """XĂ³a toĂ n bá»™ thá»i khĂ³a biá»ƒu cá»§a má»™t lá»›p há»c."""
+    """Xóa toàn bộ thời khóa biểu của một lớp học (chỉ khi chưa có buổi nào điểm danh)."""
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
+
+    attended_count = class_schedule_repository.count_attendance_checked_by_class_id(class_id)
+    if attended_count > 0:
+        raise ScheduleAttendanceCheckedError(
+            f"Không thể xóa thời khóa biểu vì lớp học đã có {attended_count} buổi học được điểm danh. Thao tác bị chặn để bảo vệ dữ liệu điểm danh."
+        )
 
     deleted_count = class_schedule_repository.delete_schedules_by_class_id(class_id)
     return {
@@ -580,45 +776,56 @@ def dispatch_schedule_change_notifications(
     old_instructor_id: str | None = None,
 ) -> int:
     """
-    Gá»­i thĂ´ng bĂ¡o thay Ä‘á»•i buá»•i há»c tá»›i giáº£ng viĂªn vĂ  toĂ n bá»™ há»c viĂªn cá»§a lá»›p (SCRUM-226 AC 3).
-    LÆ°u báº£n ghi vĂ o schedule_notifications vĂ  ghi log nghiá»‡p vá»¥.
+    Gửi thông báo thay đổi buổi học tới giảng viên và toàn bộ học viên của lớp (SCRUM-226 AC 3).
+    Lưu bản ghi vào schedule_notifications và ghi log nghiệp vụ.
+    Ánh xạ chính xác recipient_id với user_id của học viên để người dùng xem được thông báo.
     """
     class_obj = class_repository.get_class_by_id(class_id)
     class_code = class_obj.class_code if class_obj else class_id
 
-    # Äá»‹nh dáº¡ng ngĂ y giá» hiá»ƒn thá»‹
+    # Định dạng ngày giờ hiển thị
     ld_str = schedule.learning_date.strftime("%d/%m/%Y") if hasattr(schedule.learning_date, "strftime") else str(schedule.learning_date)
-    st_str = str(schedule.start_time)[:5]
-    et_str = str(schedule.end_time)[:5]
+    st_str = normalize_time_str(schedule.start_time)[:5]
+    et_str = normalize_time_str(schedule.end_time)[:5]
 
     if change_type == "cancelled":
-        title = f"[ICTU] ThĂ´ng bĂ¡o há»§y buá»•i há»c #{schedule.session_number} - Lá»›p {class_code}"
+        title = f"[ICTU] Thông báo hủy buổi học #{schedule.session_number} - Lớp {class_code}"
         message = (
-            f"Buá»•i há»c #{schedule.session_number} ({schedule.topic}) cá»§a lá»›p {class_code} "
-            f"dá»± kiáº¿n ngĂ y {ld_str} ({st_str} - {et_str}) Ä‘Ă£ bá»‹ há»§y.\n"
-            f"LĂ½ do: {cancellation_reason or schedule.cancellation_reason or 'KhĂ´ng cĂ³ lĂ½ do cá»¥ thá»ƒ'}."
+            f"Buổi học #{schedule.session_number} ({schedule.topic}) của lớp {class_code} "
+            f"dự kiến ngày {ld_str} ({st_str} - {et_str}) đã bị hủy.\n"
+            f"Lý do: {cancellation_reason or schedule.cancellation_reason or 'Không có lý do cụ thể'}."
         )
     elif change_type == "rescheduled":
-        title = f"[ICTU] ThĂ´ng bĂ¡o dá»i lá»‹ch buá»•i há»c #{schedule.session_number} - Lá»›p {class_code}"
+        title = f"[ICTU] Thông báo dời lịch buổi học #{schedule.session_number} - Lớp {class_code}"
         message = (
-            f"Buá»•i há»c #{schedule.session_number} ({schedule.topic}) cá»§a lá»›p {class_code} "
-            f"Ä‘Ă£ Ä‘Æ°á»£c dá»i sang ngĂ y {ld_str}, khung giá» {st_str} - {et_str}"
-            f"{f', phĂ²ng {schedule.room_id}' if schedule.room_id else ''}."
+            f"Buổi học #{schedule.session_number} ({schedule.topic}) của lớp {class_code} "
+            f"đã được dời sang ngày {ld_str}, khung giờ {st_str} - {et_str}"
+            f"{f', phòng {schedule.room_name or schedule.room_id}' if (schedule.room_name or schedule.room_id) else ''}."
         )
     else:
-        title = f"[ICTU] ThĂ´ng bĂ¡o cáº­p nháº­t buá»•i há»c #{schedule.session_number} - Lá»›p {class_code}"
+        title = f"[ICTU] Thông báo cập nhật buổi học #{schedule.session_number} - Lớp {class_code}"
         message = (
-            f"Buá»•i há»c #{schedule.session_number} ({schedule.topic}) cá»§a lá»›p {class_code} ngĂ y {ld_str} "
-            f"Ä‘Ă£ Ä‘Æ°á»£c cáº­p nháº­t thĂ´ng tin giáº£ng viĂªn / phĂ²ng há»c."
+            f"Buổi học #{schedule.session_number} ({schedule.topic}) của lớp {class_code} ngày {ld_str} "
+            f"đã được cập nhật thông tin giảng viên / phòng học."
         )
 
     notifications_to_save: list[dict] = []
     seen_recipient_ids = set()
 
-    # 1. Há»c viĂªn ghi danh trong lá»›p
+    # 1. Học viên ghi danh trong lớp (Chỉ phát thông báo tới học viên đã liên kết tài khoản người dùng)
     students = class_schedule_repository.get_class_enrollment_recipients(class_id)
+    unlinked_students_count = 0
     for s in students:
-        rec_id = s.get("id") or s.get("user_id")
+        raw_uid = s.get("user_id")
+        if not raw_uid:
+            unlinked_students_count += 1
+            logger.warning(
+                "Bỏ qua phát thông báo hệ thống cho học viên %s (ID hồ sơ: %s) do chưa liên kết tài khoản người dùng.",
+                s.get("full_name"),
+                s.get("id"),
+            )
+            continue
+        rec_id = str(raw_uid).strip()
         if rec_id and rec_id not in seen_recipient_ids:
             seen_recipient_ids.add(rec_id)
             notifications_to_save.append({
@@ -626,14 +833,14 @@ def dispatch_schedule_change_notifications(
                 "class_id": class_id,
                 "recipient_type": "student",
                 "recipient_id": rec_id,
-                "recipient_name": s.get("full_name") or "Há»c viĂªn",
+                "recipient_name": s.get("full_name") or "Học viên",
                 "recipient_email": s.get("email"),
                 "change_type": change_type,
                 "title": title,
                 "message": message,
             })
 
-    # 2. Giáº£ng viĂªn phá»¥ trĂ¡ch hiá»‡n táº¡i
+    # 2. Giảng viên phụ trách hiện tại
     if schedule.instructor_id and schedule.instructor_id not in seen_recipient_ids:
         seen_recipient_ids.add(schedule.instructor_id)
         inst_info = class_schedule_repository.get_user_info_by_id(schedule.instructor_id)
@@ -642,14 +849,14 @@ def dispatch_schedule_change_notifications(
             "class_id": class_id,
             "recipient_type": "instructor",
             "recipient_id": schedule.instructor_id,
-            "recipient_name": inst_info.get("name") if inst_info else "Giáº£ng viĂªn",
+            "recipient_name": inst_info.get("name") if inst_info else "Giảng viên",
             "recipient_email": inst_info.get("email") if inst_info else None,
             "change_type": change_type,
             "title": title,
             "message": message,
         })
 
-    # 3. Giáº£ng viĂªn cÅ© (náº¿u thay Ä‘á»•i giáº£ng viĂªn dáº¡y thay)
+    # 3. Giảng viên cũ (nếu thay đổi giảng viên dạy thay)
     if old_instructor_id and old_instructor_id != schedule.instructor_id and old_instructor_id not in seen_recipient_ids:
         seen_recipient_ids.add(old_instructor_id)
         old_inst_info = class_schedule_repository.get_user_info_by_id(old_instructor_id)
@@ -658,17 +865,17 @@ def dispatch_schedule_change_notifications(
             "class_id": class_id,
             "recipient_type": "instructor",
             "recipient_id": old_instructor_id,
-            "recipient_name": old_inst_info.get("name") if old_inst_info else "Giáº£ng viĂªn",
+            "recipient_name": old_inst_info.get("name") if old_inst_info else "Giảng viên",
             "recipient_email": old_inst_info.get("email") if old_inst_info else None,
             "change_type": change_type,
             "title": title,
-            "message": message + " (Báº¡n Ä‘Ă£ Ä‘Æ°á»£c gá»¡ khá»i buá»•i há»c nĂ y do cĂ³ giáº£ng viĂªn dáº¡y thay).",
+            "message": message + " (Bạn đã được gỡ khỏi buổi học này do có giảng viên dạy thay).",
         })
 
     if notifications_to_save:
         class_schedule_repository.insert_schedule_notifications_batch(notifications_to_save)
         logger.info(
-            "ÄĂ£ phĂ¡t %d thĂ´ng bĂ¡o thay Ä‘á»•i TKB (loáº¡i: %s) cho lá»›p %s buá»•i #%s",
+            "Đã phát %d thông báo thay đổi TKB (loại: %s) cho lớp %s buổi #%s",
             len(notifications_to_save),
             change_type,
             class_code,
@@ -678,33 +885,38 @@ def dispatch_schedule_change_notifications(
     return len(notifications_to_save)
 
 
-def update_single_schedule_service(class_id: str, schedule_id: str, payload: dict) -> dict:
+def update_single_schedule_service(class_id: str, schedule_id: str, payload: dict, actor_user_id: str | None = None) -> dict:
     """
-    Sá»­a hoáº·c dá»i má»™t buá»•i há»c Ä‘Æ¡n láº» (SCRUM-226 AC 1, AC 3, AC 4):
-    - Äá»•i Ä‘Æ°á»£c ngĂ y, giá», phĂ²ng, giáº£ng viĂªn dáº¡y thay.
-    - Cháº·n sá»­a buá»•i há»c Ä‘Ă£ Ä‘iá»ƒm danh (AC 4).
-    - TĂ¡i sá»­ dá»¥ng kiá»ƒm tra xung Ä‘á»™t cá»§a SCRUM-225 (loáº¡i trá»« chĂ­nh buá»•i Ä‘ang sá»­a).
-    - Gá»­i thĂ´ng bĂ¡o tá»›i há»c viĂªn vĂ  giáº£ng viĂªn cá»§a lá»›p (AC 3).
+    Sửa hoặc dời một buổi học đơn lẻ (SCRUM-226 AC 1, AC 3, AC 4):
+    - Đổi được ngày, giờ, phòng, giảng viên dạy thay.
+    - Chặn sửa buổi học đã bị hủy (SCRUM-226).
+    - Chặn sửa buổi học đã điểm danh (AC 4).
+    - Tái sử dụng kiểm tra xung đột của SCRUM-225 (loại trừ chính buổi đang sửa).
+    - Gửi thông báo tới học viên và giảng viên của lớp (AC 3).
     """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
 
     schedule = class_schedule_repository.get_schedule_by_id(schedule_id)
     if not schedule or str(schedule.class_id) != str(class_id):
-        raise ScheduleNotFoundError("Kh?ng t?m th?y bu?i h?c trong l?p n?y.")
+        raise ScheduleNotFoundError("Không tìm thấy buổi học trong lớp này.")
 
-    # AC 4: Block edits to schedules with recorded attendance.
+    # SCRUM-226: Mặc định chặn sửa buổi đã hủy
+    if schedule.status == "cancelled":
+        raise ScheduleValidationError("Không thể sửa hoặc đổi lịch buổi học đã bị hủy.")
+
+    # AC 4: Không sửa được buổi đã điểm danh
     if schedule.attendance_checked:
-        raise ScheduleAttendanceCheckedError()
+        raise ScheduleAttendanceCheckedError("Không thể sửa hoặc dời buổi học đã được điểm danh.")
 
-    # Thu tháº­p dá»¯ liá»‡u cáº­p nháº­t
+    # Thu thập dữ liệu cập nhật
     new_date = payload.get("learning_date") or schedule.learning_date
     if isinstance(new_date, str):
         try:
             datetime.strptime(new_date, "%Y-%m-%d")
         except ValueError:
-            raise ScheduleValidationError("Äá»‹nh dáº¡ng ngĂ y há»c khĂ´ng há»£p lá»‡ (cáº§n YYYY-MM-DD).")
+            raise ScheduleValidationError("Định dạng ngày học không hợp lệ (cần YYYY-MM-DD).")
 
     new_shift = payload.get("shift") if "shift" in payload else schedule.shift
     new_start = payload.get("start_time") or schedule.start_time
@@ -714,17 +926,67 @@ def update_single_schedule_service(class_id: str, schedule_id: str, payload: dic
         new_start = DEFAULT_SHIFTS[new_shift]["start_time"]
         new_end = DEFAULT_SHIFTS[new_shift]["end_time"]
 
-    str_start = str(new_start)[:8]
-    str_end = str(new_end)[:8]
-    if str_start >= str_end:
-        raise ScheduleValidationError("Gi? b?t ??u ph?i tr??c gi? k?t th?c bu?i h?c.")
+    str_start = normalize_time_str(new_start)
+    str_end = normalize_time_str(new_end)
+    try:
+        t_start = parse_time_obj(str_start)
+        t_end = parse_time_obj(str_end)
+        if t_start >= t_end:
+            raise ScheduleValidationError("Giờ bắt đầu phải trước giờ kết thúc buổi học.")
+    except ValueError:
+        raise ScheduleValidationError("Định dạng giờ học không hợp lệ (HH:MM:SS).")
 
-    new_room = payload.get("room_id") if "room_id" in payload else schedule.room_id
-    new_instructor = payload.get("instructor_id") if "instructor_id" in payload else schedule.instructor_id
+    # Cho phép xóa gán phòng hoặc giảng viên khi gửi null hoặc rỗng
+    if "room_id" in payload:
+        raw_r = payload.get("room_id")
+        new_room = str(raw_r).strip() if raw_r and str(raw_r).strip() else None
+    else:
+        new_room = schedule.room_id
+
+    # Rà soát và kiểm tra phòng học theo danh mục chuẩn (SCRUM-221/226)
+    from app.repositories import classroom_repository
+    selected_classroom = None
+    capacity_warning = None
+
+    if new_room is not None:
+        if new_room == schedule.room_id:
+            # Người dùng không thay đổi trường phòng học (chỉ sửa các trường khác như ngày, giờ, topic...)
+            # Bảo toàn dữ liệu phòng cũ (kể cả chuỗi legacy như 'P301') để tránh âm thầm xóa hay gán nhầm.
+            selected_classroom, _ = classroom_repository.find_unique_classroom_by_code_or_name(new_room)
+        else:
+            # Người dùng chủ động chọn phòng mới: bắt buộc kiểm tra phòng tồn tại và trạng thái
+            selected_classroom, match_type = classroom_repository.find_unique_classroom_by_code_or_name(new_room)
+            if not selected_classroom:
+                raise ScheduleValidationError("Phòng học không tồn tại trong danh mục hệ thống.", code="ROOM_NOT_FOUND")
+            if selected_classroom.status != "active":
+                raise ScheduleValidationError(
+                    f"Phòng học '{selected_classroom.room_name}' ({selected_classroom.room_code}) đang ở trạng thái không khả dụng ({selected_classroom.status}).",
+                    code="ROOM_NOT_ACTIVE",
+                )
+            # Chuẩn hóa về ID phòng chuẩn trong catalog
+            new_room = selected_classroom.id
+
+    # Cảnh báo sức chứa nếu là phòng vật lý
+    if selected_classroom and selected_classroom.room_type == "physical" and selected_classroom.capacity:
+        effective_class_size = max(class_obj.max_capacity, class_obj.enrolled_count or 0)
+        if effective_class_size > selected_classroom.capacity:
+            capacity_warning = (
+                f"Sĩ số lớp vượt sức chứa phòng. (Lớp: {effective_class_size} học viên – "
+                f"Phòng: {selected_classroom.capacity} chỗ)"
+            )
+
+    if "instructor_id" in payload:
+        raw_inst = payload.get("instructor_id")
+        new_instructor = str(raw_inst).strip() if raw_inst and str(raw_inst).strip() else None
+    else:
+        new_instructor = schedule.instructor_id
+
     new_topic = payload.get("topic") if "topic" in payload else schedule.topic
     allow_conflict_override = bool(payload.get("allow_conflict_override", False))
+    if allow_conflict_override:
+        check_conflict_override_permission(actor_user_id)
 
-    # TĂ¡i sá»­ dá»¥ng kiá»ƒm tra xung Ä‘á»™t SCRUM-225 (loáº¡i trá»« chĂ­nh buá»•i Ä‘ang sá»­a)
+    # Tái sử dụng kiểm tra xung đột SCRUM-225 (loại trừ chính buổi đang sửa)
     conflicts = class_schedule_repository.find_conflicts_for_slot(
         learning_date=new_date,
         start_time=str_start,
@@ -736,13 +998,13 @@ def update_single_schedule_service(class_id: str, schedule_id: str, payload: dic
 
     if conflicts and not allow_conflict_override:
         raise ScheduleConflictError(
-            f"PhĂ¡t hiá»‡n xung Ä‘á»™t lá»‹ch cho buá»•i há»c #{schedule.session_number}. Cáº§n Quáº£n lĂ½ Ä‘Ă o táº¡o xĂ¡c nháº­n ghi Ä‘Ă¨.",
+            f"Phát hiện xung đột lịch cho buổi học #{schedule.session_number}. Cần Quản lý đào tạo xác nhận ghi đè.",
             conflicts,
         )
 
-    # XĂ¡c Ä‘á»‹nh tráº¡ng thĂ¡i má»›i: náº¿u ngĂ y hoáº·c giá» thay Ä‘á»•i thĂ¬ lĂ  'rescheduled'
+    # Xác định trạng thái mới: nếu ngày hoặc giờ thay đổi thì là 'rescheduled'
     date_changed = str(new_date) != str(schedule.learning_date)
-    time_changed = str(new_start)[:5] != str(schedule.start_time)[:5]
+    time_changed = str_start[:5] != normalize_time_str(schedule.start_time)[:5]
     if date_changed or time_changed:
         change_type = "rescheduled"
     else:
@@ -750,7 +1012,7 @@ def update_single_schedule_service(class_id: str, schedule_id: str, payload: dic
 
     old_instructor = schedule.instructor_id
 
-    # Cáº­p nháº­t thĂ´ng tin
+    # Cập nhật thông tin
     schedule.learning_date = new_date
     schedule.start_time = str_start
     schedule.end_time = str_end
@@ -763,7 +1025,7 @@ def update_single_schedule_service(class_id: str, schedule_id: str, payload: dic
 
     updated_schedule = class_schedule_repository.update_schedule_item(schedule)
 
-    # Gá»­i thĂ´ng bĂ¡o tá»›i há»c viĂªn vĂ  giáº£ng viĂªn (AC 3)
+    # Gửi thông báo tới học viên và giảng viên (AC 3)
     recipients_count = dispatch_schedule_change_notifications(
         class_id=class_id,
         schedule=updated_schedule,
@@ -778,43 +1040,40 @@ def update_single_schedule_service(class_id: str, schedule_id: str, payload: dic
         "notifications_sent": recipients_count,
         "overridden_conflicts_count": len(conflicts) if allow_conflict_override else 0,
         "conflicts": conflicts if allow_conflict_override else [],
+        "capacity_warning": capacity_warning,
     }
 
 
 def cancel_single_schedule_service(class_id: str, schedule_id: str, payload: dict) -> dict:
     """
-    Há»§y má»™t buá»•i há»c Ä‘Æ¡n láº» (SCRUM-226 AC 2, AC 3, AC 4):
-    - Báº¯t buá»™c nháº­p lĂ½ do há»§y (cancellation_reason) (AC 2).
-    - Cháº·n há»§y náº¿u buá»•i há»c Ä‘Ă£ Ä‘iá»ƒm danh (AC 4).
-    - Há»c viĂªn vĂ  giáº£ng viĂªn cá»§a lá»›p nháº­n Ä‘Æ°á»£c thĂ´ng bĂ¡o thay Ä‘á»•i (AC 3).
+    Hủy một buổi học đơn lẻ (SCRUM-226 AC 2, AC 3, AC 4):
+    - Bắt buộc nhập lý do hủy (cancellation_reason) (AC 2).
+    - Chặn hủy nếu buổi học đã điểm danh (AC 4).
+    - Học viên và giảng viên của lớp nhận được thông báo thay đổi (AC 3).
     """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
-        raise ScheduleServiceError("CLASS_NOT_FOUND", "Kh?ng t?m th?y l?p h?c.", status_code=404)
+        raise ScheduleServiceError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", status_code=404)
 
     schedule = class_schedule_repository.get_schedule_by_id(schedule_id)
     if not schedule or str(schedule.class_id) != str(class_id):
-        raise ScheduleNotFoundError("Kh?ng t?m th?y bu?i h?c trong l?p n?y.")
+        raise ScheduleNotFoundError("Không tìm thấy buổi học trong lớp này.")
 
-    # AC 4: KhĂ´ng há»§y Ä‘Æ°á»£c buá»•i Ä‘Ă£ Ä‘iá»ƒm danh
+    # AC 4: Không hủy được buổi đã điểm danh
     if schedule.attendance_checked:
-        raise ScheduleAttendanceCheckedError()
+        raise ScheduleAttendanceCheckedError("Không thể hủy buổi học đã được điểm danh.")
 
-    # AC 2: Báº¯t buá»™c nháº­p lĂ½ do há»§y
+    # AC 2: Bắt buộc nhập lý do hủy
     reason = (payload.get("reason") or payload.get("cancellation_reason") or "").strip()
     if not reason:
-        raise ScheduleValidationError(
-            "Lý do hủy buổi học là bắt buộc.",
-            code="MISSING_CANCELLATION_REASON",
-            status_code=400,
-        )
+        raise ScheduleValidationError("Lý do hủy buổi học là bắt buộc.", code="MISSING_CANCELLATION_REASON", status_code=400)
 
     schedule.status = "cancelled"
     schedule.cancellation_reason = reason
 
     updated_schedule = class_schedule_repository.update_schedule_item(schedule)
 
-    # AC 3: Gá»­i thĂ´ng bĂ¡o há»§y tá»›i há»c viĂªn vĂ  giáº£ng viĂªn
+    # AC 3: Gửi thông báo hủy tới học viên và giảng viên
     recipients_count = dispatch_schedule_change_notifications(
         class_id=class_id,
         schedule=updated_schedule,
@@ -832,8 +1091,376 @@ def cancel_single_schedule_service(class_id: str, schedule_id: str, payload: dic
 
 
 def list_schedule_notifications_service(class_id: str, schedule_id: str | None = None) -> list[dict]:
-    """Láº¥y danh sĂ¡ch thĂ´ng bĂ¡o thay Ä‘á»•i lá»‹ch há»c Ä‘Ă£ phĂ¡t (SCRUM-226 AC 3)."""
+    """Lấy danh sách thông báo thay đổi lịch học đã phát (SCRUM-226 AC 3)."""
     return class_schedule_repository.list_schedule_notifications(schedule_id=schedule_id, class_id=class_id)
+
+
+def get_calendar_schedules_service(params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Lấy danh sách thời khóa biểu dạng lịch tuần/tháng kèm bộ lọc (SCRUM-227 AC 1, 2, 4).
+    Params:
+    - date_from: YYYY-MM-DD
+    - date_to: YYYY-MM-DD
+    - class_id: ID lớp học
+    - instructor_id: ID giảng viên
+    - room_id: Mã / Tên phòng học
+    - view_mode: 'week' | 'month' (mặc định 'week')
+    - trainer_scope_user_id: ID giảng viên nếu người gọi là giảng viên (để giới hạn phạm vi)
+    """
+    date_from = (params.get("date_from") or "").strip() or None
+    date_to = (params.get("date_to") or "").strip() or None
+    class_id = (params.get("class_id") or "").strip() or None
+    instructor_id = (params.get("instructor_id") or "").strip() or None
+    room_id = (params.get("room_id") or "").strip() or None
+    trainer_scope_user_id = params.get("trainer_scope_user_id")
+    view_mode = (params.get("view_mode") or "week").strip().lower()
+    if view_mode not in ("week", "month"):
+        view_mode = "week"
+
+    cal_kwargs: dict[str, Any] = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "class_id": class_id,
+        "instructor_id": instructor_id,
+        "room_id": room_id,
+    }
+    if trainer_scope_user_id:
+        cal_kwargs["trainer_scope_user_id"] = trainer_scope_user_id
+
+    schedules = class_schedule_repository.list_calendar_schedules(**cal_kwargs)
+
+    return {
+        "total": len(schedules),
+        "date_from": date_from,
+        "date_to": date_to,
+        "view_mode": view_mode,
+        "filters": {
+            "class_id": class_id,
+            "instructor_id": instructor_id,
+            "room_id": room_id,
+            "trainer_scoped": bool(trainer_scope_user_id),
+        },
+        "schedules": schedules,
+    }
+
+
+def get_schedule_detail_service(schedule_id: str) -> dict[str, Any]:
+    """
+    Lấy chi tiết một buổi học theo ID phục vụ popup xem chi tiết trên lịch (SCRUM-227 AC 3).
+    """
+    detail = class_schedule_repository.get_schedule_detail_by_id(schedule_id)
+    if not detail:
+        raise ScheduleNotFoundError("Không tìm thấy buổi học.")
+    return detail
+
+
+def get_my_personal_schedule_service(
+    user_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    ref_date: str | None = None,
+    ref_time: str | None = None,
+    context: str | None = None,
+) -> dict[str, Any]:
+    """
+    Lấy thời khóa biểu cá nhân của người dùng đăng nhập (SCRUM-228).
+    - Hỗ trợ tài khoản đa vai trò (trainer + trainee): cho phép chuyển đổi linh hoạt qua query ?context=teaching hoặc ?context=learning.
+    - Học viên: lấy theo lớp đã ghi danh, trả về profile_linked, student, enrolled_classes, next_session, week_sessions.
+    - Giảng viên: lấy theo phân công giảng dạy (chính, trợ giảng, dạy thay), trả về instructor, assigned_classes, assignment_status, next_session, week_sessions.
+    - Phân biệt rõ: chưa được phân công vs đã phân công nhưng chưa có lịch.
+    """
+    if not user_id:
+        raise ScheduleServiceError("UNAUTHORIZED", "Yêu cầu đăng nhập để truy cập lịch cá nhân.", status_code=401)
+
+    # 1. Xác định thời gian mốc (cho phép truyền ref_date/ref_time phục vụ test)
+    if ref_date and ref_date.strip():
+        try:
+            today = datetime.strptime(ref_date.strip(), "%Y-%m-%d").date()
+        except Exception:
+            today = datetime.now().date()
+    else:
+        today = datetime.now().date()
+
+    if ref_time and ref_time.strip():
+        current_time_str = ref_time.strip()
+    else:
+        current_time_str = datetime.now().strftime("%H:%M:%S")
+
+    today_str = today.strftime("%Y-%m-%d")
+
+    # 2. Xác định khoảng tuần (mặc định Thứ 2 -> Chủ nhật của tuần hiện tại)
+    if date_from and date_from.strip() and date_to and date_to.strip():
+        from_str = date_from.strip()
+        to_str = date_to.strip()
+    else:
+        monday = today - timedelta(days=today.weekday())
+        sunday = monday + timedelta(days=6)
+        from_str = monday.strftime("%Y-%m-%d")
+        to_str = sunday.strftime("%Y-%m-%d")
+
+    # 3. Tra cứu vai trò thực tế của người dùng
+    roles = authorization_service.get_user_role_codes(user_id) if user_id else []
+    is_pure_manager = any(r in roles for r in ["admin", "training_manager"]) and not ("trainee" in roles or "trainer" in roles)
+    if is_pure_manager:
+        raise ScheduleServiceError("FORBIDDEN", "Tài khoản quản trị không sử dụng lịch cá nhân. Vui lòng truy cập trang Thời khóa biểu.", status_code=403)
+
+    is_trainer = "trainer" in roles
+    is_trainee = "trainee" in roles or (not is_trainer)
+
+    available_contexts = []
+    if is_trainee:
+        available_contexts.append("learning")
+    if is_trainer:
+        available_contexts.append("teaching")
+
+    # Xác định ngữ cảnh hiển thị
+    chosen_context = (context or "").strip().lower()
+    if is_trainer and is_trainee:
+        active_context = "teaching" if chosen_context == "teaching" else "learning"
+    elif is_trainer:
+        active_context = "teaching"
+    else:
+        active_context = "learning"
+
+    # Ngữ cảnh: Giảng viên (Lịch giảng dạy)
+    if active_context == "teaching":
+        user_record = user_repository.get_user_by_id(user_id)
+        instructor_dict = {
+            "id": user_record.id if user_record else user_id,
+            "full_name": user_record.name if user_record and hasattr(user_record, "name") else (user_record.full_name if user_record and hasattr(user_record, "full_name") else "Giảng viên"),
+            "email": user_record.email if user_record else "",
+        }
+        assigned_classes = class_schedule_repository.get_trainer_assigned_classes(user_id)
+        next_session = class_schedule_repository.get_trainer_next_session(user_id, today_str, current_time_str)
+        week_sessions = class_schedule_repository.get_trainer_week_sessions(user_id, from_str, to_str)
+
+        if not assigned_classes:
+            assignment_status = "not_assigned"
+        elif not week_sessions and not next_session:
+            assignment_status = "assigned_no_schedule"
+        else:
+            assignment_status = "has_schedule"
+
+        return {
+            "user_type": "trainer",
+            "active_context": "teaching",
+            "available_contexts": available_contexts,
+            "assignment_status": assignment_status,
+            "profile_linked": True,
+            "student": None,
+            "instructor": instructor_dict,
+            "assigned_classes": assigned_classes,
+            "enrolled_classes": assigned_classes,
+            "next_session": next_session,
+            "week_sessions": week_sessions,
+            "total_week_sessions": len(week_sessions),
+            "date_from": from_str,
+            "date_to": to_str,
+            "period_title": f"Tuần từ {from_str} đến {to_str}",
+        }
+
+    # Ngữ cảnh: Học viên (Lịch học)
+    student = class_schedule_repository.get_student_by_user_id(user_id)
+    if not student:
+        return {
+            "user_type": "trainee",
+            "active_context": "learning",
+            "available_contexts": available_contexts,
+            "profile_linked": False,
+            "student": None,
+            "enrolled_classes": [],
+            "next_session": None,
+            "week_sessions": [],
+            "total_week_sessions": 0,
+            "date_from": from_str,
+            "date_to": to_str,
+            "period_title": f"Tuần từ {from_str} đến {to_str}",
+        }
+
+    # 4. Tra cứu danh sách lớp đã ghi danh hợp lệ
+    enrolled_classes = class_schedule_repository.get_enrolled_classes_for_student(student["id"])
+    if not enrolled_classes:
+        return {
+            "user_type": "trainee",
+            "active_context": "learning",
+            "available_contexts": available_contexts,
+            "profile_linked": True,
+            "student": {
+                "id": student.get("id"),
+                "student_code": student.get("student_code"),
+                "full_name": student.get("full_name"),
+                "email": student.get("email"),
+                "phone": student.get("phone"),
+                "program_name": student.get("program_name"),
+            },
+            "enrolled_classes": [],
+            "next_session": None,
+            "week_sessions": [],
+            "total_week_sessions": 0,
+            "date_from": from_str,
+            "date_to": to_str,
+            "period_title": f"Tuần từ {from_str} đến {to_str}",
+        }
+
+    # 5. Lấy danh sách class_id
+    class_ids = [c["class_id"] for c in enrolled_classes]
+
+    # 6. Buổi học kế tiếp theo thời gian thực (loại trừ buổi đã hủy)
+    next_session = class_schedule_repository.get_student_next_session(
+        class_ids=class_ids,
+        current_date=today_str,
+        current_time=current_time_str,
+    )
+
+    # 7. Danh sách các buổi học trong tuần
+    week_sessions = class_schedule_repository.get_student_week_sessions(
+        class_ids=class_ids,
+        date_from=from_str,
+        date_to=to_str,
+    )
+
+    return {
+        "user_type": "trainee",
+        "active_context": "learning",
+        "available_contexts": available_contexts,
+        "profile_linked": True,
+        "student": {
+            "id": student.get("id"),
+            "student_code": student.get("student_code"),
+            "full_name": student.get("full_name"),
+            "email": student.get("email"),
+            "phone": student.get("phone"),
+            "program_name": student.get("program_name"),
+        },
+        "enrolled_classes": enrolled_classes,
+        "next_session": next_session,
+        "week_sessions": week_sessions,
+        "total_week_sessions": len(week_sessions),
+        "date_from": from_str,
+        "date_to": to_str,
+        "period_title": f"Tuần từ {from_str} đến {to_str}",
+    }
+
+
+def get_student_schedule_by_student_id_service(
+    student_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    ref_date: str | None = None,
+    ref_time: str | None = None,
+) -> dict[str, Any]:
+    """
+    Luồng quản lý xem thời khóa biểu của một học viên bất kỳ (SCRUM-228 Requirement 3).
+    Dành riêng cho Quản trị viên và Quản lý đào tạo (yêu cầu quyền quản lý).
+    """
+    if not student_id or not student_id.strip():
+        raise ScheduleServiceError("STUDENT_ID_REQUIRED", "Mã hồ sơ học viên không được để trống.", status_code=400)
+
+    student = class_schedule_repository.get_student_by_student_id(student_id.strip())
+    if not student:
+        raise ScheduleServiceError("STUDENT_NOT_FOUND", "Không tìm thấy hồ sơ học viên yêu cầu.", status_code=404)
+
+    # 1. Xác định thời gian mốc
+    if ref_date and ref_date.strip():
+        try:
+            today = datetime.strptime(ref_date.strip(), "%Y-%m-%d").date()
+        except Exception:
+            today = datetime.now().date()
+    else:
+        today = datetime.now().date()
+
+    if ref_time and ref_time.strip():
+        current_time_str = ref_time.strip()
+    else:
+        current_time_str = datetime.now().strftime("%H:%M:%S")
+
+    today_str = today.strftime("%Y-%m-%d")
+
+    # 2. Khoảng ngày
+    if date_from and date_from.strip() and date_to and date_to.strip():
+        from_str = date_from.strip()
+        to_str = date_to.strip()
+    else:
+        monday = today - timedelta(days=today.weekday())
+        sunday = monday + timedelta(days=6)
+        from_str = monday.strftime("%Y-%m-%d")
+        to_str = sunday.strftime("%Y-%m-%d")
+
+    enrolled_classes = class_schedule_repository.get_enrolled_classes_for_student(student["id"])
+    if not enrolled_classes:
+        return {
+            "student": {
+                "id": student.get("id"),
+                "student_code": student.get("student_code"),
+                "full_name": student.get("full_name"),
+                "email": student.get("email"),
+                "phone": student.get("phone"),
+                "program_name": student.get("program_name"),
+            },
+            "enrolled_classes": [],
+            "next_session": None,
+            "week_sessions": [],
+            "total_week_sessions": 0,
+            "date_from": from_str,
+            "date_to": to_str,
+            "period_title": f"Tuần từ {from_str} đến {to_str}",
+        }
+
+    class_ids = [c["class_id"] for c in enrolled_classes]
+    next_session = class_schedule_repository.get_student_next_session(
+        class_ids=class_ids,
+        current_date=today_str,
+        current_time=current_time_str,
+    )
+    week_sessions = class_schedule_repository.get_student_week_sessions(
+        class_ids=class_ids,
+        date_from=from_str,
+        date_to=to_str,
+    )
+
+    return {
+        "student": {
+            "id": student.get("id"),
+            "student_code": student.get("student_code"),
+            "full_name": student.get("full_name"),
+            "email": student.get("email"),
+            "phone": student.get("phone"),
+            "program_name": student.get("program_name"),
+        },
+        "enrolled_classes": enrolled_classes,
+        "next_session": next_session,
+        "week_sessions": week_sessions,
+        "total_week_sessions": len(week_sessions),
+        "date_from": from_str,
+        "date_to": to_str,
+        "period_title": f"Tuần từ {from_str} đến {to_str}",
+    }
+
+
+def list_my_notifications_service(user_id: str | None) -> list[dict]:
+    """Lấy danh sách thông báo thay đổi TKB của chính người dùng đăng nhập (SCRUM-226)."""
+    if not user_id:
+        return []
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT id, schedule_id, class_id, recipient_type, recipient_id,
+                       recipient_name, recipient_email, change_type, title, message, created_at
+                FROM schedule_notifications
+                WHERE recipient_id = %s
+                ORDER BY created_at DESC
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall() or []
+            for r in rows:
+                if hasattr(r["created_at"], "isoformat"):
+                    r["created_at"] = r["created_at"].isoformat()
+            return rows
+    finally:
+        conn.close()
 
 
 # Legacy session-level schedule APIs (SCRUM-226)

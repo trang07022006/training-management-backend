@@ -26,6 +26,14 @@ def list_holidays_endpoint():
     """Lấy danh sách các ngày nghỉ lễ đã khai báo (SCRUM-224)."""
     from_date = request.args.get("from_date")
     to_date = request.args.get("to_date")
+    year = request.args.get("year")
+    if year and not from_date and not to_date:
+        try:
+            y = int(year)
+            from_date = f"{y:04d}-01-01"
+            to_date = f"{y:04d}-12-31"
+        except ValueError:
+            pass
 
     try:
         items = list_holidays_service(from_date, to_date)

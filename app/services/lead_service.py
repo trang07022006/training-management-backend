@@ -1012,10 +1012,13 @@ def update_lead_callback_date_service(
             )
 
     clean_date = None
-    if callback_date:
-        clean_date = str(callback_date).strip()
+    if callback_date is not None and str(callback_date).strip():
+        raw_val = str(callback_date).strip()
+        if "T" in raw_val:
+            raw_val = raw_val.split("T")[0].strip()
         try:
-            datetime.strptime(clean_date, "%Y-%m-%d")
+            parsed_d = datetime.strptime(raw_val, "%Y-%m-%d").date()
+            clean_date = parsed_d.strftime("%Y-%m-%d")
         except ValueError:
             raise LeadValidationError("INVALID_PARAMS", "Định dạng ngày nhắc gọi lại không hợp lệ (YYYY-MM-DD).")
 
