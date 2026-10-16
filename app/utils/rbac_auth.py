@@ -22,7 +22,7 @@ from app.services.session_service import (
 )
 
 
-def permission_required(permission_code: str):
+def permission_required(permission_code: str | list[str] | tuple[str, ...], message: str | None = None):
     """
     Decorator bảo vệ API endpoint theo permission code (SCRUM-70).
     Luồng kiểm tra:
@@ -32,14 +32,17 @@ def permission_required(permission_code: str):
     4. Không đủ quyền -> 403 (FORBIDDEN).
     5. Đủ quyền -> ALLOW.
     """
+    codes = [permission_code] if isinstance(permission_code, str) else list(permission_code or [])
+    codes = [c.strip() for c in codes if isinstance(c, str) and c.strip()]
+
     def decorator(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
             # 0. Nguyên tắc Default Deny (SCRUM-71): Nếu permission_code không được cấu hình rõ ràng -> DENY
-            if not isinstance(permission_code, str) or not permission_code.strip():
+            if not codes:
                 return jsonify({
                     "code": "FORBIDDEN",
-                    "message": "Bạn không có quyền thực hiện thao tác này.",
+                    "message": message or "Bạn không có quyền thực hiện thao tác này.",
                 }), 403
 
             # 1. Xác thực JWT authentication
@@ -86,10 +89,22 @@ def permission_required(permission_code: str):
                         "message": "Hệ thống lưu trữ phiên tạm thời không khả dụng",
                     }), 503
 
+            # 2.5 Kiểm tra bắt buộc đổi mật khẩu khi đăng nhập lần đầu (SCRUM-215)
+            try:
+                from app.repositories import user_repository
+                user_record = user_repository.get_user_by_id(user_id)
+                if user_record and getattr(user_record, "must_change_password", False):
+                    return jsonify({
+                        "code": "PASSWORD_CHANGE_REQUIRED",
+                        "message": "Bạn cần đổi mật khẩu trước khi tiếp tục sử dụng hệ thống.",
+                    }), 403
+            except Exception:
+                pass
+
             # 3. Kiểm tra Authorization từ database (Default Deny)
             # Tuyệt đối không lấy user_id hoặc permission từ request body/headers/params
             try:
-                allowed = has_permission(user_id, permission_code)
+                allowed = any(has_permission(user_id, code) for code in codes)
             except MySQLError:
                 return jsonify({
                     "code": "DATABASE_ERROR",
@@ -104,9 +119,11 @@ def permission_required(permission_code: str):
             if not allowed:
                 return jsonify({
                     "code": "FORBIDDEN",
-                    "message": "Bạn không có quyền thực hiện thao tác này.",
+                    "message": message or "Bạn không có quyền thực hiện thao tác này.",
                 }), 403
 
+            g.user_id = user_id
+            g.session_id = session_id
             return view(*args, **kwargs)
 
         return wrapped

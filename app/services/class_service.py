@@ -1,0 +1,365 @@
+"""
+Tầng nghiệp vụ Quản lý Lớp học (Class Service) - SCRUM-217.
+- Khai báo và mở lớp từ chương trình đào tạo (217-01).
+- Đảm bảo mã lớp duy nhất (217-02).
+- Vòng đời trạng thái: Chuẩn bị -> Đang học -> Kết thúc -> Huỷ (217-03).
+- Tự động sao chép danh sách môn học từ chương trình sang lớp (217-04).
+"""
+
+from datetime import datetime, timezone
+import logging
+import uuid
+from app.models.class_entity import (
+    CLASS_STATUS_CANCELLED,
+    CLASS_STATUS_COMPLETED,
+    CLASS_STATUS_IN_PROGRESS,
+    CLASS_STATUS_PREPARING,
+    CLASS_STATUS_LABELS,
+    CLASS_STATUSES,
+    VIETNAMESE_TO_STATUS,
+    ClassEntity,
+)
+from app.repositories import class_repository, training_program_repository, user_repository, user_role_repository
+
+logger = logging.getLogger(__name__)
+
+
+class ClassServiceError(Exception):
+    """Lớp ngoại lệ cơ sở cho nghiệp vụ Class."""
+
+    def __init__(self, code: str, message: str, status_code: int = 400):
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message)
+
+
+class ClassValidationError(ClassServiceError):
+    def __init__(self, code: str, message: str):
+        super().__init__(code, message, status_code=400)
+
+
+class ClassCodeAlreadyExistsError(ClassServiceError):
+    def __init__(self, message: str = "Mã lớp đã tồn tại. Vui lòng chọn mã lớp khác."):
+        super().__init__("CLASS_CODE_ALREADY_EXISTS", message, status_code=409)
+
+
+class ClassNotFoundError(ClassServiceError):
+    def __init__(self, message: str = "Không tìm thấy lớp học."):
+        super().__init__("CLASS_NOT_FOUND", message, status_code=404)
+
+
+class ProgramNotFoundError(ClassServiceError):
+    def __init__(self, message: str = "Chương trình đào tạo không tồn tại trong hệ thống."):
+        super().__init__("PROGRAM_NOT_FOUND", message, status_code=404)
+
+
+class InvalidLifecycleStatusError(ClassServiceError):
+    def __init__(self, message: str = "Trạng thái lớp không hợp lệ. Chỉ chấp nhận 4 trạng thái: Chuẩn bị, Đang học, Kết thúc, Huỷ."):
+        super().__init__("INVALID_CLASS_STATUS", message, status_code=400)
+
+
+def create_class_service(payload: dict) -> dict:
+    """
+    Khai báo và mở lớp mới từ chương trình đào tạo (SCRUM-217 - 217-01 -> 217-04).
+    Yêu cầu:
+    1. Mã lớp là bắt buộc và DUY NHẤT trong hệ thống (217-02).
+    2. Chương trình đào tạo là bắt buộc và phải tồn tại.
+    3. Ngày khai giảng dự kiến, sĩ số tối đa (> 0), hình thức học.
+    4. Trạng thái khởi tạo: Chuẩn bị (preparing) (217-03).
+    5. Danh sách môn học được tự động sao chép từ chương trình khi mở lớp (217-04).
+    """
+    # 1. Mã lớp
+    class_code = payload.get("class_code")
+    if not isinstance(class_code, str) or not class_code.strip():
+        raise ClassValidationError("CLASS_CODE_REQUIRED", "Mã lớp học là bắt buộc.")
+    class_code = class_code.strip().upper()
+
+    # Kiểm tra mã lớp duy nhất (217-02)
+    existing = class_repository.get_class_by_code(class_code)
+    if existing:
+        raise ClassCodeAlreadyExistsError("Mã lớp đã tồn tại. Vui lòng chọn mã lớp khác.")
+
+    # 2. Chương trình đào tạo
+    program_id = payload.get("program_id")
+    if not isinstance(program_id, str) or not program_id.strip():
+        raise ClassValidationError("PROGRAM_REQUIRED", "Chương trình đào tạo là bắt buộc.")
+    program_id = program_id.strip()
+
+    # Kiểm tra chương trình có tồn tại
+    program = training_program_repository.get_training_program_by_id(program_id)
+    if not program:
+        raise ProgramNotFoundError("Chương trình đào tạo được chọn không tồn tại.")
+
+    # 3. Ngày khai giảng dự kiến
+    expected_start_date = payload.get("expected_start_date")
+    if expected_start_date:
+        if isinstance(expected_start_date, str):
+            expected_start_date = expected_start_date.strip()
+            if not expected_start_date:
+                expected_start_date = None
+            else:
+                try:
+                    # Kiểm tra format YYYY-MM-DD
+                    datetime.strptime(expected_start_date, "%Y-%m-%d")
+                except ValueError:
+                    raise ClassValidationError("INVALID_DATE", "Ngày khai giảng dự kiến không đúng định dạng YYYY-MM-DD.")
+    else:
+        expected_start_date = None
+
+    # 4. Sĩ số tối đa
+    max_capacity_raw = payload.get("max_capacity", 30)
+    try:
+        max_capacity = int(max_capacity_raw)
+        if max_capacity <= 0:
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise ClassValidationError("INVALID_CAPACITY", "Sĩ số tối đa phải là số nguyên dương lớn hơn 0.")
+
+    # 5. Hình thức học
+    learning_mode = payload.get("learning_mode", "offline")
+    if isinstance(learning_mode, str) and learning_mode.strip():
+        learning_mode = learning_mode.strip()
+    else:
+        learning_mode = "offline"
+
+    # 6. Trạng thái khởi tạo: Chuẩn bị
+    status = payload.get("status")
+    if status:
+        normalized_status = normalize_status(status)
+        if not normalized_status:
+            raise InvalidLifecycleStatusError()
+        status = normalized_status
+    else:
+        status = CLASS_STATUS_PREPARING
+
+    # 7. Lưu lớp học
+    class_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    entity = ClassEntity(
+        id=class_id,
+        class_code=class_code,
+        program_id=program_id,
+        expected_start_date=expected_start_date,
+        max_capacity=max_capacity,
+        learning_mode=learning_mode,
+        status=status,
+        created_at=now,
+        updated_at=now,
+    )
+    created = class_repository.create_class(entity)
+
+    # 8. Sao chép danh sách môn học từ chương trình sang lớp (217-04)
+    copied_count = class_repository.copy_program_subjects_to_class(class_id, program_id)
+    logger.info("Created class %s and copied %d subjects from program %s", class_code, copied_count, program_id)
+
+    # 9. Đọc danh sách môn học đã sao chép để trả về
+    subjects = class_repository.get_class_subjects(class_id)
+    result = created.to_dict()
+    result["subjects"] = [s.to_dict() for s in subjects]
+    result["copied_subjects_count"] = copied_count
+    return result
+
+
+def normalize_status(status_input: str) -> str | None:
+    """Chuẩn hóa trạng thái vòng đời từ mã hoặc nhãn tiếng Việt."""
+    if not isinstance(status_input, str):
+        return None
+    val = status_input.strip().lower()
+    if val in CLASS_STATUSES:
+        return val
+    if val in VIETNAMESE_TO_STATUS:
+        return VIETNAMESE_TO_STATUS[val]
+    return None
+
+
+def update_class_lifecycle_status_service(class_id: str, new_status: str) -> dict:
+    """
+    Cập nhật trạng thái vòng đời của lớp học (SCRUM-217 - 217-03).
+    Chỉ chấp nhận 4 trạng thái: Chuẩn bị -> Đang học -> Kết thúc -> Huỷ.
+    """
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError()
+
+    normalized = normalize_status(new_status)
+    if not normalized:
+        raise InvalidLifecycleStatusError()
+
+    updated = class_repository.update_class_status(class_id, normalized)
+    if not updated:
+        raise ClassNotFoundError()
+
+    subjects = class_repository.get_class_subjects(class_id)
+    res = updated.to_dict()
+    res["subjects"] = [s.to_dict() for s in subjects]
+    return res
+
+
+def get_class_detail_service(class_id: str) -> dict:
+    """Lấy thông tin chi tiết lớp học kèm danh sách môn học đã sao chép (217-01 & 217-04)."""
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError()
+
+    subjects = class_repository.get_class_subjects(class_id)
+    res = cls.to_dict()
+    res["subjects"] = [s.to_dict() for s in subjects]
+    return res
+
+
+def get_class_subjects_service(class_id: str) -> list[dict]:
+    """Lấy riêng danh sách môn học của lớp học (217-04)."""
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError()
+
+    subjects = class_repository.get_class_subjects(class_id)
+    return [s.to_dict() for s in subjects]
+
+
+def list_classes_service(
+    program_id: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    instructor_id: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """Danh sách các lớp học có phân trang và bộ lọc (SCRUM-217 & SCRUM-219)."""
+    page = max(1, page)
+    page_size = max(1, min(100, page_size))
+    if status:
+        status = normalize_status(status) or status
+
+    classes, total = class_repository.list_classes(
+        program_id=program_id,
+        status=status,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+        instructor_id=instructor_id,
+        page=page,
+        page_size=page_size,
+    )
+    return {
+        "items": [c.to_dict() for c in classes],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total > 0 else 0,
+    }
+
+
+def get_class_subject_instructors_service(class_id: str, class_subject_id: str) -> dict:
+    """Lấy danh sách giảng viên chính và trợ giảng của một môn trong lớp (SCRUM-220)."""
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError("Không tìm thấy lớp học.")
+
+    cs = class_repository.get_class_subject_by_id(class_subject_id)
+    if not cs or cs["class_id"] != class_id:
+        raise ClassServiceError("SUBJECT_NOT_FOUND", "Môn học không tồn tại trong lớp này.", 404)
+
+    rows = class_repository.get_class_subject_instructors(class_subject_id)
+    main_instructor = None
+    assistants = []
+    for r in rows:
+        info = {
+            "id": r["instructor_id"],
+            "name": r["instructor_name"],
+            "email": r["instructor_email"],
+            "role": r["instructor_role"],
+        }
+        if r["role_type"] == "main":
+            main_instructor = info
+        else:
+            assistants.append(info)
+
+    return {
+        "class_id": class_id,
+        "class_subject_id": class_subject_id,
+        "main_instructor": main_instructor,
+        "assistants": assistants,
+    }
+
+
+def get_instructor_candidates_service() -> list[dict]:
+    """Lấy danh sách các ứng viên giảng viên đủ điều kiện để phân công (SCRUM-220)."""
+    return class_repository.list_instructor_candidates()
+
+
+def _get_user_roles(user_id: str, user_record=None) -> set[str]:
+    """Lấy tập hợp tất cả các mã vai trò của người dùng từ bảng users và user_roles."""
+    roles = set(user_role_repository.get_role_codes_by_user_id(user_id))
+    if user_record and getattr(user_record, "role", None):
+        roles.add(user_record.role)
+    elif not user_record:
+        u = user_repository.get_user_by_id(user_id)
+        if u and getattr(u, "role", None):
+            roles.add(u.role)
+    return roles
+
+
+def assign_instructors_service(class_id: str, class_subject_id: str, payload: dict) -> dict:
+    """
+    Phân công giảng viên chính và trợ giảng cho môn học của lớp (SCRUM-220).
+    - Giảng viên chính: tối đa 1 người, tài khoản phải có vai trò 'trainer' (220-02).
+    - Trợ giảng: 0..n người, tài khoản phải có vai trò 'trainer' (không dùng blacklist).
+    """
+    cls = class_repository.get_class_by_id(class_id)
+    if not cls:
+        raise ClassNotFoundError("Không tìm thấy lớp học.")
+
+    cs = class_repository.get_class_subject_by_id(class_subject_id)
+    if not cs or cs["class_id"] != class_id:
+        raise ClassServiceError("SUBJECT_NOT_FOUND", "Môn học không tồn tại trong lớp này.", 404)
+
+    main_instructor_id = payload.get("main_instructor_id")
+    if main_instructor_id is not None and str(main_instructor_id).strip():
+        main_instructor_id = str(main_instructor_id).strip()
+        user_record = user_repository.get_user_by_id(main_instructor_id)
+        if not user_record:
+            raise ClassServiceError("INSTRUCTOR_NOT_FOUND", "Tài khoản giảng viên chính không tồn tại trong hệ thống.", 404)
+        roles = _get_user_roles(main_instructor_id, user_record)
+        if "trainer" not in roles:
+            raise ClassServiceError(
+                "INVALID_INSTRUCTOR_ROLE",
+                "Chỉ tài khoản có vai trò Giảng viên (trainer) mới được phân công làm giảng viên chính.",
+                400,
+            )
+    else:
+        main_instructor_id = None
+
+    assistant_ids_raw = payload.get("assistant_ids", [])
+    if not isinstance(assistant_ids_raw, list):
+        raise ClassServiceError("INVALID_ASSISTANT_LIST", "Danh sách trợ giảng phải là một mảng.", 400)
+
+    validated_assistant_ids = []
+    for asst_id in assistant_ids_raw:
+        if not asst_id:
+            continue
+        asst_id_str = str(asst_id).strip()
+        asst_user = user_repository.get_user_by_id(asst_id_str)
+        if not asst_user:
+            raise ClassServiceError("ASSISTANT_NOT_FOUND", "Tài khoản trợ giảng không tồn tại trong hệ thống.", 404)
+        # Kiểm tra vai trò của trợ giảng (SCRUM-220): Phải có vai trò trainer
+        asst_roles = _get_user_roles(asst_id_str, asst_user)
+        if "trainer" not in asst_roles:
+            raise ClassServiceError(
+                "INVALID_ASSISTANT_ROLE",
+                "Chỉ tài khoản có vai trò Giảng viên (trainer) mới được phân công làm trợ giảng.",
+                400,
+            )
+        if asst_id_str not in validated_assistant_ids:
+            validated_assistant_ids.append(asst_id_str)
+
+    class_repository.assign_instructors_to_class_subject(
+        class_subject_id=class_subject_id,
+        main_instructor_id=main_instructor_id,
+        assistant_ids=validated_assistant_ids,
+    )
+
+    return get_class_subject_instructors_service(class_id, class_subject_id)

@@ -1,8 +1,13 @@
 import logging
 import os
+from pathlib import Path
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from dotenv import load_dotenv
+
+backend_dir = Path(__file__).resolve().parents[2]
+load_dotenv(backend_dir / ".env", override=False)
 
 logger = logging.getLogger(__name__)
 
