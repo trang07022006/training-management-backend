@@ -25,13 +25,26 @@ INITIAL_PERMISSIONS = [
     Permission(id="perm-id-course-manage", code="course.manage", name="Quản trị khóa học", description="Tạo, sửa và cập nhật tài liệu đào tạo"),
     Permission(id="perm-id-session-view", code="session.view", name="Xem phiên làm việc", description="Xem phiên đăng nhập hiện tại và lịch sử phiên"),
     Permission(id="perm-id-session-revoke", code="session.revoke", name="Thu hồi phiên", description="Thu hồi phiên làm việc của bản thân hoặc người khác"),
+    Permission(id="perm-id-schedule-view", code="schedule.view", name="Xem thời khóa biểu", description="Xem thời khóa biểu và lịch giảng dạy/học tập toàn trường"),
+    Permission(id="perm-id-schedule-manage", code="schedule.manage", name="Quản lý thời khóa biểu", description="Tạo, sửa, hủy và điều chỉnh lịch học, thời khóa biểu"),
+    Permission(id="perm-id-schedule-personal-view", code="schedule.personal_view", name="Xem lịch cá nhân", description="Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên"),
 ]
 
 # Danh mục mapping quyền cho từng vai trò
 INITIAL_ROLE_PERMISSIONS_MAP = {
-    "admin": ["user.view", "user.manage", "course.view", "course.manage", "session.view", "session.revoke"],
-    "trainer": ["course.view", "course.manage", "session.view"],
-    "trainee": ["course.view", "session.view"],
+    "admin": [
+        "user.view", "user.manage", "course.view", "course.manage",
+        "session.view", "session.revoke",
+        "schedule.view", "schedule.manage", "schedule.personal_view",
+    ],
+    "trainer": [
+        "course.view", "course.manage", "session.view",
+        "schedule.view", "schedule.personal_view",
+    ],
+    "trainee": [
+        "course.view", "session.view",
+        "schedule.personal_view",
+    ],
     "user": ["session.view"],
 }
 
@@ -46,7 +59,10 @@ BUSINESS_PERMISSIONS = [
 ]
 
 BUSINESS_ROLE_PERMISSIONS_MAP = {
-    "training_manager": ["course.view", "course.manage", "session.view", "lead.delete"],
+    "training_manager": [
+        "user.view", "course.view", "course.manage", "session.view", "lead.delete",
+        "schedule.view", "schedule.manage", "schedule.personal_view",
+    ],
     "consultant": ["course.view", "course.manage", "session.view"],
     "admin": ["lead.delete"],
 }

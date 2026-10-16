@@ -22,22 +22,18 @@ from app.services.session_service import (
 )
 
 
-def permission_required(permission_code: str | list[str] | tuple[str, ...], message: str | None = None):
+def permission_required(permission_code, message: str | None = None):
     """
     Decorator bảo vệ API endpoint theo permission code (SCRUM-70).
-    Luồng kiểm tra:
-    1. Xác thực Authentication (JWT + Session trong database). Chưa đăng nhập -> 401.
-    2. Xác định identity (user_id từ token/session hợp lệ, không tin client).
-    3. Kiểm tra Authorization qua RBAC service / database.
-    4. Không đủ quyền -> 403 (FORBIDDEN).
-    5. Đủ quyền -> ALLOW.
+    Hỗ trợ chuỗi, danh sách/tuple hoặc callable trả về chuỗi/danh sách mã quyền.
     """
-    codes = [permission_code] if isinstance(permission_code, str) else list(permission_code or [])
-    codes = [c.strip() for c in codes if isinstance(c, str) and c.strip()]
-
     def decorator(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
+            raw = permission_code(*args, **kwargs) if callable(permission_code) else permission_code
+            codes = [raw] if isinstance(raw, str) else list(raw or [])
+            codes = [c.strip() for c in codes if isinstance(c, str) and c.strip()]
+
             # 0. Nguyên tắc Default Deny (SCRUM-71): Nếu permission_code không được cấu hình rõ ràng -> DENY
             if not codes:
                 return jsonify({

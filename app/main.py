@@ -30,12 +30,19 @@ from app.routes.schedule_routes import schedule_bp
 from app.routes.classroom_routes import classroom_bp
 
 
+from app.database.ensure_business_roles import ensure_business_roles
+
 app = Flask(__name__)
 
 configure_jwt(app)
 configure_avatar(app)
 jwt.init_app(app)
 register_jwt_handlers(jwt)
+
+try:
+    ensure_business_roles()
+except Exception as e:
+    app.logger.warning(f"Could not auto-ensure business roles: {e}")
 
 CORS(app)
 

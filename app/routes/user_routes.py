@@ -252,8 +252,18 @@ def get_user_avatar():
 
 
 
+def _list_users_required_permissions():
+    """Xác định quyền truy cập danh sách người dùng.
+    Nếu đang tra cứu giảng viên (role=trainer) cho việc xếp lịch, phân công,
+    chấp nhận các quyền quản lý khóa học hoặc thời khóa biểu.
+    """
+    if (request.args.get("role") or "").strip().lower() == "trainer":
+        return ["user.view", "course.manage", "course.view", "schedule.manage", "schedule.view"]
+    return "user.view"
+
+
 @user_bp.get("/users")
-@permission_required("user.view")
+@permission_required(_list_users_required_permissions)
 def list_users():
     """
     Lấy danh sách người dùng có phân trang - Yêu cầu quyền user.view (SCRUM-83).

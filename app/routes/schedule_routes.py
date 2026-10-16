@@ -387,7 +387,7 @@ def cancel_session(session_id):
 
 @schedule_bp.get("/v1/schedules/notifications/my")
 @schedule_bp.get("/schedules/notifications/my")
-@permission_required("schedule.personal_view")
+@permission_required(["schedule.personal_view", "schedule.view", "schedule.manage"])
 def get_my_schedule_notifications_endpoint():
     """
     API lấy danh sách thông báo thay đổi thời khóa biểu của chính người dùng đăng nhập (SCRUM-226 AC 3).

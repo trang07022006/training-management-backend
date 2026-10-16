@@ -43,6 +43,7 @@ MIGRATIONS = [
     "025_create_classes_and_class_subjects.sql",
     "026_create_class_enrollments_table.sql",
     "027_create_class_subject_instructors_table.sql",
+    "028_create_classrooms_table.sql",
     "029_create_holidays_table.sql",
     "030_create_class_schedules_table.sql",
     "031_create_schedule_notifications_table.sql",
