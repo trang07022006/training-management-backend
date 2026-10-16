@@ -501,6 +501,22 @@ def import_users():
         }), 500
 
 
+@user_bp.get("/users/<user_id>")
+@permission_required("user.view")
+def get_user_by_id_endpoint(user_id: str):
+    clean_id = (user_id or "").strip()
+    user = user_repository.get_user_by_id(clean_id)
+    if not user:
+        return jsonify({
+            "code": "USER_NOT_FOUND",
+            "message": "Không tìm thấy người dùng.",
+        }), 404
+    return jsonify({
+        "status": "success",
+        "data": user.to_public_dict(),
+    }), 200
+
+
 @user_bp.route("/users/<user_id>", methods=["PUT", "PATCH"])
 @permission_required("user.manage")
 def update_user(user_id: str):

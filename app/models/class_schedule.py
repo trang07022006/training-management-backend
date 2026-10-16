@@ -27,6 +27,20 @@ class ClassSchedule:
     attendance_checked: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    instructor_name: str | None = None
+    instructor_email: str | None = None
+    room_name: str | None = None
+    room_code: str | None = None
+    classroom_id: str | None = None
+    room_type: str | None = None
+    online_link: str | None = None
+    is_online: bool = False
+    online_url: str | None = None
+    is_legacy_room: bool = False
+    legacy_room_raw: str | None = None
+    subject_name: str | None = None
+    subject_code: str | None = None
+    class_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         date_str = None
@@ -53,8 +67,11 @@ class ClassSchedule:
         return {
             "id": self.id,
             "class_id": self.class_id,
+            "class_code": self.class_code,
             "class_subject_id": self.class_subject_id,
             "subject_id": self.subject_id,
+            "subject_name": self.subject_name,
+            "subject_code": self.subject_code,
             "subject_session_id": self.subject_session_id,
             "session_number": self.session_number,
             "topic": self.topic,
@@ -63,7 +80,18 @@ class ClassSchedule:
             "start_time": start_time_str,
             "end_time": end_time_str,
             "room_id": self.room_id,
+            "room_code": self.room_code,
+            "classroom_id": self.classroom_id,
+            "room_name": self.room_name,
+            "room_type": self.room_type,
+            "online_link": self.online_link,
+            "is_online": self.is_online,
+            "online_url": self.online_url,
+            "is_legacy_room": self.is_legacy_room,
+            "legacy_room_raw": self.legacy_room_raw,
             "instructor_id": self.instructor_id,
+            "instructor_name": self.instructor_name,
+            "instructor_email": self.instructor_email,
             "status": self.status,
             "cancellation_reason": self.cancellation_reason,
             "attendance_checked": bool(self.attendance_checked),

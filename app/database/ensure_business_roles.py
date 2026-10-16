@@ -50,6 +50,31 @@ def ensure_business_roles() -> None:
                     ('role-id-admin', 'perm-id-lead-delete', NOW());
             """)
 
+            # 3.5 Bổ sung Permissions và Mapping cho phân hệ Thời khóa biểu (SCRUM-228)
+            cursor.execute("""
+                INSERT INTO permissions (id, code, name, description, created_at, updated_at)
+                VALUES 
+                    ('perm-id-schedule-view', 'schedule.view', 'Xem thời khóa biểu', 'Xem thời khóa biểu và lịch giảng dạy/học tập toàn trường', NOW(), NOW()),
+                    ('perm-id-schedule-manage', 'schedule.manage', 'Quản lý thời khóa biểu', 'Tạo, sửa, hủy và điều chỉnh lịch học, thời khóa biểu', NOW(), NOW()),
+                    ('perm-id-schedule-personal-view', 'schedule.personal_view', 'Xem lịch cá nhân', 'Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên', NOW(), NOW())
+                ON DUPLICATE KEY UPDATE 
+                    name = VALUES(name),
+                    description = VALUES(description),
+                    updated_at = NOW();
+            """)
+
+            cursor.execute("""
+                INSERT IGNORE INTO role_permissions (role_id, permission_id, created_at)
+                VALUES 
+                    ('role-id-admin', 'perm-id-schedule-view', NOW()),
+                    ('role-id-admin', 'perm-id-schedule-manage', NOW()),
+                    ('role-id-training-manager', 'perm-id-schedule-view', NOW()),
+                    ('role-id-training-manager', 'perm-id-schedule-manage', NOW()),
+                    ('role-id-trainer', 'perm-id-schedule-view', NOW()),
+                    ('role-id-trainer', 'perm-id-schedule-personal-view', NOW()),
+                    ('role-id-trainee', 'perm-id-schedule-personal-view', NOW());
+            """)
+
             # 4. SCRUM-213: Bổ sung bảng lead_status_history và trường rejection_reason
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS lead_status_history (
@@ -269,9 +294,42 @@ def ensure_business_roles() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
 
+            # 12. SCRUM-221: Bảng classrooms
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS classrooms (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    room_code VARCHAR(50) NOT NULL UNIQUE,
+                    room_name VARCHAR(100) NOT NULL,
+                    room_type VARCHAR(20) NOT NULL DEFAULT 'physical',
+                    capacity INT NULL,
+                    online_link TEXT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'active',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    INDEX idx_classrooms_type (room_type),
+                    INDEX idx_classrooms_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            # 13. SCRUM-220: Bảng class_subject_instructors
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS class_subject_instructors (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    class_subject_id VARCHAR(36) NOT NULL,
+                    instructor_id VARCHAR(36) NOT NULL,
+                    role_type VARCHAR(50) NOT NULL DEFAULT 'main',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_class_subject_instructor (class_subject_id, instructor_id),
+                    INDEX idx_csi_class_subject (class_subject_id),
+                    INDEX idx_csi_instructor (instructor_id),
+                    INDEX idx_csi_role_type (role_type)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
             connection.commit()
         connection.close()
-        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, class schemas, enrollments, holidays, and class schedules ensured successfully.")
+        logger.info("✓ Business roles, permissions, lead history, care logs, student schemas, class schemas, enrollments, holidays, class schedules, classrooms, and instructor assignments ensured successfully.")
     except Exception as e:
         logger.warning("Could not auto-ensure business roles and schemas: %s", e)
 

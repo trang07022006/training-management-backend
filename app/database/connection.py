@@ -7,7 +7,7 @@ from mysql.connector.errors import PoolError
 from dotenv import load_dotenv
 
 backend_dir = Path(__file__).resolve().parents[2]
-load_dotenv(backend_dir / ".env", override=True)
+load_dotenv(backend_dir / ".env", override=False)
 
 _pool_lock = threading.Lock()
 _connection_pool = None

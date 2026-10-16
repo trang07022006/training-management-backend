@@ -78,6 +78,21 @@ def list_classes_endpoint():
     date_from = request.args.get("date_from") or request.args.get("from_date")
     date_to = request.args.get("date_to") or request.args.get("to_date")
     instructor_id = request.args.get("instructor_id")
+
+    # Scope giảng viên (SCRUM-220 - 220-03): Giảng viên chỉ thấy lớp mình được phân công
+    try:
+        from flask_jwt_extended import get_jwt_identity
+        from app.repositories import user_repository, user_role_repository
+        current_user_id = get_jwt_identity()
+        if current_user_id:
+            user_record = user_repository.get_user_by_id(current_user_id)
+            user_roles = set(user_role_repository.get_role_codes_by_user_id(current_user_id))
+            if user_record and getattr(user_record, "role", None):
+                user_roles.add(user_record.role)
+            if "trainer" in user_roles and not (user_roles & {"admin", "training_manager"}):
+                instructor_id = user_record.id
+    except Exception:
+        pass
     try:
         page = int(request.args.get("page", 1))
     except (ValueError, TypeError):
@@ -211,3 +226,97 @@ def get_class_subjects_endpoint(class_id: str):
             "code": "DATABASE_ERROR",
             "message": "Lỗi cơ sở dữ liệu khi truy xuất môn học của lớp.",
         }), 500
+
+
+@class_bp.get("/v1/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.get("/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@permission_required("course.view")
+def get_class_subject_instructors_endpoint(class_id: str, class_subject_id: str):
+    """
+    API xem phân công giảng viên chính và trợ giảng của một môn trong lớp (SCRUM-220).
+    Phân quyền: course.view.
+    """
+    try:
+        result = class_service.get_class_subject_instructors_service(class_id, class_subject_id)
+        return jsonify({
+            "status": "success",
+            "data": result,
+        }), 200
+    except ClassServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi đọc danh sách phân công giảng viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy xuất thông tin phân công giảng viên.",
+        }), 500
+
+
+@class_bp.post("/v1/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.post("/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.put("/v1/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@class_bp.put("/classes/<class_id>/subjects/<class_subject_id>/instructors")
+@permission_required("course.manage")
+def assign_instructors_endpoint(class_id: str, class_subject_id: str):
+    """
+    API phân công giảng viên chính và trợ giảng theo từng môn của lớp (SCRUM-220).
+    Phân quyền: Quản lý đào tạo (course.manage).
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu không hợp lệ.",
+        }), 400
+
+    try:
+        result = class_service.assign_instructors_service(class_id, class_subject_id, payload)
+        return jsonify({
+            "status": "success",
+            "code": "INSTRUCTORS_ASSIGNED",
+            "message": "Phân công giảng viên và trợ giảng cho môn học thành công.",
+            "data": result,
+        }), 200
+    except ClassServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi phân công giảng viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi lưu thông tin phân công giảng viên.",
+        }), 500
+
+
+@class_bp.get("/v1/classes/instructors/candidates")
+@class_bp.get("/classes/instructors/candidates")
+@permission_required("course.view")
+def get_instructor_candidates_endpoint():
+    """
+    API lấy danh sách ứng viên giảng viên để phân công môn học (SCRUM-220).
+    Chỉ yêu cầu quyền xem lớp/khóa học (course.view), không cần quyền quản trị tài khoản toàn bộ.
+    """
+    try:
+        candidates = class_service.get_instructor_candidates_service()
+        return jsonify({
+            "status": "success",
+            "data": candidates,
+        }), 200
+    except Exception as err:
+        logger.error("Lỗi khi lấy danh sách ứng viên giảng viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "CANDIDATE_FETCH_FAILED",
+            "message": "Không thể tải danh sách giảng viên. Vui lòng thử lại sau.",
+        }), 500
+

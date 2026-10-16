@@ -92,26 +92,7 @@ def enroll_students_service(class_id: str, payload: dict, actor_user_id: str) ->
         if not student:
             raise StudentNotFoundError(f"Không tìm thấy học viên với ID '{sid}'.")
 
-    # 4. Kiểm tra học viên đã được ghi danh vào lớp chưa (RULE 2: Duplicate Guard)
-    already_enrolled = enrollment_repository.get_already_enrolled_student_ids(class_id, student_ids)
-    if already_enrolled:
-        # Lấy thông tin học viên đầu tiên bị trùng để hiển thị thông báo chi tiết
-        dup_student = student_repository.get_student_by_id(already_enrolled[0])
-        student_desc = f"'{dup_student.full_name}' ({dup_student.student_code})" if dup_student else already_enrolled[0]
-        raise StudentAlreadyEnrolledError(
-            f"Học viên {student_desc} đã được ghi danh vào lớp học này."
-        )
-
-    # 5. Kiểm tra sĩ số lớp học (RULE 1: Capacity Guard)
-    current_enrolled = enrollment_repository.count_enrollments_by_class_id(class_id)
-    requested_count = len(student_ids)
-    if current_enrolled + requested_count > class_obj.max_capacity:
-        raise ClassCapacityFullError(
-            f"Số lượng học viên ghi danh ({requested_count}) vượt quá sĩ số còn lại của lớp. "
-            f"Hiện tại lớp đã có {current_enrolled}/{class_obj.max_capacity} học viên."
-        )
-
-    # 6. Tạo danh sách Enrollment objects và ghi nhận audit
+    # 4. Chuẩn bị danh sách Enrollment objects
     now = datetime.now(timezone.utc)
     enrollments_to_create = [
         Enrollment(
@@ -127,8 +108,32 @@ def enroll_students_service(class_id: str, payload: dict, actor_user_id: str) ->
         for sid in student_ids
     ]
 
-    # 7. Lưu vào database với transaction all-or-nothing
-    created = enrollment_repository.create_enrollments(enrollments_to_create)
+    # 5. Thực hiện ghi danh nguyên tử có khóa hàng (Atomic Guard) chống race condition (SCRUM-218)
+    try:
+        created, new_total_enrolled, max_cap = enrollment_repository.create_enrollments_atomic(
+            class_id=class_id,
+            enrollments=enrollments_to_create,
+            student_ids=student_ids,
+        )
+    except RuntimeError as err:
+        err_str = str(err)
+        if err_str.startswith("STUDENT_ALREADY_ENROLLED:"):
+            dup_id = err_str.split(":", 1)[1]
+            dup_student = student_repository.get_student_by_id(dup_id)
+            student_desc = f"'{dup_student.full_name}' ({dup_student.student_code})" if dup_student else dup_id
+            raise StudentAlreadyEnrolledError(f"Học viên {student_desc} đã được ghi danh vào lớp học này.")
+        elif err_str.startswith("CLASS_CAPACITY_FULL:"):
+            parts = err_str.split(":")
+            curr = parts[1]
+            max_c = parts[2]
+            req = parts[3]
+            raise ClassCapacityFullError(
+                f"Số lượng học viên ghi danh ({req}) vượt quá sĩ số còn lại của lớp. "
+                f"Hiện tại lớp đã có {curr}/{max_c} học viên."
+            )
+        elif "CLASS_NOT_FOUND" in err_str:
+            raise ClassNotFoundError()
+        raise
 
     logger.info(
         "Ghi danh thành công %d học viên vào lớp %s (%s) bởi actor %s",
@@ -142,8 +147,8 @@ def enroll_students_service(class_id: str, payload: dict, actor_user_id: str) ->
         "class_id": class_id,
         "class_code": class_obj.class_code,
         "enrolled_count": len(created),
-        "total_enrolled": current_enrolled + len(created),
-        "max_capacity": class_obj.max_capacity,
+        "total_enrolled": new_total_enrolled,
+        "max_capacity": max_cap,
         "items": [c.to_dict() for c in created],
     }
 

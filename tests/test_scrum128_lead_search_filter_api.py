@@ -491,7 +491,7 @@ class Scrum128LeadSearchFilterApiTests(unittest.TestCase):
 
         # 1. Chỉ có from_date=2026-10-11
         res_from = self.client.get(
-            "/api/v1/leads?from_date=2026-10-11&page_size=100",
+            "/api/v1/leads?from_date=2026-10-11&sort_order=ASC&page_size=100",
             headers=self.auth_headers,
         )
         self.assertEqual(res_from.status_code, 200)

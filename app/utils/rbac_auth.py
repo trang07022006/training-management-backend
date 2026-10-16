@@ -22,7 +22,7 @@ from app.services.session_service import (
 )
 
 
-def permission_required(permission_code: str):
+def permission_required(permission_code: str | list[str] | tuple[str, ...], message: str | None = None):
     """
     Decorator bảo vệ API endpoint theo permission code (SCRUM-70).
     Luồng kiểm tra:
@@ -32,14 +32,17 @@ def permission_required(permission_code: str):
     4. Không đủ quyền -> 403 (FORBIDDEN).
     5. Đủ quyền -> ALLOW.
     """
+    codes = [permission_code] if isinstance(permission_code, str) else list(permission_code or [])
+    codes = [c.strip() for c in codes if isinstance(c, str) and c.strip()]
+
     def decorator(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
             # 0. Nguyên tắc Default Deny (SCRUM-71): Nếu permission_code không được cấu hình rõ ràng -> DENY
-            if not isinstance(permission_code, str) or not permission_code.strip():
+            if not codes:
                 return jsonify({
                     "code": "FORBIDDEN",
-                    "message": "Bạn không có quyền thực hiện thao tác này.",
+                    "message": message or "Bạn không có quyền thực hiện thao tác này.",
                 }), 403
 
             # 1. Xác thực JWT authentication
@@ -101,7 +104,7 @@ def permission_required(permission_code: str):
             # 3. Kiểm tra Authorization từ database (Default Deny)
             # Tuyệt đối không lấy user_id hoặc permission từ request body/headers/params
             try:
-                allowed = has_permission(user_id, permission_code)
+                allowed = any(has_permission(user_id, code) for code in codes)
             except MySQLError:
                 return jsonify({
                     "code": "DATABASE_ERROR",
@@ -116,7 +119,7 @@ def permission_required(permission_code: str):
             if not allowed:
                 return jsonify({
                     "code": "FORBIDDEN",
-                    "message": "Bạn không có quyền thực hiện thao tác này.",
+                    "message": message or "Bạn không có quyền thực hiện thao tác này.",
                 }), 403
 
             g.user_id = user_id

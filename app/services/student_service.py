@@ -250,7 +250,7 @@ def _get_student_classes(student_id: str) -> tuple[dict | None, list[dict]]:
                 WHERE table_schema = DATABASE() AND table_name = 'class_enrollments';
             """)
             if cursor.fetchone()["cnt"] == 0:
-                return None, []
+                return None, [], []
 
             cursor.execute("""
                 SELECT 
@@ -272,10 +272,10 @@ def _get_student_classes(student_id: str) -> tuple[dict | None, list[dict]]:
             """, (student_id,))
             rows = cursor.fetchall()
             if not rows:
-                return None, []
+                return None, [], []
 
-            current = None
-            history = []
+            current_classes = []
+            class_history = []
             for r in rows:
                 cls_info = {
                     "enrollment_id": r["enrollment_id"],
@@ -289,47 +289,37 @@ def _get_student_classes(student_id: str) -> tuple[dict | None, list[dict]]:
                     "program_code": r.get("program_code"),
                     "program_name": r.get("program_name"),
                 }
-                if r["class_status"] in ("in_progress", "ongoing", "studying") and not current:
-                    current = cls_info
+                # Phân loại theo trạng thái nghiệp vụ thực tế (SCRUM-216):
+                # Các lớp đang học (in_progress, ongoing, studying) hoặc chuẩn bị mở (preparing)
+                # và ghi danh còn hiệu lực (không bị cancelled, dropped, withdrawn) là lớp đang học.
+                is_active_class = r["class_status"] in ("in_progress", "ongoing", "studying", "preparing")
+                is_active_enrollment = r.get("enrollment_status") not in ("cancelled", "dropped", "withdrawn")
+                if is_active_class and is_active_enrollment:
+                    current_classes.append(cls_info)
                 else:
-                    history.append(cls_info)
+                    class_history.append(cls_info)
 
-            if not current and rows:
-                first = rows[0]
-                if first["class_status"] in ("preparing", "in_progress", "ongoing"):
-                    current = {
-                        "enrollment_id": first["enrollment_id"],
-                        "class_id": first["class_id"],
-                        "class_code": first["class_code"],
-                        "class_name": first["class_name"] or first["class_code"],
-                        "class_status": first["class_status"],
-                        "enrollment_status": first["enrollment_status"],
-                        "expected_start_date": format_datetime_utc_iso(first["expected_start_date"]) if first.get("expected_start_date") else None,
-                        "enrolled_at": format_datetime_utc_iso(first["enrolled_at"]) if first.get("enrolled_at") else None,
-                        "program_code": first.get("program_code"),
-                        "program_name": first.get("program_name"),
-                    }
-                    history = [h for h in history if h["enrollment_id"] != first["enrollment_id"]]
-
-            return current, history
+            current_class = current_classes[0] if current_classes else None
+            return current_class, current_classes, class_history
     except Exception as e:
         logger.warning("Không thể đọc danh sách lớp học của học viên %s: %s", student_id, e)
-        return None, []
+        return None, [], []
     finally:
         connection.close()
 
 
 def get_student_detail_service(student_id: str) -> dict:
     """
-    Lấy chi tiết hồ sơ học viên kèm lớp đang học và lịch sử lớp (SCRUM-216 - Sub-task 216-01 & 216-02).
+    Lấy chi tiết hồ sơ học viên kèm các lớp đang học và lịch sử lớp (SCRUM-216 - Sub-task 216-01 & 216-02).
     """
     student = student_repository.get_student_by_id(student_id)
     if not student:
         raise StudentNotFoundError()
 
     data = student.to_dict()
-    current_class, class_history = _get_student_classes(student.id)
+    current_class, current_classes, class_history = _get_student_classes(student.id)
     data["current_class"] = current_class
+    data["current_classes"] = current_classes
     data["class_history"] = class_history
     return data
 
@@ -408,8 +398,9 @@ def update_student_profile_service(student_id: str, payload: dict) -> dict:
         raise StudentNotFoundError()
 
     data = updated.to_dict()
-    current_class, class_history = _get_student_classes(updated.id)
+    current_class, current_classes, class_history = _get_student_classes(updated.id)
     data["current_class"] = current_class
+    data["current_classes"] = current_classes
     data["class_history"] = class_history
     return data
 

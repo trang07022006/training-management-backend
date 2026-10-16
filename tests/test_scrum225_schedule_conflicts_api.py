@@ -214,16 +214,18 @@ class TestScheduleConflictsApi:
     @patch("app.utils.rbac_auth.get_jwt_identity")
     @patch("app.utils.rbac_auth.get_jwt")
     @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    @patch("app.repositories.user_role_repository.get_role_codes_by_user_id")
     @patch("app.repositories.class_repository.get_class_by_id")
     @patch("app.repositories.class_schedule_repository.count_schedules_by_class_id")
     @patch("app.repositories.class_schedule_repository.find_conflicts_for_slot")
-    @patch("app.repositories.class_schedule_repository.insert_schedules_batch")
+    @patch("app.repositories.class_schedule_repository.replace_schedules_in_transaction")
     def test_generate_schedule_saves_when_override_confirmed_by_manager(
         self,
-        mock_insert_batch,
+        mock_replace,
         mock_find_conflicts,
         mock_count,
         mock_get_class,
+        mock_roles,
         mock_verify,
         mock_get_jwt,
         mock_get_identity,
@@ -234,6 +236,7 @@ class TestScheduleConflictsApi:
     ):
         """AC 3: Cho phép lưu khi Quản lý đào tạo xác nhận ghi đè (allow_conflict_override=True)."""
         _mock_auth(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, mock_has_perm)
+        mock_roles.return_value = ["training_manager"]
 
         mock_get_class.return_value = ClassEntity(
             id="class-new",
@@ -266,9 +269,9 @@ class TestScheduleConflictsApi:
             }
         ]
 
-        def fake_insert(schedules):
+        def fake_replace(class_id, schedules):
             return schedules
-        mock_insert_batch.side_effect = fake_insert
+        mock_replace.side_effect = fake_replace
 
         payload = {
             "days_of_week": [2],
@@ -289,4 +292,4 @@ class TestScheduleConflictsApi:
         data = resp.get_json()["data"]
         assert data["total_saved"] == 1
         assert data["overridden_conflicts_count"] >= 1
-        mock_insert_batch.assert_called_once()
+        mock_replace.assert_called_once()

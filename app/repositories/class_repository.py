@@ -2,6 +2,7 @@
 Repository truy xuất cơ sở dữ liệu cho Lớp học (Class Repository) - SCRUM-217.
 """
 
+from collections import defaultdict
 from datetime import datetime, timezone
 import logging
 import uuid
@@ -198,7 +199,7 @@ def copy_program_subjects_to_class(class_id: str, program_id: str) -> int:
 
 
 def get_class_subjects(class_id: str) -> list[ClassSubject]:
-    """Lấy danh sách môn học đã sao chép của một lớp học."""
+    """Lấy danh sách môn học đã sao chép của một lớp học kèm thông tin giảng viên (SCRUM-217, SCRUM-220)."""
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
@@ -213,6 +214,38 @@ def get_class_subjects(class_id: str) -> list[ClassSubject]:
                 (class_id,),
             )
             rows = cursor.fetchall()
+            if not rows:
+                return []
+
+            # Lấy thông tin phân công giảng viên cho các môn (SCRUM-220)
+            instructors_by_subject = defaultdict(lambda: {"main": None, "assistants": []})
+            try:
+                cursor.execute(
+                    """
+                    SELECT csi.class_subject_id, csi.role_type,
+                           csi.instructor_id, u.name AS instructor_name, u.email AS instructor_email, u.role AS instructor_role
+                    FROM class_subject_instructors csi
+                    JOIN users u ON csi.instructor_id = u.id
+                    WHERE csi.class_subject_id IN ({})
+                    ORDER BY CASE WHEN csi.role_type = 'main' THEN 1 ELSE 2 END, csi.created_at ASC
+                    """.format(",".join(["%s"] * len(rows))),
+                    [r["id"] for r in rows],
+                )
+                for r in cursor.fetchall():
+                    cs_id = r["class_subject_id"]
+                    info = {
+                        "id": r["instructor_id"],
+                        "name": r["instructor_name"],
+                        "email": r["instructor_email"],
+                        "role": r["instructor_role"],
+                    }
+                    if r["role_type"] == "main":
+                        instructors_by_subject[cs_id]["main"] = info
+                    else:
+                        instructors_by_subject[cs_id]["assistants"].append(info)
+            except Exception:
+                instructors_by_subject = {}
+
             return [
                 ClassSubject(
                     id=row["id"],
@@ -226,9 +259,103 @@ def get_class_subjects(class_id: str) -> list[ClassSubject]:
                     subject_code=row["subject_code"],
                     subject_name=row["subject_name"],
                     credits=row["credits"],
+                    main_instructor=instructors_by_subject.get(row["id"], {}).get("main"),
+                    assistants=instructors_by_subject.get(row["id"], {}).get("assistants", []),
                 )
                 for row in rows
             ]
+    finally:
+        conn.close()
+
+
+def get_class_subject_by_id(class_subject_id: str) -> dict | None:
+    """Lấy thông tin một môn học của lớp theo ID (SCRUM-220)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT cs.*, s.code AS subject_code, s.name AS subject_name, s.credits
+                FROM class_subjects cs
+                JOIN subjects s ON cs.subject_id = s.id
+                WHERE cs.id = %s
+                """,
+                (class_subject_id,),
+            )
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def get_class_subject_instructors(class_subject_id: str) -> list[dict]:
+    """Lấy danh sách giảng viên chính và trợ giảng đã phân công cho môn học (SCRUM-220)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT csi.id, csi.class_subject_id, csi.instructor_id, csi.role_type,
+                       csi.created_at, csi.updated_at,
+                       u.name AS instructor_name, u.email AS instructor_email, u.role AS instructor_role
+                FROM class_subject_instructors csi
+                JOIN users u ON csi.instructor_id = u.id
+                WHERE csi.class_subject_id = %s
+                ORDER BY CASE WHEN csi.role_type = 'main' THEN 1 ELSE 2 END, csi.created_at ASC
+                """,
+                (class_subject_id,),
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def assign_instructors_to_class_subject(
+    class_subject_id: str,
+    main_instructor_id: str | None,
+    assistant_ids: list[str],
+) -> list[dict]:
+    """
+    Phân công giảng viên chính và trợ giảng cho môn học của lớp (SCRUM-220).
+    - Mỗi môn có tối đa 1 giảng viên chính (main).
+    - Có thể có 0..n trợ giảng (assistant).
+    - Chống phân công trùng: trợ giảng không trùng nhau, trợ giảng không trùng với giảng viên chính.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Xóa các phân công cũ của môn
+            cursor.execute("DELETE FROM class_subject_instructors WHERE class_subject_id = %s", (class_subject_id,))
+
+            now = datetime.now(timezone.utc)
+            # Thêm giảng viên chính (nếu có)
+            if main_instructor_id and main_instructor_id.strip():
+                cursor.execute(
+                    """
+                    INSERT INTO class_subject_instructors (id, class_subject_id, instructor_id, role_type, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'main', %s, %s)
+                    """,
+                    (str(uuid.uuid4()), class_subject_id, main_instructor_id.strip(), now, now),
+                )
+
+            # Thêm trợ giảng (bỏ qua nếu trùng lặp hoặc trùng với main_instructor)
+            seen_assts = set()
+            for asst_id in assistant_ids:
+                clean_id = asst_id.strip() if isinstance(asst_id, str) else str(asst_id)
+                if not clean_id or clean_id == (main_instructor_id or "").strip():
+                    continue
+                if clean_id in seen_assts:
+                    continue
+                seen_assts.add(clean_id)
+                cursor.execute(
+                    """
+                    INSERT INTO class_subject_instructors (id, class_subject_id, instructor_id, role_type, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'assistant', %s, %s)
+                    """,
+                    (str(uuid.uuid4()), class_subject_id, clean_id, now, now),
+                )
+
+            conn.commit()
+        return get_class_subject_instructors(class_subject_id)
     finally:
         conn.close()
 
@@ -274,24 +401,20 @@ def list_classes(
 
             # Lọc theo giảng viên được phân công (SCRUM-219 / liên kết SCRUM-220)
             if instructor_id and instructor_id.strip():
-                has_instructor_table = False
-                try:
-                    cursor.execute("SHOW TABLES LIKE 'class_subject_instructors'")
-                    has_instructor_table = cursor.fetchone() is not None
-                except Exception:
-                    has_instructor_table = False
-
-                if has_instructor_table:
-                    where_clauses.append(
-                        """EXISTS (
+                where_clauses.append(
+                    """(
+                        EXISTS (
                             SELECT 1 FROM class_subjects cs
                             INNER JOIN class_subject_instructors csi ON cs.id = csi.class_subject_id
                             WHERE cs.class_id = c.id AND csi.instructor_id = %s
-                        )"""
-                    )
-                    params.append(instructor_id.strip())
-                else:
-                    where_clauses.append("1=0")
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM class_schedules sch
+                            WHERE sch.class_id = c.id AND sch.instructor_id = %s
+                        )
+                    )"""
+                )
+                params.extend([instructor_id.strip(), instructor_id.strip()])
 
             where_sql = " AND ".join(where_clauses)
 
@@ -333,3 +456,38 @@ def delete_class_for_testing(class_id: str) -> None:
             conn.commit()
     finally:
         conn.close()
+
+
+def list_instructor_candidates() -> list[dict]:
+    """
+    Truy xuất danh sách tất cả người dùng có vai trò giảng viên (trainer) đang hoạt động (SCRUM-220).
+    Bao gồm cả người dùng có role trực tiếp trong bảng users hoặc qua bảng user_roles.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            sql = """
+                SELECT DISTINCT u.id, u.name, u.email, u.phone, u.role, u.status
+                FROM users u
+                LEFT JOIN user_roles ur ON u.id = ur.user_id
+                LEFT JOIN roles r ON ur.role_id = r.id
+                WHERE (u.role = 'trainer' OR r.code = 'trainer')
+                  AND (u.status = 'active' OR u.status IS NULL)
+                ORDER BY u.name ASC, u.email ASC
+            """
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "name": r.get("name") or r.get("email") or "Giảng viên",
+                    "email": r.get("email"),
+                    "phone": r.get("phone"),
+                    "role": "trainer",
+                    "status": r.get("status") or "active",
+                }
+                for r in rows
+            ]
+    finally:
+        conn.close()
+

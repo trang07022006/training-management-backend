@@ -72,19 +72,37 @@ def list_students_endpoint():
 
 @student_bp.get("/v1/students/my-schedule")
 @student_bp.get("/students/my-schedule")
-@permission_required("course.view")
+@permission_required("schedule.personal_view")
 def get_my_schedule_endpoint():
     """
-    API xem thời khóa biểu cá nhân của học viên đăng nhập (SCRUM-228).
-    - Xác thực từ JWT session (get_jwt_identity)
-    - Chỉ lấy buổi học của các lớp học viên đã ghi danh
-    - Trả về buổi kế tiếp và danh sách buổi trong tuần
+    API xem thời khóa biểu cá nhân của học viên hoặc giảng viên đăng nhập (SCRUM-228).
+    - Bảo mật: Xác thực danh tính từ JWT/phiên đăng nhập (g.user_id), không tin cậy query/body client gửi lên.
+    - Phân quyền: Yêu cầu quyền schedule.personal_view và vai trò học viên hoặc giảng viên.
+    - Quản trị viên/quản lý đào tạo không có vai trò học viên/giảng viên sẽ bị từ chối với 403.
     """
     user_id = getattr(g, "user_id", None)
+    if not user_id:
+        return jsonify({
+            "status": "error",
+            "code": "UNAUTHORIZED",
+            "message": "Yêu cầu đăng nhập để truy cập tài nguyên này.",
+        }), 401
+
+    from app.services import authorization_service
+    roles = authorization_service.get_user_role_codes(user_id)
+    if roles and not ("trainee" in roles or "trainer" in roles):
+        return jsonify({
+            "status": "error",
+            "code": "FORBIDDEN",
+            "message": "Tài khoản quản trị không sử dụng lịch cá nhân. Vui lòng truy cập trang Thời khóa biểu.",
+        }), 403
+
+    # Tuyệt đối không cho phép đổi student_id hoặc user_id trong query params (SCRUM-228 Requirement 3)
     date_from = request.args.get("date_from")
     date_to = request.args.get("date_to")
     ref_date = request.args.get("ref_date")
     ref_time = request.args.get("ref_time")
+    context = request.args.get("context")
 
     try:
         data = schedule_service.get_my_personal_schedule_service(
@@ -93,14 +111,62 @@ def get_my_schedule_endpoint():
             date_to=date_to,
             ref_date=ref_date,
             ref_time=ref_time,
+            context=context,
         )
         return jsonify({
             "status": "success",
             "code": "MY_SCHEDULE_RETRIEVED",
             "data": data,
         }), 200
+    except schedule_service.ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
     except Exception as err:
-        logger.exception("Lỗi khi lấy lịch học của học viên %s: %s", user_id, err)
+        logger.exception("Lỗi khi lấy lịch cá nhân của user %s: %s", user_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+@student_bp.get("/v1/students/<student_id>/schedule")
+@student_bp.get("/students/<student_id>/schedule")
+@permission_required("schedule.manage", message="Chức năng xem lịch học viên chỉ dành riêng cho cán bộ quản lý đào tạo.")
+def get_student_schedule_management_endpoint(student_id: str):
+    """
+    API quản lý: xem thời khóa biểu của một học viên bất kỳ (SCRUM-228 Requirement 3).
+    Dành riêng cho Quản trị viên và Quản lý đào tạo (yêu cầu quyền schedule.view).
+    """
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
+    ref_date = request.args.get("ref_date")
+    ref_time = request.args.get("ref_time")
+
+    try:
+        data = schedule_service.get_student_schedule_by_student_id_service(
+            student_id=student_id,
+            date_from=date_from,
+            date_to=date_to,
+            ref_date=ref_date,
+            ref_time=ref_time,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "STUDENT_SCHEDULE_RETRIEVED",
+            "data": data,
+        }), 200
+    except schedule_service.ScheduleServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except Exception as err:
+        logger.exception("Lỗi khi quản lý đọc lịch học viên %s: %s", student_id, err)
         return jsonify({
             "status": "error",
             "code": "INTERNAL_ERROR",

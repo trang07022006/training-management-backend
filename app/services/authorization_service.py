@@ -93,3 +93,21 @@ def has_permission(user_id: str, permission_code: str) -> bool:
 
 # Alias hỗ trợ quy ước đặt tên
 check_user_permission = has_permission
+
+
+def get_user_role_codes(user_id: str) -> list[str]:
+    """
+    Lấy danh sách các mã vai trò (role codes) của người dùng.
+    Tổng hợp từ bảng user_roles và fallback bảng users.role (SCRUM-26).
+    """
+    if not isinstance(user_id, str) or not user_id.strip():
+        return []
+
+    roles = user_role_repository.get_roles_by_user_id(user_id)
+    if not roles:
+        user = user_repository.get_user_by_id(user_id)
+        if user and user.role:
+            return [user.role.strip().lower()]
+        return []
+
+    return [r.code.strip().lower() for r in roles if r and r.code]
