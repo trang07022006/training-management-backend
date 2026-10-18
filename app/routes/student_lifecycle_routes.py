@@ -68,6 +68,57 @@ def reserve_student_endpoint(student_id: str):
         }), 500
 
 
+@student_lifecycle_bp.post("/v1/students/<student_id>/transfer")
+@student_lifecycle_bp.post("/students/<student_id>/transfer")
+@permission_required(
+    "student.lifecycle_manage",
+    message="Chức năng xử lý chuyển lớp chỉ dành riêng cho Quản lý đào tạo.",
+)
+def transfer_student_endpoint(student_id: str):
+    """
+    API xử lý chuyển lớp cho học viên theo ngày hiệu lực (SCRUM-252 - Lát cắt 252.2).
+    Phân quyền: Quản lý đào tạo (student.lifecycle_manage).
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+        }), 400
+
+    actor_id = get_jwt_identity()
+
+    try:
+        result = student_lifecycle_service.transfer_student_service(student_id, payload, actor_id)
+        return jsonify({
+            "status": "success",
+            "code": "TRANSFER_SUCCESS",
+            "message": f"Chuyển lớp cho học viên {result.get('student_name', '')} từ lớp {result.get('source_class_code', '')} sang lớp {result.get('target_class_code', '')} thành công.",
+            "data": result,
+        }), 200
+    except StudentLifecycleError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi chuyển lớp học viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi thực hiện chuyển lớp học viên.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi chuyển lớp học viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu chuyển lớp.",
+        }), 500
+
+
 @student_lifecycle_bp.get("/v1/classes/<class_id>/eligible-students")
 @student_lifecycle_bp.get("/classes/<class_id>/eligible-students")
 @permission_required("course.view")
