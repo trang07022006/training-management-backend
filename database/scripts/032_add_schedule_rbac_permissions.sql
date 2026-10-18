@@ -14,11 +14,10 @@ ON DUPLICATE KEY UPDATE
     updated_at = NOW();
 
 -- 2. Gán Role - Permissions
--- Quản trị viên (admin): xem và quản lý thời khóa biểu toàn trường và lịch cá nhân
+-- Quản trị viên (admin): xem thời khóa biểu toàn trường và lịch cá nhân
 INSERT IGNORE INTO role_permissions (role_id, permission_id, created_at)
 VALUES 
     ('role-id-admin', 'perm-id-schedule-view', NOW()),
-    ('role-id-admin', 'perm-id-schedule-manage', NOW()),
     ('role-id-admin', 'perm-id-schedule-personal-view', NOW());
 
 -- Quản lý đào tạo (training_manager): xem và quản lý thời khóa biểu, lịch cá nhân và xem người dùng

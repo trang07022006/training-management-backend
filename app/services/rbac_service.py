@@ -35,7 +35,7 @@ INITIAL_ROLE_PERMISSIONS_MAP = {
     "admin": [
         "user.view", "user.manage", "course.view", "course.manage",
         "session.view", "session.revoke",
-        "schedule.view", "schedule.manage", "schedule.personal_view",
+        "schedule.view", "schedule.personal_view",
     ],
     "trainer": [
         "course.view", "course.manage", "session.view",

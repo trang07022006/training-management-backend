@@ -71,12 +71,15 @@ def ensure_business_roles() -> None:
                 INSERT IGNORE INTO role_permissions (role_id, permission_id, created_at)
                 VALUES 
                     ('role-id-admin', 'perm-id-schedule-view', NOW()),
-                    ('role-id-admin', 'perm-id-schedule-manage', NOW()),
                     ('role-id-training-manager', 'perm-id-schedule-view', NOW()),
                     ('role-id-training-manager', 'perm-id-schedule-manage', NOW()),
                     ('role-id-trainer', 'perm-id-schedule-view', NOW()),
                     ('role-id-trainer', 'perm-id-schedule-personal-view', NOW()),
                     ('role-id-trainee', 'perm-id-schedule-personal-view', NOW());
+            """)
+            cursor.execute("""
+                DELETE FROM role_permissions 
+                WHERE role_id = 'role-id-admin' AND permission_id = 'perm-id-schedule-manage';
             """)
 
             # 4. SCRUM-213: Bổ sung bảng lead_status_history và trường rejection_reason

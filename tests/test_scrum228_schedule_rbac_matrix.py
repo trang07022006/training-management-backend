@@ -799,3 +799,98 @@ class TestScheduleRBACMatrix:
         r6 = client.get("/api/v1/classes/cls-01/schedules/sch-01/notifications", headers=auth_headers)
         assert r6.status_code == 403
 
+    # -------------------------------------------------------------
+    # 13. Kiểm thử 3 trường hợp: admin thuần túy, training_manager và admin + training_manager
+    # -------------------------------------------------------------
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    def test_pure_admin_forbidden_on_session_management_endpoints(
+        self,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Tài khoản admin thuần túy không có schedule.manage bị chặn 403 trên API quản lý buổi học, nhưng xem được Thời khóa biểu."""
+        _mock_user_session(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, user_id="u-pure-admin-sessions")
+        # Admin chỉ có schedule.view và user.manage, KHÔNG có schedule.manage
+        admin_perms = {"schedule.view", "user.manage", "user.view"}
+        mock_has_perm.side_effect = lambda uid, perm: perm in admin_perms
+
+        # Bị chặn trên các API quản lý buổi học
+        r_update = client.put("/api/v1/classes/cls-01/schedules/sch-01", json={}, headers=auth_headers)
+        assert r_update.status_code == 403
+
+        r_cancel = client.post("/api/v1/classes/cls-01/schedules/sch-01/cancel", json={"cancellation_reason": "Lý do"}, headers=auth_headers)
+        assert r_cancel.status_code == 403
+
+        r_preview = client.post("/api/v1/classes/cls-01/schedules/preview", json={}, headers=auth_headers)
+        assert r_preview.status_code == 403
+
+        # Nhưng vẫn được xem Thời khóa biểu
+        with patch("app.services.schedule_service.get_calendar_schedules_service", return_value={"schedules": [], "total": 0}):
+            r_calendar = client.get("/api/v1/schedules/calendar", headers=auth_headers)
+            assert r_calendar.status_code == 200
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    def test_training_manager_allowed_on_session_management_and_calendar(
+        self,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Tài khoản training_manager có schedule.manage và schedule.view: được sử dụng quản lý buổi học và xem thời khóa biểu."""
+        _mock_user_session(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, user_id="u-tm-sessions")
+        tm_perms = {"schedule.manage", "schedule.view", "course.view"}
+        mock_has_perm.side_effect = lambda uid, perm: perm in tm_perms
+
+        with patch("app.services.schedule_service.cancel_single_schedule_service", return_value={"id": "sch-01", "status": "cancelled"}):
+            r_cancel = client.post("/api/v1/classes/cls-01/schedules/sch-01/cancel", json={"cancellation_reason": "Dời lịch thi"}, headers=auth_headers)
+            assert r_cancel.status_code == 200
+
+        with patch("app.services.schedule_service.get_calendar_schedules_service", return_value={"schedules": [], "total": 0}):
+            r_calendar = client.get("/api/v1/schedules/calendar", headers=auth_headers)
+            assert r_calendar.status_code == 200
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    def test_dual_admin_and_training_manager_allowed_on_both_domains(
+        self,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Tài khoản có cả admin và training_manager: có union permissions, được sử dụng cả quản lý buổi học và chức năng quản trị."""
+        _mock_user_session(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, user_id="u-dual-admin-tm")
+        dual_perms = {"schedule.manage", "schedule.view", "user.manage", "user.view"}
+        mock_has_perm.side_effect = lambda uid, perm: perm in dual_perms
+
+        with patch("app.services.schedule_service.cancel_single_schedule_service", return_value={"id": "sch-01", "status": "cancelled"}):
+            r_cancel = client.post("/api/v1/classes/cls-01/schedules/sch-01/cancel", json={"cancellation_reason": "Dời lịch"}, headers=auth_headers)
+            assert r_cancel.status_code == 200
+
+        with patch("app.services.schedule_service.get_calendar_schedules_service", return_value={"schedules": [], "total": 0}):
+            r_calendar = client.get("/api/v1/schedules/calendar", headers=auth_headers)
+            assert r_calendar.status_code == 200
+

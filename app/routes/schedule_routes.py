@@ -69,7 +69,7 @@ def preview_schedule_endpoint(class_id: str):
 
 @schedule_bp.post("/v1/classes/<class_id>/schedules/generate")
 @schedule_bp.post("/classes/<class_id>/schedules/generate")
-@permission_required("schedule.manage", message="Bạn không có quyền quản lý và lưu thời khóa biểu cho lớp này.")
+@permission_required("schedule.manage", message="Bạn không có quyền tạo thời khóa biểu cho lớp này.")
 def generate_schedule_endpoint(class_id: str):
     """
     API xĂ¡c nháº­n lÆ°u thá»i khĂ³a biá»ƒu lá»›p há»c chĂ­nh thá»©c (SCRUM-224 - AC 1, 2, 4).
