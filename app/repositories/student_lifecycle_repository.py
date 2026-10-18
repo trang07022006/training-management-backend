@@ -128,7 +128,7 @@ def record_reservation_atomic(
                     source_class_id, target_class_id, effective_date,
                     reason, status, performed_by, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, 'reserve', %s, NULL, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, 'reserve', %s, NULL, %s, %s, %s, %s, NOW(6), NOW(6))
                 """,
                 (
                     history_id,
@@ -313,7 +313,7 @@ def record_transfer_atomic(
                     source_class_id, target_class_id, effective_date,
                     reason, status, performed_by, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, 'transfer', %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, 'transfer', %s, %s, %s, %s, %s, %s, NOW(6), NOW(6))
                 """,
                 (
                     history_id,
@@ -416,7 +416,7 @@ def record_drop_atomic(
                         source_class_id, target_class_id, effective_date,
                         reason, status, performed_by, created_at, updated_at
                     )
-                    VALUES (%s, %s, %s, 'drop', %s, NULL, %s, %s, %s, %s, NOW(), NOW())
+                    VALUES (%s, %s, %s, 'drop', %s, NULL, %s, %s, %s, %s, NOW(6), NOW(6))
                     """,
                     (
                         history_id,
@@ -479,7 +479,7 @@ def record_drop_atomic(
                             source_class_id, target_class_id, effective_date,
                             reason, status, performed_by, created_at, updated_at
                         )
-                        VALUES (%s, %s, %s, 'drop', %s, NULL, %s, %s, %s, %s, NOW(), NOW())
+                        VALUES (%s, %s, %s, 'drop', %s, NULL, %s, %s, %s, %s, NOW(6), NOW(6))
                         """,
                         (
                             hist_id,
@@ -583,7 +583,7 @@ def get_student_lifecycle_history(student_id: str) -> list[StudentLifecycleHisto
                 LEFT JOIN classes tc ON slh.target_class_id = tc.id
                 LEFT JOIN users u ON slh.performed_by = u.id
                 WHERE slh.student_id = %s
-                ORDER BY slh.created_at DESC, slh.effective_date DESC
+                ORDER BY slh.created_at DESC
                 """,
                 (student_id,),
             )

@@ -216,7 +216,10 @@ def get_eligible_attendance_students_endpoint(class_id: str):
 
 @student_lifecycle_bp.get("/v1/students/<student_id>/lifecycle-history")
 @student_lifecycle_bp.get("/students/<student_id>/lifecycle-history")
-@permission_required("course.view")
+@permission_required(
+    "student.lifecycle_manage",
+    message="Chức năng tra cứu lịch sử vòng đời học viên chỉ dành riêng cho Quản lý đào tạo.",
+)
 def get_student_lifecycle_history_endpoint(student_id: str):
     """
     API lấy lịch sử biến động vòng đời (bảo lưu, chuyển lớp, thôi học) của học viên (SCRUM-252 AC 4).

@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS student_lifecycle_history (
     reason TEXT NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'applied', -- 'pending' hoặc 'applied'
     performed_by VARCHAR(36) NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     INDEX idx_slh_student (student_id),
     INDEX idx_slh_action (action_type),
     INDEX idx_slh_effective_date (effective_date),
