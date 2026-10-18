@@ -119,6 +119,63 @@ def transfer_student_endpoint(student_id: str):
         }), 500
 
 
+@student_lifecycle_bp.post("/v1/students/<student_id>/drop")
+@student_lifecycle_bp.post("/students/<student_id>/drop")
+@permission_required(
+    "student.lifecycle_manage",
+    message="Chức năng xử lý thôi học chỉ dành riêng cho Quản lý đào tạo.",
+)
+def drop_student_endpoint(student_id: str):
+    """
+    API xử lý thôi học cho học viên theo ngày hiệu lực (SCRUM-252 - Lát cắt 252.3).
+    Hỗ trợ scope = 'single' (thôi học 1 lớp) hoặc 'all' (thôi học toàn bộ khóa học).
+    Phân quyền: Quản lý đào tạo (student.lifecycle_manage).
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là JSON hợp lệ.",
+        }), 400
+
+    actor_id = get_jwt_identity()
+
+    try:
+        result = student_lifecycle_service.drop_student_service(student_id, payload, actor_id)
+        msg = (
+            f"Thôi học học viên {result.get('student_name', '')} toàn bộ khóa học thành công."
+            if result.get("scope") == "all"
+            else f"Thôi học học viên {result.get('student_name', '')} tại lớp đã chọn thành công."
+        )
+        return jsonify({
+            "status": "success",
+            "code": "DROP_SUCCESS",
+            "message": msg,
+            "data": result,
+        }), 200
+    except StudentLifecycleError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi thôi học học viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi thực hiện thôi học học viên.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi thôi học học viên: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu thôi học.",
+        }), 500
+
+
 @student_lifecycle_bp.get("/v1/classes/<class_id>/eligible-students")
 @student_lifecycle_bp.get("/classes/<class_id>/eligible-students")
 @permission_required("course.view")

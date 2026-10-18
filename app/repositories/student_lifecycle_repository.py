@@ -350,6 +350,174 @@ def record_transfer_atomic(
         conn.close()
 
 
+def record_drop_atomic(
+    student_id: str,
+    scope: str,
+    class_id: str | None,
+    effective_date_val: date,
+    reason: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    """
+    Thực hiện thôi học cho học viên với Transaction nguyên tử (SCRUM-252 - Lát cắt 252.3).
+    - Scope = 'single': Thôi học ở một lớp cụ thể.
+    - Scope = 'all': Thôi học toàn bộ khóa học (tất cả các lớp đang học).
+    - Khóa các hàng ghi danh liên quan bằng SELECT ... FOR UPDATE.
+    - Cập nhật lifecycle_status = 'dropped', effective_date, lifecycle_reason.
+    - Ghi nhận lịch sử vào student_lifecycle_history cho từng lớp bị thôi học.
+    - Tuyệt đối không xóa hồ sơ học viên, điểm số hoặc điểm danh lịch sử.
+    """
+    today = date.today()
+    is_immediate = effective_date_val <= today
+    history_status = "applied" if is_immediate else "pending"
+    enrollment_status = "dropped" if is_immediate else "enrolled"
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            if scope == "single":
+                if not class_id:
+                    raise RuntimeError("MISSING_CLASS_ID: Vui lòng cung cấp mã lớp cần thôi học.")
+
+                cursor.execute(
+                    """
+                    SELECT id, status, lifecycle_status, effective_date 
+                    FROM class_enrollments 
+                    WHERE class_id = %s AND student_id = %s 
+                    FOR UPDATE
+                    """,
+                    (class_id, student_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise RuntimeError("ENROLLMENT_NOT_FOUND: Học viên chưa được ghi danh vào lớp học này.")
+
+                if row.get("lifecycle_status") == "dropped":
+                    raise RuntimeError("ALREADY_DROPPED: Học viên đã thôi học ở lớp này.")
+
+                cursor.execute(
+                    """
+                    UPDATE class_enrollments
+                    SET lifecycle_status = 'dropped',
+                        effective_date = %s,
+                        lifecycle_reason = %s,
+                        status = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (effective_date_val, reason, enrollment_status, row["id"]),
+                )
+
+                history_id = str(uuid.uuid4())
+                cursor.execute(
+                    """
+                    INSERT INTO student_lifecycle_history (
+                        id, student_id, enrollment_id, action_type,
+                        source_class_id, target_class_id, effective_date,
+                        reason, status, performed_by, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, 'drop', %s, NULL, %s, %s, %s, %s, NOW(), NOW())
+                    """,
+                    (
+                        history_id,
+                        student_id,
+                        row["id"],
+                        class_id,
+                        effective_date_val,
+                        reason,
+                        history_status,
+                        actor_id,
+                    ),
+                )
+
+                conn.commit()
+                return {
+                    "student_id": student_id,
+                    "scope": "single",
+                    "class_id": class_id,
+                    "action_type": "drop",
+                    "effective_date": effective_date_val.isoformat(),
+                    "reason": reason,
+                    "status": history_status,
+                    "affected_enrollments_count": 1,
+                }
+
+            elif scope == "all":
+                cursor.execute(
+                    """
+                    SELECT id, class_id, status, lifecycle_status, effective_date
+                    FROM class_enrollments
+                    WHERE student_id = %s
+                      AND (lifecycle_status IS NULL OR lifecycle_status NOT IN ('dropped', 'transferred'))
+                    FOR UPDATE
+                    """,
+                    (student_id,),
+                )
+                active_rows = cursor.fetchall() or []
+                if not active_rows:
+                    raise RuntimeError("NO_ACTIVE_ENROLLMENTS: Học viên không có lớp học nào đang tham gia để thôi học.")
+
+                for r in active_rows:
+                    cursor.execute(
+                        """
+                        UPDATE class_enrollments
+                        SET lifecycle_status = 'dropped',
+                            effective_date = %s,
+                            lifecycle_reason = %s,
+                            status = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (effective_date_val, reason, enrollment_status, r["id"]),
+                    )
+
+                    hist_id = str(uuid.uuid4())
+                    cursor.execute(
+                        """
+                        INSERT INTO student_lifecycle_history (
+                            id, student_id, enrollment_id, action_type,
+                            source_class_id, target_class_id, effective_date,
+                            reason, status, performed_by, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, 'drop', %s, NULL, %s, %s, %s, %s, NOW(), NOW())
+                        """,
+                        (
+                            hist_id,
+                            student_id,
+                            r["id"],
+                            r["class_id"],
+                            effective_date_val,
+                            reason,
+                            history_status,
+                            actor_id,
+                        ),
+                    )
+
+                if is_immediate:
+                    cursor.execute(
+                        "UPDATE students SET status = 'dropped_out', updated_at = NOW() WHERE id = %s",
+                        (student_id,),
+                    )
+
+                conn.commit()
+                return {
+                    "student_id": student_id,
+                    "scope": "all",
+                    "action_type": "drop",
+                    "effective_date": effective_date_val.isoformat(),
+                    "reason": reason,
+                    "status": history_status,
+                    "affected_enrollments_count": len(active_rows),
+                }
+            else:
+                raise RuntimeError(f"INVALID_SCOPE: Phạm vi thôi học {scope} không hợp lệ (hỗ trợ 'single' hoặc 'all').")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_eligible_attendance_students(class_id: str, session_date_val: date) -> list[dict[str, Any]]:
     """
     Truy vấn danh sách học viên đủ điều kiện điểm danh cho một buổi học cụ thể (SCRUM-252 AC 2).

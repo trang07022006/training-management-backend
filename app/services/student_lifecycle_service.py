@@ -271,3 +271,78 @@ def transfer_student_service(student_id: str, payload: dict[str, Any], actor_id:
     result["student_code"] = student.student_code
 
     return result
+
+
+def drop_student_service(student_id: str, payload: dict[str, Any], actor_id: str) -> dict[str, Any]:
+    """
+    Xử lý thôi học cho học viên theo ngày hiệu lực (SCRUM-252 - Lát cắt 252.3).
+    - Scope = 'single' (thôi học 1 lớp) hoặc 'all' (thôi học toàn bộ khóa học).
+    - Nhập lý do bắt buộc, ngày hiệu lực bắt buộc.
+    - Cập nhật tình trạng tham gia, danh sách điểm danh và sĩ số theo quy tắc.
+    - Tuyệt đối không xóa hồ sơ, điểm, điểm danh lịch sử hay tài khoản đăng nhập.
+    """
+    # 1. Kiểm tra học viên tồn tại
+    student = student_repository.get_student_by_id(student_id)
+    if not student:
+        raise StudentLifecycleError("STUDENT_NOT_FOUND", "Không tìm thấy hồ sơ học viên.", 404)
+
+    # 2. Kiểm tra payload
+    if not isinstance(payload, dict):
+        raise StudentLifecycleError("INVALID_PAYLOAD", "Dữ liệu yêu cầu không hợp lệ.", 400)
+
+    scope = payload.get("scope", "single")
+    if scope not in ("single", "all"):
+        raise StudentLifecycleError("INVALID_SCOPE", "Phạm vi thôi học không hợp lệ (yêu cầu 'single' hoặc 'all').", 400)
+
+    class_id = payload.get("class_id")
+    if scope == "single":
+        if not class_id or not isinstance(class_id, str) or not class_id.strip():
+            raise StudentLifecycleError("MISSING_CLASS_ID", "Vui lòng chọn lớp học cần thôi học.", 400)
+        class_id = class_id.strip()
+
+        cls_obj = class_repository.get_class_by_id(class_id)
+        if not cls_obj:
+            raise StudentLifecycleError("CLASS_NOT_FOUND", "Không tìm thấy lớp học.", 404)
+
+    reason = _validate_reason(payload.get("reason"))
+    effective_date_val = _parse_date(payload.get("effective_date"), "effective_date")
+
+    # Kiểm tra ranh giới ngày hiệu lực không được trước ngày khai giảng nếu thôi học 1 lớp
+    if scope == "single" and class_id:
+        enrollment = student_lifecycle_repository.get_enrollment_by_class_and_student(class_id, student_id)
+        if not enrollment:
+            raise StudentLifecycleError("ENROLLMENT_NOT_FOUND", "Học viên chưa được ghi danh vào lớp học này.", 404)
+        expected_start = enrollment.get("expected_start_date")
+        if expected_start:
+            start_date_val = expected_start if isinstance(expected_start, date) else datetime.strptime(str(expected_start)[:10], "%Y-%m-%d").date()
+            if effective_date_val < start_date_val:
+                raise StudentLifecycleError(
+                    "EFFECTIVE_DATE_BEFORE_START",
+                    f"Ngày hiệu lực thôi học ({effective_date_val.strftime('%d/%m/%Y')}) không được trước ngày khai giảng lớp ({start_date_val.strftime('%d/%m/%Y')}).",
+                    400,
+                )
+
+    # 3. Thực hiện transaction nguyên tử trong repository
+    try:
+        result = student_lifecycle_repository.record_drop_atomic(
+            student_id=student_id,
+            scope=scope,
+            class_id=class_id,
+            effective_date_val=effective_date_val,
+            reason=reason,
+            actor_id=actor_id,
+        )
+    except RuntimeError as err:
+        err_msg = str(err)
+        if "ENROLLMENT_NOT_FOUND" in err_msg:
+            raise StudentLifecycleError("ENROLLMENT_NOT_FOUND", "Không tìm thấy bản ghi ghi danh.", 404)
+        if "ALREADY_DROPPED" in err_msg:
+            raise StudentLifecycleError("ALREADY_DROPPED", "Học viên đã thôi học ở lớp này.", 400)
+        if "NO_ACTIVE_ENROLLMENTS" in err_msg:
+            raise StudentLifecycleError("NO_ACTIVE_ENROLLMENTS", "Học viên không có lớp học nào đang tham gia để thôi học.", 400)
+        raise StudentLifecycleError("DROP_FAILED", f"Lỗi xử lý thôi học: {err_msg}", 500)
+
+    result["student_name"] = student.full_name
+    result["student_code"] = student.student_code
+
+    return result
