@@ -41,10 +41,16 @@ def get_session_attendance_endpoint(schedule_id: str):
 
     try:
         roles = authorization_service.get_user_role_codes(user_id)
+        page = request.args.get("page", default=1, type=int)
+        limit = request.args.get("limit", default=10, type=int)
+        search_query = request.args.get("q", default=None, type=str)
         data = attendance_service.get_session_attendance_sheet(
             schedule_id=schedule_id,
             current_user_id=user_id,
             current_user_roles=roles,
+            page=page,
+            limit=limit,
+            search_query=search_query,
         )
         return jsonify({
             "status": "success",

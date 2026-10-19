@@ -63,6 +63,9 @@ def get_session_attendance_sheet(
     schedule_id: str,
     current_user_id: str,
     current_user_roles: list[str],
+    page: int = 1,
+    limit: int = 10,
+    search_query: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Truy xuất sổ điểm danh của một buổi học (Lát 1 — SCRUM-254).
@@ -73,6 +76,9 @@ def get_session_attendance_sheet(
     - Admin thuần túy không tự có quyền nghiệp vụ đào tạo.
     - Trạng thái học viên chưa điểm danh trả về status: null (không tự tạo bản ghi vắng).
     - Danh sách học viên được xét theo ngày buổi học thông qua student_lifecycle_repository.
+    - Phân trang Backend: Mặc định 10 bản ghi/trang, tối đa 20 bản ghi/trang.
+    - Sắp xếp ổn định theo mã học viên và ID để không trùng lặp hay bỏ sót.
+    - Thống kê sĩ số/trạng thái phản ánh toàn buổi học, không phụ thuộc trang hay từ khóa tìm kiếm.
     """
     schedule = attendance_repository.get_schedule_details_for_attendance(schedule_id)
     if not schedule:
@@ -193,12 +199,49 @@ def get_session_attendance_sheet(
                 "is_historical_record": True,
             })
 
-    # 6. Tính toán thống kê
+    # Sắp xếp ổn định theo mã học viên và ID để các trang phân trang nhất quán
+    combined_students.sort(key=lambda s: ((s.get("student_code") or "").upper(), str(s.get("student_id") or "")))
+
+    # 6. Tính toán thống kê toàn bộ buổi học (không phụ thuộc bộ lọc tìm kiếm hay trang)
     present_count = sum(1 for s in combined_students if s["status"] == "present")
     late_count = sum(1 for s in combined_students if s["status"] == "late")
     excused_count = sum(1 for s in combined_students if s["status"] == "excused")
     unexcused_count = sum(1 for s in combined_students if s["status"] == "unexcused")
     unmarked_count = sum(1 for s in combined_students if s["status"] is None)
+
+    # 7. Bộ lọc tìm kiếm theo mã, họ tên hoặc email
+    if search_query and str(search_query).strip():
+        q = str(search_query).strip().lower()
+        filtered_students = [
+            s for s in combined_students
+            if (
+                q in (s.get("student_code") or "").lower()
+                or q in (s.get("full_name") or "").lower()
+                or q in (s.get("email") or "").lower()
+            )
+        ]
+    else:
+        filtered_students = combined_students
+
+    # 8. Phân trang dữ liệu phía Backend (tối đa 20 bản ghi mỗi lần tải)
+    try:
+        limit_val = int(limit)
+    except (ValueError, TypeError):
+        limit_val = 10
+    limit_val = min(max(limit_val, 1), 20)
+
+    try:
+        page_val = int(page)
+    except (ValueError, TypeError):
+        page_val = 1
+    page_val = max(page_val, 1)
+
+    total_items = len(filtered_students)
+    total_pages = max(1, (total_items + limit_val - 1) // limit_val) if total_items > 0 else 1
+
+    start_idx = (page_val - 1) * limit_val
+    end_idx = start_idx + limit_val
+    paged_students = filtered_students[start_idx:end_idx]
 
     return {
         "session_info": {
@@ -235,7 +278,13 @@ def get_session_attendance_sheet(
             "unexcused_count": unexcused_count,
             "unmarked_count": unmarked_count,
         },
-        "students": combined_students,
+        "pagination": {
+            "page": page_val,
+            "limit": limit_val,
+            "total_items": total_items,
+            "total_pages": total_pages,
+        },
+        "students": paged_students,
     }
 
 
@@ -247,6 +296,7 @@ def save_session_attendance_service(
 ) -> dict[str, Any]:
     """
     Lưu kết quả điểm danh cho buổi học theo cơ chế nguyên tử (SCRUM-254 Lát 2 & 3).
+    - Hỗ trợ lưu danh sách thủ công hoặc đánh dấu tất cả có mặt hàng loạt (mark_all_present).
     - Kiểm tra tính hợp lệ của buổi học, ngày học và quyền hạn.
     - Giảng viên chỉ điểm danh hôm nay; Quản lý đào tạo được sửa quá khứ.
     - Kiểm tra học viên thuộc lớp/buổi học.
@@ -256,9 +306,12 @@ def save_session_attendance_service(
     if not isinstance(payload, dict):
         raise AttendanceServiceError("INVALID_PAYLOAD", "Dữ liệu yêu cầu không đúng định dạng.")
 
+    mark_all_present = bool(payload.get("mark_all_present", False))
     attendance_list = payload.get("attendances")
-    if not isinstance(attendance_list, list) or len(attendance_list) == 0:
-        raise AttendanceServiceError("EMPTY_ATTENDANCE_LIST", "Vui lòng chọn trạng thái điểm danh cho ít nhất một học viên.")
+
+    if not mark_all_present:
+        if not isinstance(attendance_list, list) or len(attendance_list) == 0:
+            raise AttendanceServiceError("EMPTY_ATTENDANCE_LIST", "Vui lòng chọn trạng thái điểm danh cho ít nhất một học viên.")
 
     schedule = attendance_repository.get_schedule_details_for_attendance(schedule_id)
     if not schedule:
@@ -298,36 +351,74 @@ def save_session_attendance_service(
     valid_student_ids = {s["student_id"] for s in eligible_students} | {s["student_id"] for s in existing_attendances}
 
     clean_items: list[dict[str, Any]] = []
-    seen_student_ids = set()
 
-    for item in attendance_list:
-        if not isinstance(item, dict):
-            continue
-        student_id = item.get("student_id")
-        status = item.get("status")
-        notes = item.get("notes")
+    if mark_all_present:
+        # Thao tác hàng loạt: Mặc định tất cả học viên đủ điều kiện là 'present'
+        # Các bản ghi trong attendance_list đóng vai trò overrides (người dùng sửa riêng)
+        override_map: dict[str, dict[str, Any]] = {}
+        if isinstance(attendance_list, list):
+            for item in attendance_list:
+                if not isinstance(item, dict):
+                    continue
+                s_id = item.get("student_id")
+                st_val = item.get("status")
+                notes_val = item.get("notes")
+                if not s_id or s_id not in valid_student_ids:
+                    raise AttendanceServiceError(
+                        "STUDENT_NOT_IN_SESSION",
+                        f"Học viên '{s_id}' không thuộc danh sách lớp hoặc buổi học này.",
+                    )
+                if st_val not in ATTENDANCE_STATUSES:
+                    raise AttendanceServiceError(
+                        "INVALID_ATTENDANCE_STATUS",
+                        f"Trạng thái '{st_val}' không hợp lệ. Chỉ chấp nhận: Có mặt (present), Đi muộn (late), Vắng có phép (excused), Vắng không phép (unexcused).",
+                    )
+                override_map[s_id] = {
+                    "student_id": s_id,
+                    "status": st_val,
+                    "notes": str(notes_val).strip() if notes_val else None,
+                }
 
-        if not student_id or student_id not in valid_student_ids:
-            raise AttendanceServiceError(
-                "STUDENT_NOT_IN_SESSION",
-                f"Học viên '{student_id}' không thuộc danh sách lớp hoặc buổi học này.",
-            )
+        for st in eligible_students:
+            s_id = st["student_id"]
+            if s_id in override_map:
+                clean_items.append(override_map[s_id])
+            else:
+                clean_items.append({
+                    "student_id": s_id,
+                    "status": "present",
+                    "notes": None,
+                })
+    else:
+        seen_student_ids = set()
+        for item in attendance_list:
+            if not isinstance(item, dict):
+                continue
+            student_id = item.get("student_id")
+            status = item.get("status")
+            notes = item.get("notes")
 
-        if status not in ATTENDANCE_STATUSES:
-            raise AttendanceServiceError(
-                "INVALID_ATTENDANCE_STATUS",
-                f"Trạng thái '{status}' không hợp lệ. Chỉ chấp nhận: Có mặt (present), Đi muộn (late), Vắng có phép (excused), Vắng không phép (unexcused).",
-            )
+            if not student_id or student_id not in valid_student_ids:
+                raise AttendanceServiceError(
+                    "STUDENT_NOT_IN_SESSION",
+                    f"Học viên '{student_id}' không thuộc danh sách lớp hoặc buổi học này.",
+                )
 
-        if student_id in seen_student_ids:
-            continue
-        seen_student_ids.add(student_id)
+            if status not in ATTENDANCE_STATUSES:
+                raise AttendanceServiceError(
+                    "INVALID_ATTENDANCE_STATUS",
+                    f"Trạng thái '{status}' không hợp lệ. Chỉ chấp nhận: Có mặt (present), Đi muộn (late), Vắng có phép (excused), Vắng không phép (unexcused).",
+                )
 
-        clean_items.append({
-            "student_id": student_id,
-            "status": status,
-            "notes": str(notes).strip() if notes else None,
-        })
+            if student_id in seen_student_ids:
+                continue
+            seen_student_ids.add(student_id)
+
+            clean_items.append({
+                "student_id": student_id,
+                "status": status,
+                "notes": str(notes).strip() if notes else None,
+            })
 
     # 4. Thực thi lưu nguyên tử trong Transaction
     reason = payload.get("reason")
@@ -345,7 +436,7 @@ def save_session_attendance_service(
             raise SessionNotFoundError()
         raise
 
-    # 5. Đọc lại toàn bộ sổ điểm danh sau khi lưu để trả về kết quả mới nhất
+    # 5. Đọc lại sổ điểm danh sau khi lưu
     updated_sheet = get_session_attendance_sheet(schedule_id, current_user_id, current_user_roles)
 
     return {
