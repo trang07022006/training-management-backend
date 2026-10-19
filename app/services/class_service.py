@@ -286,9 +286,13 @@ def get_class_subject_instructors_service(class_id: str, class_subject_id: str) 
     }
 
 
-def get_instructor_candidates_service() -> list[dict]:
+def get_instructor_candidates_service(
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
     """Lấy danh sách các ứng viên giảng viên đủ điều kiện để phân công (SCRUM-220)."""
-    return class_repository.list_instructor_candidates()
+    return class_repository.list_instructor_candidates(search=search, page=page, page_size=page_size)
 
 
 def _get_user_roles(user_id: str, user_record=None) -> set[str]:

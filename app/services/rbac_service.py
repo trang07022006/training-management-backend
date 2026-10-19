@@ -35,11 +35,12 @@ INITIAL_ROLE_PERMISSIONS_MAP = {
     "admin": [
         "user.view", "user.manage", "course.view", "course.manage",
         "session.view", "session.revoke",
-        "schedule.view", "schedule.personal_view",
+        "schedule.view",
     ],
     "trainer": [
         "course.view", "course.manage", "session.view",
         "schedule.view", "schedule.personal_view",
+        "attendance.view", "attendance.take",
     ],
     "trainee": [
         "course.view", "session.view",
@@ -57,13 +58,20 @@ BUSINESS_ROLES = [
 BUSINESS_PERMISSIONS = [
     Permission(id="perm-id-lead-delete", code="lead.delete", name="Xóa khách hàng tiềm năng", description="Quyền xóa khách hàng tiềm năng trong hệ thống (chỉ dành cho Quản lý đào tạo)"),
     Permission(id="perm-id-student-lifecycle-manage", code="student.lifecycle_manage", name="Quản lý vòng đời học viên", description="Xử lý bảo lưu, chuyển lớp và thôi học của học viên"),
+    Permission(id="perm-id-attendance-view", code="attendance.view", name="Xem điểm danh buổi học", description="Xem sổ điểm danh và kết quả điểm danh của buổi học"),
+    Permission(id="perm-id-attendance-take", code="attendance.take", name="Điểm danh buổi học", description="Thực hiện điểm danh học viên cho buổi học được phân công"),
+    Permission(id="perm-id-attendance-manage", code="attendance.manage", name="Quản lý điểm danh buổi học", description="Quản lý và chỉnh sửa điểm danh các buổi học bao gồm cả buổi quá khứ"),
 ]
 
 BUSINESS_ROLE_PERMISSIONS_MAP = {
     "training_manager": [
         "user.view", "course.view", "course.manage", "session.view", "lead.delete",
-        "schedule.view", "schedule.manage", "schedule.personal_view",
+        "schedule.view", "schedule.manage",
         "student.lifecycle_manage",
+        "attendance.view", "attendance.take", "attendance.manage",
+    ],
+    "trainer": [
+        "attendance.view", "attendance.take",
     ],
     "consultant": ["course.view", "course.manage", "session.view"],
     "admin": ["lead.delete"],

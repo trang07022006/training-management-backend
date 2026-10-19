@@ -116,22 +116,24 @@ def parse_time_obj(val: Any) -> time:
 def check_conflict_override_permission(actor_user_id: str | None) -> None:
     """
     Kiểm tra quyền ghi đè xung đột lịch học (SCRUM-225).
-    Chỉ Quản trị viên (admin) hoặc Quản lý đào tạo (training_manager) mới được phép ghi đè.
+    Chỉ Quản lý đào tạo (training_manager) hoặc người dùng có quyền schedule.manage mới được phép ghi đè.
+    Admin thuần túy không được phép ghi đè.
     """
     if not actor_user_id:
         raise ScheduleServiceError(
             "SCHEDULE_OVERRIDE_FORBIDDEN",
-            "Bạn không có quyền ghi đè xung đột lịch. Thao tác này chỉ dành cho Quản lý đào tạo hoặc Quản trị viên.",
+            "Bạn không có quyền ghi đè xung đột lịch. Thao tác này chỉ dành cho Quản lý đào tạo.",
             status_code=403,
         )
     actor_roles = set(user_role_repository.get_role_codes_by_user_id(actor_user_id))
     u = user_repository.get_user_by_id(actor_user_id)
     if u and u.role:
         actor_roles.add(u.role)
-    if not actor_roles.intersection({"admin", "training_manager"}):
+    from app.services.authorization_service import has_permission
+    if not (has_permission(actor_user_id, "schedule.manage") or "training_manager" in actor_roles):
         raise ScheduleServiceError(
             "SCHEDULE_OVERRIDE_FORBIDDEN",
-            "Bạn không có quyền ghi đè xung đột lịch. Thao tác này chỉ dành cho Quản lý đào tạo hoặc Quản trị viên.",
+            "Bạn không có quyền ghi đè xung đột lịch. Thao tác này chỉ dành cho Quản lý đào tạo.",
             status_code=403,
         )
 
