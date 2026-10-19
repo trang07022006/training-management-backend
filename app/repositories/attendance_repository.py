@@ -44,13 +44,14 @@ def get_schedule_details_for_attendance(schedule_id: str) -> Optional[dict[str, 
                     c.class_code AS class_name,
                     s.name AS subject_name,
                     s.code AS subject_code,
-                    cr.room_name AS room_name,
+                    COALESCE(cr.room_name, cr.room_code, cs.room_id) AS room_name,
+                    cr.room_code,
                     u.name AS instructor_name,
                     u.email AS instructor_email
                 FROM class_schedules cs
                 JOIN classes c ON cs.class_id = c.id
                 LEFT JOIN subjects s ON cs.subject_id = s.id
-                LEFT JOIN classrooms cr ON cs.room_id = cr.id
+                LEFT JOIN classrooms cr ON (cs.room_id = cr.id OR cs.room_id = cr.room_code)
                 LEFT JOIN users u ON cs.instructor_id = u.id
                 WHERE cs.id = %s
                 """,
