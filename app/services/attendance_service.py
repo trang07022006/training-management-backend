@@ -59,6 +59,32 @@ def get_vietnam_today() -> date:
     return datetime.now(VIETNAM_TZ).date()
 
 
+def format_utc_timestamp_iso(dt: Optional[datetime | str]) -> Optional[str]:
+    """
+    Chuẩn hóa timestamp sang chuỗi ISO 8601 UTC có múi giờ rõ ràng (hậu tố 'Z').
+    Ví dụ: '2026-10-19T17:25:22.233764Z'
+    """
+    if not dt:
+        return None
+    if isinstance(dt, str):
+        s = dt.strip()
+        if s.endswith("Z") or ("+" in s) or (len(s) > 19 and "-" in s[19:]):
+            return s
+        return s.replace(" ", "T") + "Z"
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        iso_str = dt.isoformat()
+        if iso_str.endswith("+00:00"):
+            return iso_str[:-6] + "Z"
+        if not iso_str.endswith("Z"):
+            return iso_str + "Z"
+        return iso_str
+    return str(dt)
+
+
 def get_session_attendance_sheet(
     schedule_id: str,
     current_user_id: str,
@@ -160,7 +186,7 @@ def get_session_attendance_sheet(
                 "notes": saved["notes"],
                 "recorded_by": saved["recorded_by"],
                 "recorded_by_name": saved.get("recorded_by_name"),
-                "updated_at": saved["updated_at"].isoformat() if saved.get("updated_at") else None,
+                "updated_at": format_utc_timestamp_iso(saved.get("updated_at")),
                 "is_eligible": True,
             })
         else:
@@ -194,7 +220,7 @@ def get_session_attendance_sheet(
                 "notes": saved["notes"],
                 "recorded_by": saved["recorded_by"],
                 "recorded_by_name": saved.get("recorded_by_name"),
-                "updated_at": saved["updated_at"].isoformat() if saved.get("updated_at") else None,
+                "updated_at": format_utc_timestamp_iso(saved.get("updated_at")),
                 "is_eligible": False,
                 "is_historical_record": True,
             })
@@ -487,7 +513,7 @@ def get_session_attendance_history_service(
             "performed_by": log["performed_by"],
             "performer_name": log.get("performer_name"),
             "performer_email": log.get("performer_email"),
-            "created_at": log["created_at"].isoformat() if log.get("created_at") else None,
+            "created_at": format_utc_timestamp_iso(log.get("created_at")),
         })
     return formatted
 

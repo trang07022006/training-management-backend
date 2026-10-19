@@ -222,7 +222,7 @@ def save_session_attendance_batch(
                         """
                         INSERT INTO attendance_audit_logs 
                         (id, schedule_id, student_id, old_status, new_status, reason, performed_by, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(6))
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6))
                         """,
                         (log_id, schedule_id, student_id, old_status, new_status, reason, performed_by),
                     )
@@ -232,12 +232,12 @@ def save_session_attendance_batch(
                 cursor.execute(
                     """
                     INSERT INTO session_attendances (id, schedule_id, student_id, status, notes, recorded_by, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW(6), NOW(6))
+                    VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
                     ON DUPLICATE KEY UPDATE
                         status = VALUES(status),
                         notes = VALUES(notes),
                         recorded_by = VALUES(recorded_by),
-                        updated_at = NOW(6)
+                        updated_at = UTC_TIMESTAMP(6)
                     """,
                     (att_id, schedule_id, student_id, new_status, notes, performed_by),
                 )
