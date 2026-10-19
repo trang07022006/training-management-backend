@@ -61,6 +61,9 @@ BUSINESS_PERMISSIONS = [
     Permission(id="perm-id-attendance-view", code="attendance.view", name="Xem điểm danh buổi học", description="Xem sổ điểm danh và kết quả điểm danh của buổi học"),
     Permission(id="perm-id-attendance-take", code="attendance.take", name="Điểm danh buổi học", description="Thực hiện điểm danh học viên cho buổi học được phân công"),
     Permission(id="perm-id-attendance-manage", code="attendance.manage", name="Quản lý điểm danh buổi học", description="Quản lý và chỉnh sửa điểm danh các buổi học bao gồm cả buổi quá khứ"),
+    Permission(id="perm-id-absence-request", code="absence.request", name="Gửi và xem đơn xin phép vắng", description="Học viên gửi đơn xin phép vắng và theo dõi kết quả duyệt"),
+    Permission(id="perm-id-absence-view", code="absence.view", name="Xem danh sách đơn xin phép vắng", description="Xem danh sách đơn xin phép vắng của lớp/buổi học"),
+    Permission(id="perm-id-absence-review", code="absence.review", name="Duyệt đơn xin phép vắng", description="Giảng viên duyệt đơn buổi học được phân công hoặc Quản lý đào tạo duyệt đơn"),
 ]
 
 BUSINESS_ROLE_PERMISSIONS_MAP = {
@@ -69,9 +72,14 @@ BUSINESS_ROLE_PERMISSIONS_MAP = {
         "schedule.view", "schedule.manage",
         "student.lifecycle_manage",
         "attendance.view", "attendance.take", "attendance.manage",
+        "absence.view", "absence.review",
     ],
     "trainer": [
         "attendance.view", "attendance.take",
+        "absence.view", "absence.review",
+    ],
+    "trainee": [
+        "absence.request",
     ],
     "consultant": ["course.view", "course.manage", "session.view"],
     "admin": ["lead.delete"],
