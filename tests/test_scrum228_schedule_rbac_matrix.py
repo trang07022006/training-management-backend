@@ -894,3 +894,107 @@ class TestScheduleRBACMatrix:
             r_calendar = client.get("/api/v1/schedules/calendar", headers=auth_headers)
             assert r_calendar.status_code == 200
 
+    # -------------------------------------------------------------
+    # 14. SCRUM-224: Giới hạn quyền sinh thời khóa biểu cho Quản lý đào tạo
+    # -------------------------------------------------------------
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    def test_pure_admin_forbidden_on_schedule_generation_and_override(
+        self,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Admin thuần túy không có schedule.manage bị chặn 403 trên cả preview, generate và override."""
+        _mock_user_session(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, user_id="u-pure-admin-gen")
+        admin_perms = {"schedule.view", "user.manage", "user.view", "course.view"}
+        mock_has_perm.side_effect = lambda uid, perm: perm in admin_perms
+
+        # 1. Preview bị từ chối 403
+        r_preview = client.post("/api/v1/classes/cls-01/schedules/preview", json={}, headers=auth_headers)
+        assert r_preview.status_code == 403
+        assert "Bạn không có quyền" in r_preview.get_json()["message"]
+
+        # 2. Generate bị từ chối 403
+        r_gen = client.post("/api/v1/classes/cls-01/schedules/generate", json={}, headers=auth_headers)
+        assert r_gen.status_code == 403
+        assert "Bạn không có quyền" in r_gen.get_json()["message"]
+
+        # 3. Conflict override bị từ chối 403 với SCHEDULE_OVERRIDE_FORBIDDEN
+        from app.services.schedule_service import check_conflict_override_permission, ScheduleServiceError
+        with patch("app.repositories.user_role_repository.get_role_codes_by_user_id", return_value=["admin"]), \
+             patch("app.repositories.user_repository.get_user_by_id", return_value=None):
+            with pytest.raises(ScheduleServiceError) as exc_info:
+                check_conflict_override_permission("u-pure-admin-gen")
+            assert exc_info.value.code == "SCHEDULE_OVERRIDE_FORBIDDEN"
+            assert exc_info.value.status_code == 403
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    def test_other_roles_forbidden_on_schedule_generation(
+        self,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Giảng viên thuần túy, học viên, tư vấn tuyển sinh không có schedule.manage bị chặn 403."""
+        for role_name, perms in [
+            ("trainer", {"schedule.view", "schedule.personal_view", "attendance.view", "attendance.take"}),
+            ("trainee", {"schedule.personal_view"}),
+            ("consultant", {"course.view", "course.manage"}),
+        ]:
+            _mock_user_session(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, user_id=f"u-{role_name}")
+            mock_has_perm.side_effect = lambda uid, perm, p=perms: perm in p
+
+            r_prev = client.post("/api/v1/classes/cls-01/schedules/preview", json={}, headers=auth_headers)
+            assert r_prev.status_code == 403, f"Role {role_name} should get 403 on preview"
+
+            r_gen = client.post("/api/v1/classes/cls-01/schedules/generate", json={}, headers=auth_headers)
+            assert r_gen.status_code == 403, f"Role {role_name} should get 403 on generate"
+
+    @patch("app.utils.rbac_auth.has_permission")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.utils.rbac_auth.get_jwt_identity")
+    @patch("app.utils.rbac_auth.get_jwt")
+    @patch("app.utils.rbac_auth.verify_jwt_in_request")
+    def test_training_manager_and_multirole_allowed_on_schedule_generation(
+        self,
+        mock_verify,
+        mock_get_jwt,
+        mock_get_identity,
+        mock_get_sess,
+        mock_has_perm,
+        client,
+        auth_headers,
+    ):
+        """Quản lý đào tạo hoặc tài khoản đa vai trò có Quản lý đào tạo được phép preview và generate."""
+        for user_id, perms in [
+            ("u-tm-only", {"schedule.manage", "schedule.view"}),
+            ("u-admin-and-tm", {"schedule.manage", "schedule.view", "user.manage", "course.manage"}),
+        ]:
+            _mock_user_session(mock_verify, mock_get_jwt, mock_get_identity, mock_get_sess, user_id=user_id)
+            mock_has_perm.side_effect = lambda uid, perm, p=perms: perm in p
+
+            with patch("app.services.schedule_service.preview_schedule_service", return_value={"schedules": [], "total_sessions": 0}):
+                r_prev = client.post("/api/v1/classes/cls-01/schedules/preview", json={"days_of_week": [2]}, headers=auth_headers)
+                assert r_prev.status_code == 200
+
+            with patch("app.services.schedule_service.generate_schedule_service", return_value={"total_saved": 1, "schedules": []}):
+                r_gen = client.post("/api/v1/classes/cls-01/schedules/generate", json={"days_of_week": [2]}, headers=auth_headers)
+                assert r_gen.status_code == 201
+
+
