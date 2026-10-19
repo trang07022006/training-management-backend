@@ -1,27 +1,2 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-
-# Environment
-.env
-backend/.env
-frontend/.env
-
-# Node
 node_modules/
-frontend/node_modules/
-frontend/dist/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Uploads (SCRUM-121)
-uploads/avatars/*
-!uploads/avatars/.gitkeep
+*.xlsx
