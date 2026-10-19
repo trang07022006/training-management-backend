@@ -56,12 +56,14 @@ BUSINESS_ROLES = [
 
 BUSINESS_PERMISSIONS = [
     Permission(id="perm-id-lead-delete", code="lead.delete", name="Xóa khách hàng tiềm năng", description="Quyền xóa khách hàng tiềm năng trong hệ thống (chỉ dành cho Quản lý đào tạo)"),
+    Permission(id="perm-id-student-lifecycle-manage", code="student.lifecycle_manage", name="Quản lý vòng đời học viên", description="Xử lý bảo lưu, chuyển lớp và thôi học của học viên"),
 ]
 
 BUSINESS_ROLE_PERMISSIONS_MAP = {
     "training_manager": [
         "user.view", "course.view", "course.manage", "session.view", "lead.delete",
         "schedule.view", "schedule.manage", "schedule.personal_view",
+        "student.lifecycle_manage",
     ],
     "consultant": ["course.view", "course.manage", "session.view"],
     "admin": ["lead.delete"],

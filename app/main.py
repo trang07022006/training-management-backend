@@ -28,6 +28,7 @@ from app.routes.enrollment_routes import enrollment_bp
 from app.routes.holiday_routes import holiday_bp
 from app.routes.schedule_routes import schedule_bp
 from app.routes.classroom_routes import classroom_bp
+from app.routes.student_lifecycle_routes import student_lifecycle_bp
 
 
 from app.database.ensure_business_roles import ensure_business_roles
@@ -62,6 +63,7 @@ app.register_blueprint(enrollment_bp)
 app.register_blueprint(holiday_bp)
 app.register_blueprint(schedule_bp)
 app.register_blueprint(classroom_bp)
+app.register_blueprint(student_lifecycle_bp)
 
 @app.route("/api/health", methods=["GET"])
 def health():
