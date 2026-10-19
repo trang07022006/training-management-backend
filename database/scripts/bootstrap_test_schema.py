@@ -49,6 +49,7 @@ MIGRATIONS = (
     "030_create_class_schedules_table.sql",
     "031_create_schedule_notifications_table.sql",
     "032_add_schedule_rbac_permissions.sql",
+    "033_create_student_lifecycle_tables.sql",
 )
 
 

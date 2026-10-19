@@ -60,7 +60,8 @@ def ensure_business_roles() -> None:
                 VALUES 
                     ('perm-id-schedule-view', 'schedule.view', 'Xem thời khóa biểu', 'Xem thời khóa biểu và lịch giảng dạy/học tập toàn trường', NOW(), NOW()),
                     ('perm-id-schedule-manage', 'schedule.manage', 'Quản lý thời khóa biểu', 'Tạo, sửa, hủy và điều chỉnh lịch học, thời khóa biểu', NOW(), NOW()),
-                    ('perm-id-schedule-personal-view', 'schedule.personal_view', 'Xem lịch cá nhân', 'Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên', NOW(), NOW())
+                    ('perm-id-schedule-personal-view', 'schedule.personal_view', 'Xem lịch cá nhân', 'Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên', NOW(), NOW()),
+                    ('perm-id-student-lifecycle-manage', 'student.lifecycle_manage', 'Quản lý vòng đời học viên', 'Xử lý bảo lưu, chuyển lớp và thôi học của học viên', NOW(), NOW())
                 ON DUPLICATE KEY UPDATE 
                     name = VALUES(name),
                     description = VALUES(description),
@@ -73,13 +74,14 @@ def ensure_business_roles() -> None:
                     ('role-id-admin', 'perm-id-schedule-view', NOW()),
                     ('role-id-training-manager', 'perm-id-schedule-view', NOW()),
                     ('role-id-training-manager', 'perm-id-schedule-manage', NOW()),
+                    ('role-id-training-manager', 'perm-id-student-lifecycle-manage', NOW()),
                     ('role-id-trainer', 'perm-id-schedule-view', NOW()),
                     ('role-id-trainer', 'perm-id-schedule-personal-view', NOW()),
                     ('role-id-trainee', 'perm-id-schedule-personal-view', NOW());
             """)
             cursor.execute("""
                 DELETE FROM role_permissions 
-                WHERE role_id = 'role-id-admin' AND permission_id = 'perm-id-schedule-manage';
+                WHERE role_id = 'role-id-admin' AND permission_id IN ('perm-id-schedule-manage', 'perm-id-student-lifecycle-manage');
             """)
 
             # 4. SCRUM-213: Bổ sung bảng lead_status_history và trường rejection_reason
