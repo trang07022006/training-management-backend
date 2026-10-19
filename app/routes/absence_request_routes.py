@@ -3,7 +3,7 @@ Routes API Đơn xin phép vắng (Absence Request Routes) - SCRUM-255.
 """
 
 import logging
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, g, jsonify, request, send_file
 from mysql.connector import Error as MySQLError
 
 from app.services import absence_request_service, authorization_service
@@ -71,7 +71,8 @@ def get_eligible_sessions_endpoint():
 @permission_required("absence.request", message="Chỉ học viên mới có quyền gửi đơn xin phép vắng.")
 def submit_absence_request_endpoint():
     """
-    API nộp đơn xin phép vắng mới (SCRUM-255 Lát 1).
+    API nộp đơn xin phép vắng mới (SCRUM-255 Lát 1 & Lát 2).
+    Hỗ trợ cả application/json (không đính kèm tệp) và multipart/form-data (có thể kèm tệp minh chứng).
     """
     user_id = getattr(g, "user_id", None)
     if not user_id:
@@ -81,18 +82,29 @@ def submit_absence_request_endpoint():
             "message": "Không tìm thấy thông tin người dùng trong phiên làm việc.",
         }), 401
 
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({
-            "status": "error",
-            "code": "INVALID_PAYLOAD",
-            "message": "Dữ liệu yêu cầu không đúng định dạng JSON.",
-        }), 400
+    file_storages = []
+    if request.content_type and "multipart/form-data" in request.content_type:
+        payload = {
+            "schedule_id": request.form.get("schedule_id"),
+            "reason": request.form.get("reason"),
+        }
+        file_storages = request.files.getlist("attachments")
+        if not file_storages:
+            file_storages = request.files.getlist("files")
+    else:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({
+                "status": "error",
+                "code": "INVALID_PAYLOAD",
+                "message": "Dữ liệu yêu cầu không đúng định dạng JSON hoặc multipart/form-data.",
+            }), 400
 
     try:
         created = absence_request_service.submit_absence_request_service(
             user_id=user_id,
             payload=payload,
+            file_storages=file_storages,
         )
         return jsonify({
             "status": "success",
@@ -229,3 +241,67 @@ def get_absence_request_endpoint(request_id: str):
             "code": "INTERNAL_SERVER_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi tải chi tiết đơn.",
         }), 500
+
+
+@absence_request_bp.get("/v1/absence-requests/<request_id>/attachments/<attachment_id>")
+@absence_request_bp.get("/absence-requests/<request_id>/attachments/<attachment_id>")
+@permission_required(["absence.request", "absence.view", "absence.review"], message="Bạn không có quyền tải tệp này.")
+def download_absence_attachment_endpoint(request_id: str, attachment_id: str):
+    """
+    API tải/xem tệp minh chứng của đơn xin phép vắng (SCRUM-255 Lát 2).
+    - Bảo vệ nghiêm ngặt bằng JWT + RBAC + quyền sở hữu/phân công nghiệp vụ.
+    - Không lộ đường dẫn vật lý máy chủ.
+    """
+    user_id = getattr(g, "user_id", None)
+    if not user_id:
+        return jsonify({
+            "status": "error",
+            "code": "UNAUTHORIZED",
+            "message": "Không tìm thấy thông tin người dùng trong phiên làm việc.",
+        }), 401
+
+    try:
+        roles = authorization_service.get_user_role_codes(user_id)
+        target_file, mime_type, file_name = absence_request_service.get_attachment_file_service(
+            request_id=request_id,
+            attachment_id=attachment_id,
+            current_user_id=user_id,
+            current_user_roles=roles,
+        )
+
+        response = send_file(
+            str(target_file),
+            mimetype=mime_type,
+            as_attachment=False,
+            download_name=file_name,
+            conditional=True,
+        )
+        response.headers["Cache-Control"] = "private, no-cache, must-revalidate"
+        return response
+    except AbsenceServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "data": err.data,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error(
+            "Lỗi cơ sở dữ liệu khi tải minh chứng request_id=%s, attachment_id=%s: %s",
+            request_id,
+            attachment_id,
+            err,
+        )
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi tải tệp minh chứng.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi hệ thống khi tải tệp minh chứng: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải tệp minh chứng.",
+        }), 500
+

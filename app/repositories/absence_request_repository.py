@@ -543,3 +543,29 @@ def list_student_absence_requests(
             return rows, total
     finally:
         conn.close()
+
+
+def get_attachment_by_id(attachment_id: str) -> Optional[dict[str, Any]]:
+    """Truy vấn thông tin của một tệp đính kèm theo attachment_id."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT ara.id, ara.request_id, ara.file_name, ara.file_path, ara.file_size, ara.mime_type, ara.created_at,
+                       ar.student_id, ar.schedule_id
+                FROM absence_request_attachments ara
+                JOIN absence_requests ar ON ara.request_id = ar.id
+                WHERE ara.id = %s
+                LIMIT 1
+                """,
+                (attachment_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            row["created_at"] = format_utc_timestamp_iso(row.get("created_at"))
+            return row
+    finally:
+        conn.close()
+

@@ -6,6 +6,18 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Optional
 
+import io
+import os
+from pathlib import Path
+from flask import current_app
+
+from app.config.absence_attachment_config import (
+    ATTACHMENT_MAX_FILE_SIZE,
+    ATTACHMENT_UPLOAD_FOLDER,
+    AttachmentValidationError,
+    is_safe_attachment_path,
+    validate_attachment_content,
+)
 from app.models.absence_request import (
     ABSENCE_STATUS_APPROVED,
     ABSENCE_STATUS_PENDING,
@@ -50,6 +62,11 @@ class RequestNotFoundError(AbsenceServiceError):
         super().__init__("REQUEST_NOT_FOUND", message, status_code=404)
 
 
+class AttachmentNotFoundError(AbsenceServiceError):
+    def __init__(self, message: str = "Không tìm thấy tệp minh chứng."):
+        super().__init__("ATTACHMENT_NOT_FOUND", message, status_code=404)
+
+
 class ForbiddenAbsenceAccessError(AbsenceServiceError):
     def __init__(self, message: str = "Bạn không có quyền truy cập hoặc thao tác với đơn này."):
         super().__init__("FORBIDDEN_ABSENCE_ACCESS", message, status_code=403)
@@ -81,15 +98,20 @@ def get_eligible_sessions_for_current_student(user_id: str) -> list[dict[str, An
 def submit_absence_request_service(
     user_id: str,
     payload: dict[str, Any],
+    file_storages: Optional[list] = None,
 ) -> dict[str, Any]:
     """
-    Học viên nộp đơn xin phép vắng (SCRUM-255 Lát 1).
+    Học viên nộp đơn xin phép vắng (SCRUM-255 Lát 1 & Lát 2).
     Quy tắc:
     - Bắt buộc ánh xạ học viên từ user_id session.
     - Validate schedule_id.
     - Validate reason: không rỗng, không chỉ khoảng trắng, độ dài 5..1000 ký tự.
     - Kiểm tra tính hợp lệ của buổi học và hạn 48 giờ.
     - Chống gửi lặp nếu đang có đơn pending cho cùng buổi học.
+    - Xử lý minh chứng đính kèm (Lát 2):
+      + Tối đa 5 tệp, <= 5MB/tệp, định dạng JPG/JPEG/PNG/WEBP/PDF hợp lệ
+      + Lưu tệp an toàn bằng UUID ngẫu nhiên
+      + Không để tệp mồ côi nếu tạo đơn thất bại (rollback cleanup disk)
     """
     student = _resolve_student_for_user(user_id)
     student_id = student["id"]
@@ -124,24 +146,80 @@ def submit_absence_request_service(
     if pending_req:
         raise DuplicatePendingRequestError()
 
-    # Tạo bản ghi đơn
-    created = absence_request_repository.create_absence_request_record(
-        schedule_id=schedule_id,
-        student_id=student_id,
-        reason=reason,
-    )
+    # Xử lý tệp minh chứng đính kèm (Lát 2)
+    validated_attachments = []
+    written_disk_paths = []
 
-    # Bổ sung thông tin buổi học và học viên để response đầy đủ
-    created["session_number"] = sched_info.get("session_number")
-    created["topic"] = sched_info.get("topic")
-    created["learning_date"] = sched_info.get("learning_date_str")
-    created["class_code"] = sched_info.get("class_code")
-    created["subject_name"] = sched_info.get("subject_name")
-    created["subject_code"] = sched_info.get("subject_code")
-    created["student_code"] = student.get("student_code")
-    created["student_name"] = student.get("full_name")
+    try:
+        if file_storages:
+            # Lọc bỏ các storage rỗng
+            valid_files = [f for f in file_storages if f and getattr(f, "filename", None)]
+            if len(valid_files) > 5:
+                raise AbsenceServiceError("TOO_MANY_ATTACHMENTS", "Số lượng tệp minh chứng tối đa là 5 tệp.")
 
-    return created
+            if valid_files:
+                upload_folder_str = (
+                    current_app.config.get("ABSENCE_ATTACHMENT_UPLOAD_FOLDER", ATTACHMENT_UPLOAD_FOLDER)
+                    if current_app
+                    else ATTACHMENT_UPLOAD_FOLDER
+                )
+                upload_folder = Path(upload_folder_str).resolve()
+                upload_folder.mkdir(parents=True, exist_ok=True)
+
+                for f in valid_files:
+                    f.seek(0)
+                    file_bytes = f.read()
+
+                    try:
+                        clean_name, mime_type, file_size, internal_name = validate_attachment_content(
+                            f.filename, file_bytes
+                        )
+                    except AttachmentValidationError as err:
+                        raise AbsenceServiceError(err.code, err.message, err.status_code)
+
+                    target_path = (upload_folder / internal_name).resolve()
+                    if not is_safe_attachment_path(str(upload_folder), str(target_path)):
+                        raise AbsenceServiceError("INVALID_PATH", "Đường dẫn tệp minh chứng không an toàn.")
+
+                    target_path.write_bytes(file_bytes)
+                    written_disk_paths.append(target_path)
+
+                    validated_attachments.append({
+                        "file_name": clean_name,
+                        "file_path": f"absence_attachments/{internal_name}",
+                        "file_size": file_size,
+                        "mime_type": mime_type,
+                    })
+
+        # Tạo bản ghi đơn trong cơ sở dữ liệu
+        created = absence_request_repository.create_absence_request_record(
+            schedule_id=schedule_id,
+            student_id=student_id,
+            reason=reason,
+            attachments=validated_attachments,
+        )
+
+        # Bổ sung thông tin buổi học và học viên để response đầy đủ
+        created["session_number"] = sched_info.get("session_number")
+        created["topic"] = sched_info.get("topic")
+        created["learning_date"] = sched_info.get("learning_date_str")
+        created["class_code"] = sched_info.get("class_code")
+        created["subject_name"] = sched_info.get("subject_name")
+        created["subject_code"] = sched_info.get("subject_code")
+        created["student_code"] = student.get("student_code")
+        created["student_name"] = student.get("full_name")
+
+        return created
+
+    except Exception:
+        # Cơ chế dọn dẹp an toàn chống tệp mồ côi khi tạo đơn thất bại
+        for p in written_disk_paths:
+            try:
+                if p.exists():
+                    p.unlink(missing_ok=True)
+            except Exception as cleanup_err:
+                logger.warning(f"Không thể xóa tệp minh chứng dở dang {p}: {cleanup_err}")
+        raise
 
 
 def list_my_absence_requests_service(
@@ -195,7 +273,6 @@ def get_absence_request_detail_service(
     normalized_roles = [r.lower().strip() for r in current_user_roles if isinstance(r, str)]
     is_training_manager = "training_manager" in normalized_roles
     is_trainer = "trainer" in normalized_roles
-    is_trainee = "trainee" in normalized_roles
 
     # Nếu là quản lý đào tạo -> toàn quyền xem
     if is_training_manager:
@@ -213,3 +290,49 @@ def get_absence_request_detail_service(
             return req
 
     raise ForbiddenAbsenceAccessError()
+
+
+def get_attachment_file_service(
+    request_id: str,
+    attachment_id: str,
+    current_user_id: str,
+    current_user_roles: list[str],
+) -> tuple[Path, str, str]:
+    """
+    Truy vấn và xác thực quyền tải/mở tệp minh chứng (SCRUM-255 Lát 2).
+    - Kiểm tra sự tồn tại của tệp đính kèm trong đơn.
+    - Kiểm soát quyền: Học viên chủ đơn, Giảng viên phụ trách buổi học, hoặc Quản lý đào tạo.
+    - Ngăn chặn triệt để Path Traversal và rò rỉ URL công khai không phân quyền.
+    - Trả về: (file_path_on_disk, mime_type, original_file_name)
+    """
+    att = absence_request_repository.get_attachment_by_id(attachment_id)
+    if not att or att["request_id"] != request_id:
+        raise AttachmentNotFoundError()
+
+    # Kiểm tra quyền truy cập đơn
+    get_absence_request_detail_service(
+        request_id=request_id,
+        current_user_id=current_user_id,
+        current_user_roles=current_user_roles,
+    )
+
+    # Giải quyết đường dẫn file trên đĩa
+    raw_path = att["file_path"].replace("\\", "/").strip()
+    if raw_path.startswith("absence_attachments/"):
+        internal_name = raw_path[len("absence_attachments/"):]
+    else:
+        internal_name = Path(raw_path).name
+
+    upload_folder_str = (
+        current_app.config.get("ABSENCE_ATTACHMENT_UPLOAD_FOLDER", ATTACHMENT_UPLOAD_FOLDER)
+        if current_app
+        else ATTACHMENT_UPLOAD_FOLDER
+    )
+    upload_folder = Path(upload_folder_str).resolve()
+    target_file = (upload_folder / internal_name).resolve()
+
+    if not is_safe_attachment_path(str(upload_folder), str(target_file)) or not target_file.is_file():
+        raise AbsenceServiceError("FILE_NOT_FOUND_ON_DISK", "Tệp minh chứng không tồn tại trên hệ thống lưu trữ.", status_code=404)
+
+    return target_file, att["mime_type"], att["file_name"]
+
