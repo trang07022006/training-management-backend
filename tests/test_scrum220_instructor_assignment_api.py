@@ -399,6 +399,42 @@ class Scrum220InstructorAssignmentApiTests(unittest.TestCase):
         class_ids = [c["id"] for c in items]
         self.assertNotIn(self.class_id, class_ids)
 
+    def test_tc220_11_candidate_search_and_pagination(self):
+        """TC220-11: Tìm kiếm ứng viên giảng viên phân trang tối đa 20 kết quả/lần."""
+        # 1. Tìm theo tên Thầy A
+        res = self.client.get(
+            f"/api/v1/classes/instructors/candidates?q=Thầy%20A",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()["data"]
+        self.assertIn("items", data)
+        self.assertIn("total", data)
+        self.assertIn("page_size", data)
+        self.assertLessEqual(data["page_size"], 20)
+        item_ids = [it["id"] for it in data["items"]]
+        self.assertIn(self.trainer_a_id, item_ids)
+
+        # 2. Tìm theo email
+        res_email = self.client.get(
+            f"/api/v1/classes/instructors/candidates?q=assistant_1_220",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(res_email.status_code, 200)
+        data_email = res_email.get_json()["data"]
+        email_item_ids = [it["id"] for it in data_email["items"]]
+        self.assertIn(self.assistant_1_id, email_item_ids)
+
+        # 2. Tìm không có kết quả
+        res_empty = self.client.get(
+            "/api/v1/classes/instructors/candidates?q=non_existent_trainer_xyz_999",
+            headers={"Authorization": f"Bearer {self.admin_token}"},
+        )
+        self.assertEqual(res_empty.status_code, 200)
+        data_empty = res_empty.get_json()["data"]
+        self.assertEqual(data_empty["items"], [])
+        self.assertEqual(data_empty["total"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

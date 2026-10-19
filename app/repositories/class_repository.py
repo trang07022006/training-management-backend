@@ -458,26 +458,59 @@ def delete_class_for_testing(class_id: str) -> None:
         conn.close()
 
 
-def list_instructor_candidates() -> list[dict]:
+def list_instructor_candidates(
+    search: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
     """
-    Truy xuất danh sách tất cả người dùng có vai trò giảng viên (trainer) đang hoạt động (SCRUM-220).
-    Bao gồm cả người dùng có role trực tiếp trong bảng users hoặc qua bảng user_roles.
+    Truy xuất danh sách người dùng có vai trò giảng viên (trainer) đang hoạt động (SCRUM-220).
+    Hỗ trợ tìm kiếm theo tên hoặc email, phân trang tối đa 20 kết quả/lần.
     """
+    page = max(1, int(page or 1))
+    page_size = min(max(1, int(page_size or 20)), 20)
+    offset = (page - 1) * page_size
+
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
-            sql = """
+            where_clauses = [
+                "(u.role = 'trainer' OR r.code = 'trainer')",
+                "(u.status = 'active' OR u.status IS NULL)",
+            ]
+            params: list = []
+            if search and search.strip():
+                kw = f"%{search.strip()}%"
+                where_clauses.append("(u.name LIKE %s OR u.email LIKE %s)")
+                params.extend([kw, kw])
+
+            where_sql = " AND ".join(where_clauses)
+
+            # Đếm tổng số kết quả phù hợp
+            count_sql = f"""
+                SELECT COUNT(DISTINCT u.id) as total
+                FROM users u
+                LEFT JOIN user_roles ur ON u.id = ur.user_id
+                LEFT JOIN roles r ON ur.role_id = r.id
+                WHERE {where_sql}
+            """
+            cursor.execute(count_sql, tuple(params))
+            total_row = cursor.fetchone()
+            total = int(total_row["total"]) if total_row and total_row.get("total") is not None else 0
+
+            # Lấy danh sách phân trang
+            query_sql = f"""
                 SELECT DISTINCT u.id, u.name, u.email, u.phone, u.role, u.status
                 FROM users u
                 LEFT JOIN user_roles ur ON u.id = ur.user_id
                 LEFT JOIN roles r ON ur.role_id = r.id
-                WHERE (u.role = 'trainer' OR r.code = 'trainer')
-                  AND (u.status = 'active' OR u.status IS NULL)
+                WHERE {where_sql}
                 ORDER BY u.name ASC, u.email ASC
+                LIMIT %s OFFSET %s
             """
-            cursor.execute(sql)
+            cursor.execute(query_sql, tuple(params + [page_size, offset]))
             rows = cursor.fetchall()
-            return [
+            items = [
                 {
                     "id": str(r["id"]),
                     "name": r.get("name") or r.get("email") or "Giảng viên",
@@ -488,6 +521,14 @@ def list_instructor_candidates() -> list[dict]:
                 }
                 for r in rows
             ]
+
+            return {
+                "items": items,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "has_more": (offset + len(items)) < total,
+            }
     finally:
         conn.close()
 

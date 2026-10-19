@@ -305,9 +305,26 @@ def get_instructor_candidates_endpoint():
     """
     API lấy danh sách ứng viên giảng viên để phân công môn học (SCRUM-220).
     Chỉ yêu cầu quyền xem lớp/khóa học (course.view), không cần quyền quản trị tài khoản toàn bộ.
+    Hỗ trợ tìm kiếm theo tên/email, phân trang tối đa 20 kết quả/lần.
     """
     try:
-        candidates = class_service.get_instructor_candidates_service()
+        search = request.args.get("q") or request.args.get("search")
+        if search:
+            search = search.strip()
+        try:
+            page = int(request.args.get("page", 1))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = int(request.args.get("page_size", 20))
+        except (ValueError, TypeError):
+            page_size = 20
+
+        candidates = class_service.get_instructor_candidates_service(
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
         return jsonify({
             "status": "success",
             "data": candidates,
