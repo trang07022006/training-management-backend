@@ -387,6 +387,7 @@ def get_absence_request_by_id(request_id: str) -> Optional[dict[str, Any]]:
                     s.code AS subject_code,
                     COALESCE(cr.room_name, cr.room_code, cs.room_id) AS room_name,
                     stu.student_code,
+                    stu.user_id AS student_user_id,
                     stu.full_name AS student_name,
                     stu.email AS student_email,
                     reviewer.name AS reviewer_name,

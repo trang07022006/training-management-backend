@@ -448,6 +448,8 @@ def review_absence_request_service(
             action=action_clean,
             rejection_reason=rejection_reason,
         )
+        if updated_req:
+            _dispatch_absence_review_notification(updated_req)
         return updated_req
     except RuntimeError as err:
         err_msg = str(err)
@@ -466,5 +468,80 @@ def review_absence_request_service(
         if "REJECTION_REASON_REQUIRED" in err_msg:
             raise AbsenceServiceError("REJECTION_REASON_REQUIRED", "Vui lòng nhập lý do từ chối đơn xin phép vắng.")
         raise AbsenceServiceError("REVIEW_FAILED", f"Không thể xử lý đơn: {err_msg}")
+
+
+def _dispatch_absence_review_notification(updated_req: dict[str, Any]) -> None:
+    """
+    Gửi thông báo tới học viên khi đơn xin phép vắng được duyệt hoặc từ chối (SCRUM-255 Lát 4).
+    Lưu vào bảng schedule_notifications để học viên theo dõi trên hệ thống.
+    Được bọc trong try-except an toàn: nếu phát sinh lỗi lưu thông báo sau khi đã commit quyết định,
+    không làm crash hoặc rollback quyết định duyệt/từ chối đã thành công.
+    """
+    try:
+        if not updated_req:
+            return
+
+        status = updated_req.get("status")
+        if status not in (ABSENCE_STATUS_APPROVED, ABSENCE_STATUS_REJECTED):
+            return
+
+        recipient_user_id = updated_req.get("student_user_id")
+        if not recipient_user_id:
+            # Fallback tra cứu user_id qua email hoặc student_id
+            student_info = class_schedule_repository.get_student_by_user_id(updated_req.get("student_id", ""))
+            if student_info and student_info.get("user_id"):
+                recipient_user_id = student_info["user_id"]
+            else:
+                recipient_user_id = updated_req.get("student_id")
+
+        if not recipient_user_id:
+            logger.warning("Không tìm thấy recipient_id để gửi thông báo đơn %s", updated_req.get("id"))
+            return
+
+        schedule_id = updated_req.get("schedule_id", "")
+        class_id = updated_req.get("class_id", "")
+        session_num = updated_req.get("session_number", "")
+        subject_name = updated_req.get("subject_name", "buổi học")
+        learning_date = updated_req.get("learning_date", "")
+        reviewer_name = updated_req.get("reviewer_name") or "Giảng viên"
+
+        if status == ABSENCE_STATUS_APPROVED:
+            change_type = "absence_approved"
+            title = "Đơn xin phép vắng đã được duyệt"
+            message = (
+                f"Đơn xin phép vắng buổi #{session_num} ({subject_name}) ngày {learning_date} "
+                f"của bạn đã được {reviewer_name} chấp thuận. Điểm danh buổi học đã cập nhật thành Vắng có phép."
+            )
+        else:
+            change_type = "absence_rejected"
+            title = "Đơn xin phép vắng đã bị từ chối"
+            rejection_reason = updated_req.get("rejection_reason") or "Không có lý do cụ thể"
+            message = (
+                f"Đơn xin phép vắng buổi #{session_num} ({subject_name}) ngày {learning_date} "
+                f"của bạn đã bị từ chối bởi {reviewer_name}. Lý do: {rejection_reason}."
+            )
+
+        notif_item = {
+            "schedule_id": schedule_id,
+            "class_id": class_id,
+            "recipient_type": "student",
+            "recipient_id": recipient_user_id,
+            "recipient_name": updated_req.get("student_name"),
+            "recipient_email": updated_req.get("student_email"),
+            "change_type": change_type,
+            "title": title,
+            "message": message,
+        }
+
+        class_schedule_repository.insert_schedule_notifications_batch([notif_item])
+        logger.info(
+            "Đã phát thông báo kết quả xử lý đơn %s (trạng thái: %s) tới học viên %s",
+            updated_req.get("id"),
+            status,
+            recipient_user_id,
+        )
+    except Exception as exc:
+        logger.warning("Gửi thông báo kết quả xử lý đơn xin phép vắng thất bại (%s): %s", type(exc).__name__, exc)
+
 
 
