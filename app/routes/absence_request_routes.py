@@ -305,3 +305,128 @@ def download_absence_attachment_endpoint(request_id: str, attachment_id: str):
             "message": "Đã xảy ra lỗi hệ thống khi tải tệp minh chứng.",
         }), 500
 
+
+@absence_request_bp.get("/v1/absence-requests")
+@absence_request_bp.get("/absence-requests")
+@permission_required(["absence.view", "absence.review"], message="Bạn không có quyền truy cập danh sách đơn cần xét duyệt.")
+def list_absence_requests_for_reviewer_endpoint():
+    """
+    API lấy danh sách đơn xin phép vắng dành cho Giảng viên hoặc Quản lý đào tạo (SCRUM-255 Lát 3).
+    """
+    user_id = getattr(g, "user_id", None)
+    if not user_id:
+        return jsonify({
+            "status": "error",
+            "code": "UNAUTHORIZED",
+            "message": "Không tìm thấy thông tin người dùng trong phiên làm việc.",
+        }), 401
+
+    try:
+        roles = authorization_service.get_user_role_codes(user_id)
+        status_filter = request.args.get("status", default=None, type=str)
+        search_query = request.args.get("q", default=None, type=str)
+        schedule_id = request.args.get("schedule_id", default=None, type=str)
+        page = request.args.get("page", default=1, type=int)
+        limit = request.args.get("limit", default=10, type=int)
+
+        data = absence_request_service.list_absence_requests_for_reviewer_service(
+            user_id=user_id,
+            roles=roles,
+            status_filter=status_filter,
+            search_query=search_query,
+            schedule_id=schedule_id,
+            page=page,
+            limit=limit,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "ABSENCE_REQUESTS_RETRIEVED",
+            "message": "Tải danh sách đơn xin phép vắng thành công.",
+            "data": data,
+        }), 200
+    except AbsenceServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "data": err.data,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy danh sách đơn duyệt user_id=%s: %s", user_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy vấn danh sách đơn xin phép vắng.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi hệ thống khi tải danh sách đơn duyệt: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải danh sách đơn.",
+        }), 500
+
+
+@absence_request_bp.post("/v1/absence-requests/<request_id>/review")
+@absence_request_bp.post("/absence-requests/<request_id>/review")
+@permission_required("absence.review", message="Bạn không có quyền duyệt hoặc từ chối đơn xin phép vắng.")
+def review_absence_request_endpoint(request_id: str):
+    """
+    API phê duyệt hoặc từ chối đơn xin phép vắng (SCRUM-255 Lát 3).
+    - Duyệt đơn (approve): Cập nhật đơn -> Đã duyệt, cập nhật điểm danh thành Vắng có phép (excused) và ghi audit log.
+    - Từ chối (reject): Bắt buộc có lý do từ chối, không sửa điểm danh.
+    """
+    user_id = getattr(g, "user_id", None)
+    if not user_id:
+        return jsonify({
+            "status": "error",
+            "code": "UNAUTHORIZED",
+            "message": "Không tìm thấy thông tin người dùng trong phiên làm việc.",
+        }), 401
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_PAYLOAD",
+            "message": "Dữ liệu yêu cầu không đúng định dạng JSON.",
+        }), 400
+
+    try:
+        roles = authorization_service.get_user_role_codes(user_id)
+        result = absence_request_service.review_absence_request_service(
+            request_id=request_id,
+            reviewer_user_id=user_id,
+            reviewer_roles=roles,
+            payload=payload,
+        )
+        action_text = "Phê duyệt" if payload.get("action") == "approve" else "Từ chối"
+        return jsonify({
+            "status": "success",
+            "code": "ABSENCE_REQUEST_REVIEWED",
+            "message": f"{action_text} đơn xin phép vắng thành công.",
+            "data": result,
+        }), 200
+    except AbsenceServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "data": err.data,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi duyệt đơn request_id=%s: %s", request_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi xử lý đơn xin phép vắng.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi hệ thống khi duyệt đơn xin phép vắng: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý đơn.",
+        }), 500
+
+

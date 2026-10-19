@@ -569,3 +569,304 @@ def get_attachment_by_id(attachment_id: str) -> Optional[dict[str, Any]]:
     finally:
         conn.close()
 
+
+def list_absence_requests_for_reviewer(
+    reviewer_user_id: str,
+    is_training_manager: bool,
+    status_filter: Optional[str] = None,
+    search_query: Optional[str] = None,
+    schedule_id: Optional[str] = None,
+    page: int = 1,
+    limit: int = 10,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Truy vấn danh sách đơn xin phép vắng cho giảng viên hoặc quản lý đào tạo (SCRUM-255 Lát 3).
+    - Quản lý đào tạo: Xem được toàn bộ đơn trong hệ thống.
+    - Giảng viên: Chỉ xem các đơn thuộc các buổi học mình được phân công (instructor_id hoặc class_subject_instructors).
+    """
+    limit_val = min(max(int(limit), 1), 20)
+    page_val = max(int(page), 1)
+    offset = (page_val - 1) * limit_val
+
+    where_clauses = []
+    params: list[Any] = []
+
+    if not is_training_manager:
+        where_clauses.append(
+            """(
+                cs.instructor_id = %s
+                OR EXISTS (
+                    SELECT 1 FROM class_subject_instructors csi
+                    WHERE csi.class_subject_id = cs.class_subject_id
+                      AND csi.instructor_id = %s
+                )
+            )"""
+        )
+        params.extend([reviewer_user_id, reviewer_user_id])
+
+    if status_filter and status_filter.strip() and status_filter.strip().lower() != "all":
+        where_clauses.append("ar.status = %s")
+        params.append(status_filter.strip().lower())
+
+    if schedule_id and str(schedule_id).strip():
+        where_clauses.append("ar.schedule_id = %s")
+        params.append(str(schedule_id).strip())
+
+    if search_query and str(search_query).strip():
+        q = f"%{str(search_query).strip()}%"
+        where_clauses.append(
+            "(c.class_code LIKE %s OR s.name LIKE %s OR s.code LIKE %s OR stu.full_name LIKE %s OR stu.student_code LIKE %s OR ar.reason LIKE %s)"
+        )
+        params.extend([q, q, q, q, q, q])
+
+    where_str = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            # Đếm tổng số
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM absence_requests ar
+                JOIN class_schedules cs ON ar.schedule_id = cs.id
+                JOIN classes c ON cs.class_id = c.id
+                LEFT JOIN subjects s ON cs.subject_id = s.id
+                JOIN students stu ON ar.student_id = stu.id
+                {where_str}
+                """,
+                tuple(params),
+            )
+            total = cursor.fetchone()["total"]
+
+            # Lấy danh sách trang
+            cursor.execute(
+                f"""
+                SELECT 
+                    ar.id,
+                    ar.schedule_id,
+                    ar.student_id,
+                    ar.reason,
+                    ar.status,
+                    ar.reviewed_by,
+                    ar.reviewed_at,
+                    ar.rejection_reason,
+                    ar.created_at,
+                    ar.updated_at,
+                    cs.session_number,
+                    cs.topic,
+                    cs.learning_date,
+                    cs.shift,
+                    cs.start_time,
+                    cs.end_time,
+                    cs.status AS schedule_status,
+                    c.id AS class_id,
+                    c.class_code,
+                    s.name AS subject_name,
+                    s.code AS subject_code,
+                    COALESCE(cr.room_name, cr.room_code, cs.room_id) AS room_name,
+                    stu.student_code,
+                    stu.full_name AS student_name,
+                    stu.email AS student_email,
+                    reviewer.name AS reviewer_name,
+                    (
+                        SELECT COUNT(*) 
+                        FROM absence_request_attachments ara 
+                        WHERE ara.request_id = ar.id
+                    ) AS attachment_count
+                FROM absence_requests ar
+                JOIN class_schedules cs ON ar.schedule_id = cs.id
+                JOIN classes c ON cs.class_id = c.id
+                LEFT JOIN subjects s ON cs.subject_id = s.id
+                LEFT JOIN classrooms cr ON (cs.room_id = cr.id OR cs.room_id = cr.room_code)
+                JOIN students stu ON ar.student_id = stu.id
+                LEFT JOIN users reviewer ON ar.reviewed_by = reviewer.id
+                {where_str}
+                ORDER BY 
+                    CASE WHEN ar.status = 'pending' THEN 0 ELSE 1 END,
+                    ar.created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params + [limit_val, offset]),
+            )
+            rows = cursor.fetchall() or []
+            for r in rows:
+                learning_date = r.get("learning_date")
+                r["learning_date"] = learning_date.isoformat() if learning_date else None
+                r["learning_date_str"] = r["learning_date"]
+                r["start_time"] = str(r["start_time"]) if r.get("start_time") else None
+                r["start_time_str"] = r["start_time"]
+                r["end_time"] = str(r["end_time"]) if r.get("end_time") else None
+                r["end_time_str"] = r["end_time"]
+                r["status_label"] = ABSENCE_STATUS_LABELS.get(r["status"], r["status"])
+                r["created_at"] = format_utc_timestamp_iso(r.get("created_at"))
+                r["updated_at"] = format_utc_timestamp_iso(r.get("updated_at"))
+                r["reviewed_at"] = format_utc_timestamp_iso(r.get("reviewed_at"))
+
+            return rows, total
+    finally:
+        conn.close()
+
+
+def review_absence_request_record(
+    request_id: str,
+    reviewer_user_id: str,
+    action: str,
+    rejection_reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Xử lý duyệt hoặc từ chối đơn trong một transaction nguyên tử (SCRUM-255 Lát 3).
+    - Khóa hàng đơn (FOR UPDATE) để ngăn chặn 2 người xử lý đồng thời tạo mâu thuẫn.
+    - Kiểm tra trạng thái: chỉ cho phép duyệt khi đơn đang ở trạng thái 'pending'.
+    - Nếu action == 'approve':
+      + Kiểm tra điểm danh hiện tại của học viên trên buổi học. Nếu đã 'present' hoặc 'late' -> CHẶN duyệt.
+      + Cập nhật đơn thành 'approved', lưu reviewer_user_id và thời điểm UTC.
+      + Cập nhật/thêm bản ghi điểm danh học viên thành 'excused' (Vắng có phép).
+      + Ghi nhận lịch sử kiểm toán vào attendance_audit_logs với lý do liên kết ID đơn.
+      + KHÔNG tự ý bật attendance_checked trên class_schedules (đặc biệt đối với buổi tương lai).
+    - Nếu action == 'reject':
+      + Kiểm tra lý do từ chối (bắt buộc).
+      + Cập nhật đơn thành 'rejected', lưu reviewer_user_id, thời điểm UTC và rejection_reason.
+      + KHÔNG thay đổi điểm danh học viên sang vắng không phép.
+    - Rollback hoàn toàn nếu có bất kỳ lỗi nào xảy ra.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            # 1. Khóa hàng đơn để chống đồng thời
+            cursor.execute(
+                """
+                SELECT id, schedule_id, student_id, status
+                FROM absence_requests
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (request_id,),
+            )
+            req = cursor.fetchone()
+            if not req:
+                raise RuntimeError("REQUEST_NOT_FOUND")
+
+            if req["status"] != ABSENCE_STATUS_PENDING:
+                raise RuntimeError("REQUEST_ALREADY_REVIEWED")
+
+            schedule_id = req["schedule_id"]
+            student_id = req["student_id"]
+
+            # 2. Khóa hàng buổi học
+            cursor.execute(
+                "SELECT id, status, learning_date FROM class_schedules WHERE id = %s FOR UPDATE",
+                (schedule_id,),
+            )
+            sched = cursor.fetchone()
+            if not sched:
+                raise RuntimeError("SESSION_NOT_FOUND")
+            if sched.get("status") == "cancelled":
+                raise RuntimeError("SESSION_CANCELLED")
+
+            # 3. Khóa hàng điểm danh hiện tại của học viên tại buổi học
+            cursor.execute(
+                """
+                SELECT id, status, notes
+                FROM session_attendances
+                WHERE schedule_id = %s AND student_id = %s
+                FOR UPDATE
+                """,
+                (schedule_id, student_id),
+            )
+            att_row = cursor.fetchone()
+
+            if action == "approve":
+                # Chặn nếu học viên đã có mặt hoặc đi muộn
+                if att_row and att_row["status"] in ("present", "late"):
+                    raise RuntimeError("ATTENDANCE_CONFLICT_PRESENT_LATE")
+
+                # Cập nhật đơn thành approved
+                cursor.execute(
+                    """
+                    UPDATE absence_requests
+                    SET status = %s,
+                        reviewed_by = %s,
+                        reviewed_at = UTC_TIMESTAMP(6),
+                        rejection_reason = NULL,
+                        updated_at = UTC_TIMESTAMP(6)
+                    WHERE id = %s
+                    """,
+                    (ABSENCE_STATUS_APPROVED, reviewer_user_id, request_id),
+                )
+
+                old_status = att_row["status"] if att_row else None
+                new_status = "excused"
+                note_text = "Nghỉ có phép theo đơn duyệt"
+
+                # Upsert session_attendances
+                if att_row:
+                    cursor.execute(
+                        """
+                        UPDATE session_attendances
+                        SET status = %s,
+                            notes = COALESCE(notes, %s),
+                            recorded_by = %s,
+                            updated_at = UTC_TIMESTAMP(6)
+                        WHERE id = %s
+                        """,
+                        (new_status, note_text, reviewer_user_id, att_row["id"]),
+                    )
+                else:
+                    new_sa_id = f"sa-{uuid.uuid4().hex}"
+                    cursor.execute(
+                        """
+                        INSERT INTO session_attendances (
+                            id, schedule_id, student_id, status, notes, recorded_by, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
+                        """,
+                        (new_sa_id, schedule_id, student_id, new_status, note_text, reviewer_user_id),
+                    )
+
+                # Ghi nhận lịch sử attendance_audit_logs
+                log_id = f"aal-{uuid.uuid4().hex}"
+                audit_reason = f"Duyệt đơn xin phép vắng (Mã đơn: {request_id})"
+                cursor.execute(
+                    """
+                    INSERT INTO attendance_audit_logs (
+                        id, schedule_id, student_id, old_status, new_status, reason, performed_by, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(6))
+                    """,
+                    (log_id, schedule_id, student_id, old_status, new_status, audit_reason, reviewer_user_id),
+                )
+
+            elif action == "reject":
+                if not rejection_reason or not str(rejection_reason).strip():
+                    raise RuntimeError("REJECTION_REASON_REQUIRED")
+
+                clean_rejection_reason = str(rejection_reason).strip()
+
+                cursor.execute(
+                    """
+                    UPDATE absence_requests
+                    SET status = %s,
+                        reviewed_by = %s,
+                        reviewed_at = UTC_TIMESTAMP(6),
+                        rejection_reason = %s,
+                        updated_at = UTC_TIMESTAMP(6)
+                    WHERE id = %s
+                    """,
+                    (ABSENCE_STATUS_REJECTED, reviewer_user_id, clean_rejection_reason, request_id),
+                )
+                # Điểm danh giữ nguyên không đổi
+
+            else:
+                raise RuntimeError("INVALID_REVIEW_ACTION")
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return get_absence_request_by_id(request_id)
+
+

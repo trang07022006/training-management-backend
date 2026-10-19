@@ -336,3 +336,135 @@ def get_attachment_file_service(
 
     return target_file, att["mime_type"], att["file_name"]
 
+
+def list_absence_requests_for_reviewer_service(
+    user_id: str,
+    roles: list[str],
+    status_filter: Optional[str] = None,
+    search_query: Optional[str] = None,
+    schedule_id: Optional[str] = None,
+    page: int = 1,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """
+    Lấy danh sách đơn xin phép vắng dành cho Giảng viên hoặc Quản lý đào tạo (SCRUM-255 Lát 3).
+    """
+    normalized_roles = [r.lower().strip() for r in roles if isinstance(r, str)]
+    is_training_manager = "training_manager" in normalized_roles
+    is_trainer = "trainer" in normalized_roles
+
+    if not is_training_manager and not is_trainer:
+        raise ForbiddenAbsenceAccessError("Bạn không có quyền xem danh sách đơn xin phép vắng của lớp/buổi học.")
+
+    items, total = absence_request_repository.list_absence_requests_for_reviewer(
+        reviewer_user_id=user_id,
+        is_training_manager=is_training_manager,
+        status_filter=status_filter,
+        search_query=search_query,
+        schedule_id=schedule_id,
+        page=page,
+        limit=limit,
+    )
+
+    limit_val = min(max(int(limit), 1), 20)
+    page_val = max(int(page), 1)
+    total_pages = max(1, (total + limit_val - 1) // limit_val) if total > 0 else 1
+
+    return {
+        "items": items,
+        "pagination": {
+            "page": page_val,
+            "limit": limit_val,
+            "total_items": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
+def review_absence_request_service(
+    request_id: str,
+    reviewer_user_id: str,
+    reviewer_roles: list[str],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Giảng viên hoặc Quản lý đào tạo xem xét, phê duyệt hoặc từ chối đơn (SCRUM-255 Lát 3).
+    - Thẩm quyền:
+      + Quản lý đào tạo: được phép duyệt thay.
+      + Giảng viên: chỉ được duyệt các đơn thuộc buổi học mình phụ trách.
+      + Trợ giảng / Admin thuần túy / Học viên: bị chặn (403).
+    - Kiểm tra payload:
+      + action bắt buộc: 'approve' hoặc 'reject'
+      + rejection_reason bắt buộc khi reject (3-1000 ký tự)
+    - Xử lý nguyên tử:
+      + Chặn duyệt nếu học viên đã có mặt hoặc đi muộn.
+      + Cập nhật điểm danh 'excused' khi duyệt, ghi audit log liên kết đơn.
+      + Không bật attendance_checked trên class_schedules buổi tương lai.
+    """
+    normalized_roles = [r.lower().strip() for r in reviewer_roles if isinstance(r, str)]
+    is_training_manager = "training_manager" in normalized_roles
+    is_trainer = "trainer" in normalized_roles
+
+    if not is_training_manager and not is_trainer:
+        raise ForbiddenAbsenceAccessError("Bạn không có quyền xem xét, phê duyệt hoặc từ chối đơn xin phép vắng.")
+
+    # Kiểm tra sự tồn tại của đơn
+    req = absence_request_repository.get_absence_request_by_id(request_id)
+    if not req:
+        raise RequestNotFoundError()
+
+    # Kiểm tra phân công đối với Giảng viên
+    if is_trainer and not is_training_manager:
+        from app.repositories import attendance_repository
+        if not attendance_repository.is_trainer_assigned_to_session(reviewer_user_id, req["schedule_id"]):
+            raise ForbiddenAbsenceAccessError("Bạn không được phân công phụ trách buổi học này, không thể duyệt đơn.")
+
+    if not isinstance(payload, dict):
+        raise AbsenceServiceError("INVALID_PAYLOAD", "Dữ liệu yêu cầu không hợp lệ.")
+
+    action = payload.get("action")
+    if not action or not isinstance(action, str) or action.strip().lower() not in ("approve", "reject"):
+        raise AbsenceServiceError("INVALID_ACTION", "Hành động xem xét không hợp lệ. Chỉ chấp nhận 'approve' hoặc 'reject'.")
+
+    action_clean = action.strip().lower()
+    rejection_reason = payload.get("rejection_reason")
+
+    if action_clean == "reject":
+        if not rejection_reason or not isinstance(rejection_reason, str) or not rejection_reason.strip():
+            raise AbsenceServiceError("REJECTION_REASON_REQUIRED", "Vui lòng nhập lý do từ chối đơn xin phép vắng.")
+        clean_reason = rejection_reason.strip()
+        if len(clean_reason) < 3:
+            raise AbsenceServiceError("REJECTION_REASON_TOO_SHORT", "Lý do từ chối phải có ít nhất 3 ký tự.")
+        if len(clean_reason) > 1000:
+            raise AbsenceServiceError("REJECTION_REASON_TOO_LONG", "Lý do từ chối không được vượt quá 1000 ký tự.")
+        rejection_reason = clean_reason
+    else:
+        rejection_reason = None
+
+    try:
+        updated_req = absence_request_repository.review_absence_request_record(
+            request_id=request_id,
+            reviewer_user_id=reviewer_user_id,
+            action=action_clean,
+            rejection_reason=rejection_reason,
+        )
+        return updated_req
+    except RuntimeError as err:
+        err_msg = str(err)
+        if "REQUEST_NOT_FOUND" in err_msg:
+            raise RequestNotFoundError()
+        if "REQUEST_ALREADY_REVIEWED" in err_msg:
+            raise AbsenceServiceError("REQUEST_ALREADY_REVIEWED", "Đơn xin phép vắng này đã được xử lý trước đó.")
+        if "ATTENDANCE_CONFLICT_PRESENT_LATE" in err_msg:
+            raise AbsenceServiceError(
+                "ATTENDANCE_CONFLICT",
+                "Học viên đã có mặt hoặc đi muộn tại buổi học này. Không thể duyệt đơn vắng có phép.",
+                status_code=400,
+            )
+        if "SESSION_CANCELLED" in err_msg:
+            raise AbsenceServiceError("SESSION_CANCELLED", "Buổi học này đã bị hủy, không thể duyệt đơn.")
+        if "REJECTION_REASON_REQUIRED" in err_msg:
+            raise AbsenceServiceError("REJECTION_REASON_REQUIRED", "Vui lòng nhập lý do từ chối đơn xin phép vắng.")
+        raise AbsenceServiceError("REVIEW_FAILED", f"Không thể xử lý đơn: {err_msg}")
+
+
