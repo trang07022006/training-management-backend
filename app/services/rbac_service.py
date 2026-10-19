@@ -35,7 +35,7 @@ INITIAL_ROLE_PERMISSIONS_MAP = {
     "admin": [
         "user.view", "user.manage", "course.view", "course.manage",
         "session.view", "session.revoke",
-        "schedule.view", "schedule.personal_view",
+        "schedule.view",
     ],
     "trainer": [
         "course.view", "course.manage", "session.view",
@@ -66,7 +66,7 @@ BUSINESS_PERMISSIONS = [
 BUSINESS_ROLE_PERMISSIONS_MAP = {
     "training_manager": [
         "user.view", "course.view", "course.manage", "session.view", "lead.delete",
-        "schedule.view", "schedule.manage", "schedule.personal_view",
+        "schedule.view", "schedule.manage",
         "student.lifecycle_manage",
         "attendance.view", "attendance.take", "attendance.manage",
     ],

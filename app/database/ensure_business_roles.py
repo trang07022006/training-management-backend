@@ -89,7 +89,8 @@ def ensure_business_roles() -> None:
             """)
             cursor.execute("""
                 DELETE FROM role_permissions 
-                WHERE role_id = 'role-id-admin' AND permission_id IN ('perm-id-schedule-manage', 'perm-id-student-lifecycle-manage', 'perm-id-attendance-take', 'perm-id-attendance-manage');
+                WHERE (role_id = 'role-id-admin' AND permission_id IN ('perm-id-schedule-manage', 'perm-id-student-lifecycle-manage', 'perm-id-attendance-take', 'perm-id-attendance-manage', 'perm-id-schedule-personal-view'))
+                   OR (role_id = 'role-id-training-manager' AND permission_id = 'perm-id-schedule-personal-view');
             """)
 
             # 4. SCRUM-213: Bổ sung bảng lead_status_history và trường rejection_reason
