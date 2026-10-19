@@ -237,3 +237,166 @@ def get_session_attendance_sheet(
         },
         "students": combined_students,
     }
+
+
+def save_session_attendance_service(
+    schedule_id: str,
+    payload: dict[str, Any],
+    current_user_id: str,
+    current_user_roles: list[str],
+) -> dict[str, Any]:
+    """
+    Lưu kết quả điểm danh cho buổi học theo cơ chế nguyên tử (SCRUM-254 Lát 2 & 3).
+    - Kiểm tra tính hợp lệ của buổi học, ngày học và quyền hạn.
+    - Giảng viên chỉ điểm danh hôm nay; Quản lý đào tạo được sửa quá khứ.
+    - Kiểm tra học viên thuộc lớp/buổi học.
+    - Cập nhật cờ attendance_checked trên class_schedules.
+    - Ghi lịch sử thay đổi vào attendance_audit_logs.
+    """
+    if not isinstance(payload, dict):
+        raise AttendanceServiceError("INVALID_PAYLOAD", "Dữ liệu yêu cầu không đúng định dạng.")
+
+    attendance_list = payload.get("attendances")
+    if not isinstance(attendance_list, list) or len(attendance_list) == 0:
+        raise AttendanceServiceError("EMPTY_ATTENDANCE_LIST", "Vui lòng chọn trạng thái điểm danh cho ít nhất một học viên.")
+
+    schedule = attendance_repository.get_schedule_details_for_attendance(schedule_id)
+    if not schedule:
+        raise SessionNotFoundError()
+
+    # 1. Phân quyền và phạm vi phụ trách
+    normalized_roles = [r.lower().strip() for r in current_user_roles if isinstance(r, str)]
+    is_training_manager = "training_manager" in normalized_roles
+    is_trainer = "trainer" in normalized_roles
+
+    if not is_training_manager and not is_trainer:
+        raise ForbiddenAttendanceAccessError("Tài khoản của bạn không có quyền lưu điểm danh.")
+
+    if is_trainer and not is_training_manager:
+        if not attendance_repository.is_trainer_assigned_to_session(current_user_id, schedule_id):
+            raise ForbiddenAttendanceAccessError("Bạn không được phân công phụ trách buổi học này.")
+
+    # 2. Kiểm tra ràng buộc ngày và trạng thái buổi học
+    today = get_vietnam_today()
+    learning_date = schedule["learning_date"]
+
+    if schedule["status"] == "cancelled":
+        raise SessionCancelledError()
+
+    if learning_date > today:
+        raise FutureSessionAttendanceError()
+
+    if learning_date < today and not is_training_manager:
+        raise PastSessionEditForbiddenError()
+
+    # 3. Kiểm tra danh sách học viên hợp lệ
+    eligible_students = student_lifecycle_repository.get_eligible_attendance_students(
+        class_id=schedule["class_id"],
+        session_date_val=learning_date,
+    )
+    existing_attendances = attendance_repository.get_session_attendances(schedule_id)
+    valid_student_ids = {s["student_id"] for s in eligible_students} | {s["student_id"] for s in existing_attendances}
+
+    clean_items: list[dict[str, Any]] = []
+    seen_student_ids = set()
+
+    for item in attendance_list:
+        if not isinstance(item, dict):
+            continue
+        student_id = item.get("student_id")
+        status = item.get("status")
+        notes = item.get("notes")
+
+        if not student_id or student_id not in valid_student_ids:
+            raise AttendanceServiceError(
+                "STUDENT_NOT_IN_SESSION",
+                f"Học viên '{student_id}' không thuộc danh sách lớp hoặc buổi học này.",
+            )
+
+        if status not in ATTENDANCE_STATUSES:
+            raise AttendanceServiceError(
+                "INVALID_ATTENDANCE_STATUS",
+                f"Trạng thái '{status}' không hợp lệ. Chỉ chấp nhận: Có mặt (present), Đi muộn (late), Vắng có phép (excused), Vắng không phép (unexcused).",
+            )
+
+        if student_id in seen_student_ids:
+            continue
+        seen_student_ids.add(student_id)
+
+        clean_items.append({
+            "student_id": student_id,
+            "status": status,
+            "notes": str(notes).strip() if notes else None,
+        })
+
+    # 4. Thực thi lưu nguyên tử trong Transaction
+    reason = payload.get("reason")
+    try:
+        updated_count = attendance_repository.save_session_attendance_batch(
+            schedule_id=schedule_id,
+            attendance_items=clean_items,
+            performed_by=current_user_id,
+            reason=str(reason).strip() if reason else None,
+        )
+    except RuntimeError as r_err:
+        if str(r_err) == "SESSION_CANCELLED":
+            raise SessionCancelledError()
+        if str(r_err) == "SESSION_NOT_FOUND":
+            raise SessionNotFoundError()
+        raise
+
+    # 5. Đọc lại toàn bộ sổ điểm danh sau khi lưu để trả về kết quả mới nhất
+    updated_sheet = get_session_attendance_sheet(schedule_id, current_user_id, current_user_roles)
+
+    return {
+        "updated_count": updated_count,
+        "sheet": updated_sheet,
+    }
+
+
+def get_session_attendance_history_service(
+    schedule_id: str,
+    current_user_id: str,
+    current_user_roles: list[str],
+) -> list[dict[str, Any]]:
+    """
+    Truy vấn lịch sử chỉnh sửa điểm danh của một buổi học (SCRUM-254 Lát 3).
+    """
+    schedule = attendance_repository.get_schedule_details_for_attendance(schedule_id)
+    if not schedule:
+        raise SessionNotFoundError()
+
+    normalized_roles = [r.lower().strip() for r in current_user_roles if isinstance(r, str)]
+    is_training_manager = "training_manager" in normalized_roles
+    is_trainer = "trainer" in normalized_roles
+
+    if not is_training_manager and not is_trainer:
+        raise ForbiddenAttendanceAccessError("Tài khoản của bạn không có quyền xem lịch sử điểm danh.")
+
+    if is_trainer and not is_training_manager:
+        if not attendance_repository.is_trainer_assigned_to_session(current_user_id, schedule_id):
+            raise ForbiddenAttendanceAccessError("Bạn không được phân công phụ trách buổi học này.")
+
+    raw_logs = attendance_repository.get_attendance_audit_logs(schedule_id)
+    formatted = []
+    for log in raw_logs:
+        old_status = log.get("old_status")
+        new_status = log.get("new_status")
+        formatted.append({
+            "id": log["id"],
+            "schedule_id": log["schedule_id"],
+            "student_id": log["student_id"],
+            "student_name": log.get("student_name"),
+            "student_code": log.get("student_code"),
+            "old_status": old_status,
+            "old_status_label": ATTENDANCE_STATUS_LABELS.get(old_status, "Chưa điểm danh") if old_status else "Chưa điểm danh",
+            "new_status": new_status,
+            "new_status_label": ATTENDANCE_STATUS_LABELS.get(new_status, new_status),
+            "reason": log.get("reason"),
+            "performed_by": log["performed_by"],
+            "performer_name": log.get("performer_name"),
+            "performer_email": log.get("performer_email"),
+            "created_at": log["created_at"].isoformat() if log.get("created_at") else None,
+        })
+    return formatted
+

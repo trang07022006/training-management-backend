@@ -169,3 +169,90 @@ def get_attendance_audit_logs(schedule_id: str) -> list[dict[str, Any]]:
             return cursor.fetchall() or []
     finally:
         conn.close()
+
+
+def save_session_attendance_batch(
+    schedule_id: str,
+    attendance_items: list[dict[str, Any]],
+    performed_by: str,
+    reason: Optional[str] = None,
+) -> int:
+    """
+    Lưu hàng loạt bản ghi điểm danh học viên trong 1 transaction nguyên tử (SCRUM-254 Lát 2 & 3).
+    - Cập nhật cờ attendance_checked = 1 trên class_schedules.
+    - Chống bản ghi trùng lặp (ON DUPLICATE KEY UPDATE).
+    - Tự động ghi lại lịch sử vào attendance_audit_logs nếu trạng thái thay đổi.
+    - Trả về số bản ghi được cập nhật/thêm mới.
+    """
+    import uuid
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            # 1. Khóa hàng buổi học để tránh can thiệp đồng thời
+            cursor.execute(
+                "SELECT id, attendance_checked, status FROM class_schedules WHERE id = %s FOR UPDATE",
+                (schedule_id,),
+            )
+            sched = cursor.fetchone()
+            if not sched:
+                raise RuntimeError("SESSION_NOT_FOUND")
+            if sched.get("status") == "cancelled":
+                raise RuntimeError("SESSION_CANCELLED")
+
+            # 2. Đọc trạng thái điểm danh hiện tại để so sánh và ghi audit log
+            cursor.execute(
+                "SELECT id, student_id, status FROM session_attendances WHERE schedule_id = %s FOR UPDATE",
+                (schedule_id,),
+            )
+            existing_records = {r["student_id"]: r for r in (cursor.fetchall() or [])}
+
+            updated_count = 0
+            for item in attendance_items:
+                student_id = item["student_id"]
+                new_status = item["status"]
+                notes = item.get("notes")
+                existing = existing_records.get(student_id)
+                old_status = existing["status"] if existing else None
+
+                # Chỉ ghi audit log nếu trạng thái có sự thay đổi
+                if old_status != new_status:
+                    log_id = f"aal-{uuid.uuid4().hex}"
+                    cursor.execute(
+                        """
+                        INSERT INTO attendance_audit_logs 
+                        (id, schedule_id, student_id, old_status, new_status, reason, performed_by, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(6))
+                        """,
+                        (log_id, schedule_id, student_id, old_status, new_status, reason, performed_by),
+                    )
+
+                # Upsert bản ghi điểm danh
+                att_id = existing["id"] if existing else f"att-{uuid.uuid4().hex}"
+                cursor.execute(
+                    """
+                    INSERT INTO session_attendances (id, schedule_id, student_id, status, notes, recorded_by, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW(6), NOW(6))
+                    ON DUPLICATE KEY UPDATE
+                        status = VALUES(status),
+                        notes = VALUES(notes),
+                        recorded_by = VALUES(recorded_by),
+                        updated_at = NOW(6)
+                    """,
+                    (att_id, schedule_id, student_id, new_status, notes, performed_by),
+                )
+                updated_count += 1
+
+            # 3. Cập nhật cờ attendance_checked trên class_schedules nếu có bản ghi điểm danh
+            if updated_count > 0:
+                cursor.execute(
+                    "UPDATE class_schedules SET attendance_checked = 1, updated_at = NOW() WHERE id = %s",
+                    (schedule_id,),
+                )
+
+        conn.commit()
+        return updated_count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
