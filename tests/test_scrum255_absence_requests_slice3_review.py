@@ -175,11 +175,11 @@ class Scrum255Slice3ReviewTests(unittest.TestCase):
         try:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM auth_sessions WHERE user_id IN (%s, %s, %s, %s, %s, %s)", tuple(cls.created_user_ids))
-                cur.execute("DELETE FROM attendance_audit_logs WHERE schedule_id IN (%s, %s, %s)", (cls.sched_future_id, cls.sched_conflict_id, cls.sched_other_id))
-                cur.execute("DELETE FROM session_attendances WHERE schedule_id IN (%s, %s, %s)", (cls.sched_future_id, cls.sched_conflict_id, cls.sched_other_id))
-                cur.execute("DELETE FROM absence_request_attachments WHERE request_id IN (SELECT id FROM absence_requests WHERE schedule_id IN (%s, %s, %s))", (cls.sched_future_id, cls.sched_conflict_id, cls.sched_other_id))
-                cur.execute("DELETE FROM absence_requests WHERE schedule_id IN (%s, %s, %s)", (cls.sched_future_id, cls.sched_conflict_id, cls.sched_other_id))
-                cur.execute("DELETE FROM class_schedules WHERE id IN (%s, %s, %s)", (cls.sched_future_id, cls.sched_conflict_id, cls.sched_other_id))
+                cur.execute("DELETE FROM attendance_audit_logs WHERE student_id IN (%s, %s)", tuple(cls.created_student_ids))
+                cur.execute("DELETE FROM session_attendances WHERE student_id IN (%s, %s)", tuple(cls.created_student_ids))
+                cur.execute("DELETE FROM absence_request_attachments WHERE request_id IN (SELECT id FROM absence_requests WHERE student_id IN (%s, %s))", tuple(cls.created_student_ids))
+                cur.execute("DELETE FROM absence_requests WHERE student_id IN (%s, %s)", tuple(cls.created_student_ids))
+                cur.execute("DELETE FROM class_schedules WHERE class_id = %s", (cls.class_a_id,))
                 cur.execute("DELETE FROM class_enrollments WHERE class_id = %s", (cls.class_a_id,))
                 cur.execute("DELETE FROM students WHERE id IN (%s, %s)", tuple(cls.created_student_ids))
                 cur.execute("DELETE FROM classes WHERE id = %s", (cls.class_a_id,))
@@ -399,8 +399,23 @@ class Scrum255Slice3ReviewTests(unittest.TestCase):
         self.assertEqual(res.get_json()["code"], "ATTENDANCE_CONFLICT")
 
     def test_06_block_review_when_already_reviewed(self):
-        """Đơn đã được duyệt trước đó -> Chặn duyệt hoặc từ chối lại (chống mâu thuẫn đồng thời)."""
-        req_id = self._create_test_request(self.sched_future_id, self.student_a_id, "Em A xin nghỉ buổi tương lai test repeat")
+        """Đơn đã được duyệt trước đó -> Chặn duyệt hoặc từ chối lại chính đơn này (REQUEST_ALREADY_REVIEWED)."""
+        sched_test6_id = f"sch-t6-{uuid.uuid4().hex[:8]}"
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO class_schedules (id, class_id, subject_id, session_number, topic, learning_date, shift, start_time, end_time, status, attendance_checked, instructor_id, created_at, updated_at)
+                    VALUES (%s, %s, %s, 10, 'Buổi test repeat', CURDATE() + INTERVAL 3 DAY, 'Ca 1', '08:00:00', '10:00:00', 'scheduled', 0, %s, NOW(), NOW())
+                    """,
+                    (sched_test6_id, self.class_a_id, self.subject_id, self.trainer_assigned_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        req_id = self._create_test_request(sched_test6_id, self.student_a_id, "Em A xin nghỉ buổi test repeat")
 
         headers_tr = self._get_auth_header(self.trainer_assigned_id, "trainer")
         # Lần 1: Duyệt thành công
@@ -411,7 +426,7 @@ class Scrum255Slice3ReviewTests(unittest.TestCase):
         )
         self.assertEqual(res1.status_code, 200)
 
-        # Lần 2: Thử từ chối hoặc duyệt lại -> Chặn 400 REQUEST_ALREADY_REVIEWED
+        # Lần 2: Thử từ chối hoặc duyệt lại chính đơn này -> Chặn 400 REQUEST_ALREADY_REVIEWED
         res2 = self.client.post(
             f"/api/v1/absence-requests/{req_id}/review",
             json={"action": "reject", "rejection_reason": "Muốn từ chối lại"},
@@ -419,6 +434,34 @@ class Scrum255Slice3ReviewTests(unittest.TestCase):
         )
         self.assertEqual(res2.status_code, 400)
         self.assertEqual(res2.get_json()["code"], "REQUEST_ALREADY_REVIEWED")
+
+    def test_07_block_approve_duplicate_request_when_already_has_approved_request(self):
+        """Chặn duyệt thêm đơn nếu buổi học đã có một đơn khác đã được duyệt cho cùng học viên."""
+        # Student A đã có đơn approved từ test_02 trên sched_future_id
+        # Tạo thêm một đơn pending thủ công trực tiếp trong DB (giả lập dữ liệu cũ hoặc đồng thời lọt vào)
+        dup_req_id = f"ar-dup-{uuid.uuid4().hex[:8]}"
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO absence_requests (id, schedule_id, student_id, reason, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, 'Đơn trùng lọt vào DB', 'pending', NOW(), NOW())
+                    """,
+                    (dup_req_id, self.sched_future_id, self.student_a_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        headers_tr = self._get_auth_header(self.trainer_assigned_id, "trainer")
+        res = self.client.post(
+            f"/api/v1/absence-requests/{dup_req_id}/review",
+            json={"action": "approve"},
+            headers=headers_tr,
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.get_json()["code"], "DUPLICATE_APPROVED_REQUEST")
 
 
 if __name__ == "__main__":

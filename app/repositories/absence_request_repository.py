@@ -96,10 +96,23 @@ def get_student_eligible_sessions(student_id: str) -> list[dict[str, Any]]:
                         LIMIT 1
                     ) AS pending_request_id,
                     (
+                        SELECT ar.id 
+                        FROM absence_requests ar 
+                        WHERE ar.schedule_id = cs.id AND ar.student_id = ce.student_id AND ar.status = 'approved'
+                        LIMIT 1
+                    ) AS approved_request_id,
+                    (
                         SELECT ar.status 
                         FROM absence_requests ar 
                         WHERE ar.schedule_id = cs.id AND ar.student_id = ce.student_id 
-                        ORDER BY ar.created_at DESC
+                        ORDER BY 
+                            CASE 
+                                WHEN ar.status = 'approved' THEN 1 
+                                WHEN ar.status = 'pending' THEN 2 
+                                WHEN ar.status = 'rejected' THEN 3 
+                                ELSE 4 
+                            END ASC,
+                            ar.created_at DESC
                         LIMIT 1
                     ) AS latest_request_status
                 FROM class_enrollments ce
@@ -154,6 +167,8 @@ def get_student_eligible_sessions(student_id: str) -> list[dict[str, Any]]:
                 r["end_time"] = str(r["end_time"]) if r.get("end_time") else None
                 r["end_time_str"] = r["end_time"]
                 r["has_pending_request"] = bool(r.get("pending_request_id"))
+                r["has_approved_request"] = bool(r.get("approved_request_id"))
+                r["is_selectable"] = not (r["has_pending_request"] or r["has_approved_request"])
                 eligible_sessions.append(r)
 
             return eligible_sessions
@@ -270,6 +285,29 @@ def get_pending_absence_request(student_id: str, schedule_id: str) -> Optional[d
         conn.close()
 
 
+def get_existing_active_absence_request(student_id: str, schedule_id: str) -> Optional[dict[str, Any]]:
+    """
+    Kiểm tra xem học viên đã có đơn xin phép vắng đang chờ duyệt (pending) hoặc đã duyệt (approved) cho buổi học này chưa.
+    Ưu tiên trả về đơn approved trước đơn pending nếu tồn tại cả hai.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT id, schedule_id, student_id, reason, status, created_at
+                FROM absence_requests
+                WHERE student_id = %s AND schedule_id = %s AND status IN ('approved', 'pending')
+                ORDER BY CASE WHEN status = 'approved' THEN 1 ELSE 2 END ASC, created_at DESC
+                LIMIT 1
+                """,
+                (student_id, schedule_id),
+            )
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
 def create_absence_request_record(
     schedule_id: str,
     student_id: str,
@@ -278,7 +316,7 @@ def create_absence_request_record(
 ) -> dict[str, Any]:
     """
     Tạo đơn xin phép vắng trong transaction nguyên tử.
-    - Khóa kiểm tra chống tạo trùng đơn pending.
+    - Khóa kiểm tra chống tạo trùng đơn pending hoặc approved (an toàn khi 2 request gửi đồng thời).
     - Lưu thông tin đơn vào absence_requests.
     - Lưu danh sách đính kèm vào absence_request_attachments (nếu có).
     """
@@ -286,17 +324,22 @@ def create_absence_request_record(
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
-            # 1. Khóa kiểm tra đơn pending hiện có
+            # 1. Khóa kiểm tra đơn pending hoặc approved hiện có (FOR UPDATE chống concurrency race condition)
             cursor.execute(
                 """
-                SELECT id FROM absence_requests
-                WHERE student_id = %s AND schedule_id = %s AND status = 'pending'
+                SELECT id, status FROM absence_requests
+                WHERE student_id = %s AND schedule_id = %s AND status IN ('approved', 'pending')
+                ORDER BY CASE WHEN status = 'approved' THEN 1 ELSE 2 END ASC
                 FOR UPDATE
                 """,
                 (student_id, schedule_id),
             )
-            if cursor.fetchone():
-                raise RuntimeError("DUPLICATE_PENDING_REQUEST: Buổi học này đã có đơn xin phép vắng đang chờ duyệt.")
+            existing = cursor.fetchone()
+            if existing:
+                if existing["status"] == "approved":
+                    raise RuntimeError("DUPLICATE_APPROVED_REQUEST: Buổi học này đã có đơn xin phép vắng được phê duyệt.")
+                else:
+                    raise RuntimeError("DUPLICATE_PENDING_REQUEST: Buổi học này đã có đơn xin phép vắng đang chờ duyệt.")
 
             # 2. Tạo bản ghi đơn
             cursor.execute(
@@ -778,6 +821,18 @@ def review_absence_request_record(
             att_row = cursor.fetchone()
 
             if action == "approve":
+                # Chặn duyệt thêm đơn trùng nếu đã có đơn Đã duyệt cho cùng học viên/buổi
+                cursor.execute(
+                    """
+                    SELECT id FROM absence_requests
+                    WHERE student_id = %s AND schedule_id = %s AND status = 'approved' AND id != %s
+                    FOR UPDATE
+                    """,
+                    (student_id, schedule_id, request_id),
+                )
+                if cursor.fetchone():
+                    raise RuntimeError("ALREADY_HAS_APPROVED_REQUEST: Buổi học này đã có đơn xin phép vắng được phê duyệt trước đó.")
+
                 # Chặn nếu học viên đã có mặt hoặc đi muộn
                 if att_row and att_row["status"] in ("present", "late"):
                     raise RuntimeError("ATTENDANCE_CONFLICT_PRESENT_LATE")

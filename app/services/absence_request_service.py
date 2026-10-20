@@ -57,6 +57,11 @@ class DuplicatePendingRequestError(AbsenceServiceError):
         super().__init__("DUPLICATE_PENDING_REQUEST", message, status_code=400)
 
 
+class DuplicateApprovedRequestError(AbsenceServiceError):
+    def __init__(self, message: str = "Buổi học này đã có đơn xin phép vắng được phê duyệt."):
+        super().__init__("DUPLICATE_APPROVED_REQUEST", message, status_code=400)
+
+
 class RequestNotFoundError(AbsenceServiceError):
     def __init__(self, message: str = "Không tìm thấy đơn xin phép vắng."):
         super().__init__("REQUEST_NOT_FOUND", message, status_code=404)
@@ -141,10 +146,13 @@ def submit_absence_request_service(
     if not is_eligible:
         raise SessionNotEligibleError(err_reason)
 
-    # Chống gửi lặp nếu đã có đơn pending
-    pending_req = absence_request_repository.get_pending_absence_request(student_id, schedule_id)
-    if pending_req:
-        raise DuplicatePendingRequestError()
+    # Chống gửi lặp nếu đã có đơn pending hoặc approved cho cùng buổi học
+    active_req = absence_request_repository.get_existing_active_absence_request(student_id, schedule_id)
+    if active_req:
+        if active_req.get("status") == ABSENCE_STATUS_APPROVED:
+            raise DuplicateApprovedRequestError("Buổi học này đã có đơn xin phép vắng được phê duyệt.")
+        elif active_req.get("status") == ABSENCE_STATUS_PENDING:
+            raise DuplicatePendingRequestError("Buổi học này đã có đơn xin phép vắng đang chờ duyệt.")
 
     # Xử lý tệp minh chứng đính kèm (Lát 2)
     validated_attachments = []
@@ -211,6 +219,20 @@ def submit_absence_request_service(
 
         return created
 
+    except RuntimeError as r_err:
+        # Cơ chế dọn dẹp an toàn chống tệp mồ côi khi tạo đơn thất bại
+        for p in written_disk_paths:
+            try:
+                if p.exists():
+                    p.unlink(missing_ok=True)
+            except Exception as cleanup_err:
+                logger.warning(f"Không thể xóa tệp minh chứng dở dang {p}: {cleanup_err}")
+        err_text = str(r_err)
+        if "DUPLICATE_APPROVED_REQUEST" in err_text:
+            raise DuplicateApprovedRequestError("Buổi học này đã có đơn xin phép vắng được phê duyệt.")
+        if "DUPLICATE_PENDING_REQUEST" in err_text:
+            raise DuplicatePendingRequestError("Buổi học này đã có đơn xin phép vắng đang chờ duyệt.")
+        raise AbsenceServiceError("SUBMIT_FAILED", f"Không thể tạo đơn xin phép vắng: {err_text}")
     except Exception:
         # Cơ chế dọn dẹp an toàn chống tệp mồ côi khi tạo đơn thất bại
         for p in written_disk_paths:
@@ -465,6 +487,12 @@ def review_absence_request_service(
             )
         if "SESSION_CANCELLED" in err_msg:
             raise AbsenceServiceError("SESSION_CANCELLED", "Buổi học này đã bị hủy, không thể duyệt đơn.")
+        if "ALREADY_HAS_APPROVED_REQUEST" in err_msg:
+            raise AbsenceServiceError(
+                "DUPLICATE_APPROVED_REQUEST",
+                "Buổi học này đã có đơn xin phép vắng được phê duyệt trước đó.",
+                status_code=400,
+            )
         if "REJECTION_REASON_REQUIRED" in err_msg:
             raise AbsenceServiceError("REJECTION_REASON_REQUIRED", "Vui lòng nhập lý do từ chối đơn xin phép vắng.")
         raise AbsenceServiceError("REVIEW_FAILED", f"Không thể xử lý đơn: {err_msg}")
