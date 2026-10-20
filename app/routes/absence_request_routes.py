@@ -130,6 +130,29 @@ def submit_absence_request_endpoint():
         }), err.status_code
     except MySQLError as err:
         logger.error("Lỗi cơ sở dữ liệu khi nộp đơn xin phép vắng user_id=%s: %s", user_id, err)
+        errno = getattr(err, "errno", None)
+        if errno in (1213, 1205):
+            try:
+                stu = absence_request_repository.get_student_by_user_id(user_id)
+                sched_id = payload.get("schedule_id") if isinstance(payload, dict) else None
+                if stu and sched_id:
+                    active_req = absence_request_repository.get_existing_active_absence_request(stu["id"], sched_id)
+                    if active_req:
+                        if active_req.get("status") == ABSENCE_STATUS_APPROVED:
+                            return jsonify({
+                                "status": "error",
+                                "code": "DUPLICATE_APPROVED_REQUEST",
+                                "message": "Buổi học này đã có đơn xin phép vắng được phê duyệt.",
+                            }), 400
+                        else:
+                            return jsonify({
+                                "status": "error",
+                                "code": "DUPLICATE_PENDING_REQUEST",
+                                "message": "Buổi học này đã có đơn xin phép vắng đang chờ duyệt.",
+                            }), 400
+            except Exception as check_ex:
+                logger.warning("Không thể đối chiếu trạng thái đơn sau lỗi deadlock: %s", check_ex)
+
         return jsonify({
             "status": "error",
             "code": "DATABASE_ERROR",

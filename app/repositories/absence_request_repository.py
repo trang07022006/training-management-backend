@@ -546,6 +546,11 @@ def create_absence_request_record(
     conn = get_db_connection()
     try:
         with conn.cursor(dictionary=True) as cursor:
+            # 0. Khóa hàng học viên trong bảng students bằng FOR UPDATE để tuần tự hóa các yêu cầu gửi đồng thời
+            # từ cùng một học viên, loại bỏ hoàn toàn gap lock deadlock (MySQL 1213) khi bảng absence_requests chưa có bản ghi.
+            cursor.execute("SELECT id FROM students WHERE id = %s FOR UPDATE", (student_id,))
+            cursor.fetchone()
+
             # 1. Khóa kiểm tra đơn pending hoặc approved hiện có (FOR UPDATE chống concurrency race condition)
             cursor.execute(
                 """
