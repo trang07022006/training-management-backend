@@ -36,12 +36,21 @@ def get_eligible_sessions_endpoint():
         }), 401
 
     try:
-        sessions = absence_request_service.get_eligible_sessions_for_current_student(user_id)
+        filters = {}
+        for param in ("page", "limit", "q", "search", "class_id", "subject_id", "from_date", "to_date", "paginate"):
+            val = request.args.get(param)
+            if val is not None and str(val).strip():
+                filters[param] = str(val).strip()
+
+        data = absence_request_service.get_eligible_sessions_for_current_student(
+            user_id=user_id,
+            filters=filters if filters else None,
+        )
         return jsonify({
             "status": "success",
             "code": "ELIGIBLE_SESSIONS_RETRIEVED",
             "message": "Lấy danh sách buổi học hợp lệ thành công.",
-            "data": sessions,
+            "data": data,
         }), 200
     except AbsenceServiceError as err:
         return jsonify({

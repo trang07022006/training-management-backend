@@ -92,12 +92,41 @@ def _resolve_student_for_user(user_id: str) -> dict[str, Any]:
     return student
 
 
-def get_eligible_sessions_for_current_student(user_id: str) -> list[dict[str, Any]]:
+def get_eligible_sessions_for_current_student(
+    user_id: str,
+    filters: Optional[dict[str, Any]] = None,
+) -> Any:
     """
-    Lấy danh sách các buổi học hợp lệ để học viên chọn xin phép vắng.
+    Lấy danh sách các buổi học hợp lệ để học viên chọn xin phép vắng (SCRUM-255).
+    Nếu filters được cung cấp (chứa page, limit, q, search, class_id, subject_id, from_date, to_date hoặc paginate):
+    trả về dữ liệu phân trang {items, pagination, filter_options}.
+    Nếu không, trả về danh sách list để đảm bảo tương thích ngược hoàn toàn.
     """
     student = _resolve_student_for_user(user_id)
-    return absence_request_repository.get_student_eligible_sessions(student["id"])
+    student_id = student["id"]
+
+    if filters is not None and any(
+        k in filters for k in ("page", "limit", "q", "search", "class_id", "subject_id", "from_date", "to_date", "paginate")
+    ):
+        page = int(filters.get("page") or 1)
+        limit = int(filters.get("limit") or 10)
+        search_query = filters.get("q") or filters.get("search")
+        class_id = filters.get("class_id")
+        subject_id = filters.get("subject_id")
+        from_date = filters.get("from_date")
+        to_date = filters.get("to_date")
+        return absence_request_repository.list_student_eligible_sessions_paginated(
+            student_id=student_id,
+            search_query=search_query,
+            class_id=class_id,
+            subject_id=subject_id,
+            from_date=from_date,
+            to_date=to_date,
+            page=page,
+            limit=limit,
+        )
+
+    return absence_request_repository.get_student_eligible_sessions(student_id)
 
 
 def submit_absence_request_service(

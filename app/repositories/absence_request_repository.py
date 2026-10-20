@@ -4,6 +4,7 @@ Repository quản lý dữ liệu Đơn xin phép vắng (SCRUM-255).
 
 from datetime import date, datetime, timedelta, timezone
 import logging
+import math
 from typing import Any, Optional
 import uuid
 
@@ -172,6 +173,227 @@ def get_student_eligible_sessions(student_id: str) -> list[dict[str, Any]]:
                 eligible_sessions.append(r)
 
             return eligible_sessions
+    finally:
+        conn.close()
+
+
+def list_student_eligible_sessions_paginated(
+    student_id: str,
+    search_query: Optional[str] = None,
+    class_id: Optional[str] = None,
+    subject_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = 1,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """
+    Lấy danh sách các buổi học hợp lệ có phân trang, tìm kiếm và bộ lọc (SCRUM-255).
+    Áp dụng toàn bộ quy tắc nghiệp vụ:
+    - Học viên phải ghi danh vào lớp trước hoặc vào ngày diễn ra buổi học.
+    - Học viên chưa bị bảo lưu/chuyển lớp/thôi học trước ngày học (SCRUM-252).
+    - Buổi học chưa bị hủy (status != 'cancelled').
+    - Thời điểm gửi đơn: Buổi học trong tương lai/hôm nay HOẶC chưa quá 48 giờ sau khi kết thúc.
+    - Lọc tìm kiếm theo: tên/mã lớp, tên/mã môn, tên/chủ đề buổi học.
+    - Lọc theo: class_id, subject_id, from_date, to_date.
+    - Sắp xếp ổn định: cs.learning_date ASC, cs.start_time ASC, cs.id ASC.
+    - Trả về filter_options (danh sách classes và subjects của học viên đủ điều kiện) để hỗ trợ frontend bộ lọc tìm kiếm.
+    """
+    now_vn = get_vietnam_now()
+    now_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Validate pagination
+    if page < 1:
+        page = 1
+    if limit not in (10, 20):
+        if limit <= 0:
+            limit = 10
+        elif limit > 100:
+            limit = 100
+    offset = (page - 1) * limit
+
+    base_where = """
+        WHERE ce.student_id = %s
+          AND cs.status != 'cancelled'
+          AND DATE(ce.enrolled_at) <= cs.learning_date
+          AND (
+              ce.lifecycle_status IS NULL
+              OR ce.lifecycle_status NOT IN ('reserved', 'transferred', 'dropped')
+              OR ce.effective_date > cs.learning_date
+          )
+          AND TIMESTAMPADD(HOUR, 48, TIMESTAMP(cs.learning_date, COALESCE(cs.end_time, '23:59:59'))) >= %s
+    """
+    base_params: list[Any] = [student_id, now_str]
+
+    # Additional filters
+    filter_where = []
+    filter_params: list[Any] = []
+
+    if search_query and str(search_query).strip():
+        q_term = f"%{str(search_query).strip()}%"
+        filter_where.append("(c.class_code LIKE %s OR s.name LIKE %s OR s.code LIKE %s OR cs.topic LIKE %s)")
+        filter_params.extend([q_term, q_term, q_term, q_term])
+
+    if class_id and str(class_id).strip():
+        filter_where.append("cs.class_id = %s")
+        filter_params.append(str(class_id).strip())
+
+    if subject_id and str(subject_id).strip():
+        filter_where.append("cs.subject_id = %s")
+        filter_params.append(str(subject_id).strip())
+
+    if from_date and str(from_date).strip():
+        filter_where.append("cs.learning_date >= %s")
+        filter_params.append(str(from_date).strip())
+
+    if to_date and str(to_date).strip():
+        filter_where.append("cs.learning_date <= %s")
+        filter_params.append(str(to_date).strip())
+
+    extra_sql = (" AND " + " AND ".join(filter_where)) if filter_where else ""
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            # 1. Đếm tổng số kết quả sau khi áp dụng toàn bộ filter
+            count_query = f"""
+                SELECT COUNT(*) AS total_count
+                FROM class_enrollments ce
+                JOIN classes c ON ce.class_id = c.id
+                JOIN class_schedules cs ON cs.class_id = c.id
+                LEFT JOIN subjects s ON cs.subject_id = s.id
+                {base_where}
+                {extra_sql}
+            """
+            cursor.execute(count_query, tuple(base_params + filter_params))
+            count_row = cursor.fetchone()
+            total_items = count_row["total_count"] if count_row else 0
+            total_pages = max(1, math.ceil(total_items / limit)) if total_items > 0 else 1
+
+            # 2. Truy vấn danh sách buổi học của trang hiện tại với sắp xếp ổn định
+            data_query = f"""
+                SELECT 
+                    cs.id AS schedule_id,
+                    cs.class_id,
+                    cs.session_number,
+                    cs.topic,
+                    cs.learning_date,
+                    cs.shift,
+                    cs.start_time,
+                    cs.end_time,
+                    cs.room_id,
+                    cs.status AS schedule_status,
+                    c.class_code,
+                    s.name AS subject_name,
+                    s.code AS subject_code,
+                    u.name AS instructor_name,
+                    COALESCE(cr.room_name, cr.room_code, cs.room_id) AS room_name,
+                    (
+                        SELECT ar.id 
+                        FROM absence_requests ar 
+                        WHERE ar.schedule_id = cs.id AND ar.student_id = ce.student_id AND ar.status = 'pending'
+                        LIMIT 1
+                    ) AS pending_request_id,
+                    (
+                        SELECT ar.id 
+                        FROM absence_requests ar 
+                        WHERE ar.schedule_id = cs.id AND ar.student_id = ce.student_id AND ar.status = 'approved'
+                        LIMIT 1
+                    ) AS approved_request_id,
+                    (
+                        SELECT ar.status 
+                        FROM absence_requests ar 
+                        WHERE ar.schedule_id = cs.id AND ar.student_id = ce.student_id 
+                        ORDER BY 
+                            CASE 
+                                WHEN ar.status = 'approved' THEN 1 
+                                WHEN ar.status = 'pending' THEN 2 
+                                WHEN ar.status = 'rejected' THEN 3 
+                                ELSE 4 
+                            END ASC,
+                            ar.created_at DESC
+                        LIMIT 1
+                    ) AS latest_request_status
+                FROM class_enrollments ce
+                JOIN classes c ON ce.class_id = c.id
+                JOIN class_schedules cs ON cs.class_id = c.id
+                LEFT JOIN subjects s ON cs.subject_id = s.id
+                LEFT JOIN users u ON cs.instructor_id = u.id
+                LEFT JOIN classrooms cr ON (cs.room_id = cr.id OR cs.room_id = cr.room_code)
+                {base_where}
+                {extra_sql}
+                ORDER BY cs.learning_date ASC, cs.start_time ASC, cs.id ASC
+                LIMIT %s OFFSET %s
+            """
+            cursor.execute(data_query, tuple(base_params + filter_params + [limit, offset]))
+            rows = cursor.fetchall() or []
+
+            items = []
+            for r in rows:
+                learning_date = r["learning_date"]
+                r["learning_date"] = learning_date.isoformat() if learning_date else None
+                r["learning_date_str"] = r["learning_date"]
+                r["start_time"] = str(r["start_time"]) if r.get("start_time") else None
+                r["start_time_str"] = r["start_time"]
+                r["end_time"] = str(r["end_time"]) if r.get("end_time") else None
+                r["end_time_str"] = r["end_time"]
+                r["has_pending_request"] = bool(r.get("pending_request_id"))
+                r["has_approved_request"] = bool(r.get("approved_request_id"))
+                r["is_selectable"] = not (r["has_pending_request"] or r["has_approved_request"])
+                items.append(r)
+
+            # 3. Lấy filter options (danh sách classes và subjects của học viên trong các buổi học hợp lệ)
+            classes_query = f"""
+                SELECT DISTINCT
+                    c.id AS class_id,
+                    c.class_code
+                FROM class_enrollments ce
+                JOIN classes c ON ce.class_id = c.id
+                JOIN class_schedules cs ON cs.class_id = c.id
+                {base_where}
+                ORDER BY c.class_code ASC
+            """
+            cursor.execute(classes_query, tuple(base_params))
+            classes_rows = cursor.fetchall() or []
+            filter_classes = [{"id": row["class_id"], "class_code": row["class_code"]} for row in classes_rows]
+
+            subjects_query = f"""
+                SELECT DISTINCT
+                    s.id AS subject_id,
+                    s.code AS subject_code,
+                    s.name AS subject_name
+                FROM class_enrollments ce
+                JOIN classes c ON ce.class_id = c.id
+                JOIN class_schedules cs ON cs.class_id = c.id
+                JOIN subjects s ON cs.subject_id = s.id
+                {base_where}
+                ORDER BY s.name ASC
+            """
+            cursor.execute(subjects_query, tuple(base_params))
+            subjects_rows = cursor.fetchall() or []
+            filter_subjects = [
+                {
+                    "id": row["subject_id"],
+                    "code": row["subject_code"],
+                    "name": row["subject_name"],
+                    "label": f"{row['subject_name']} ({row['subject_code']})" if row.get("subject_code") else row["subject_name"],
+                }
+                for row in subjects_rows
+            ]
+
+            return {
+                "items": items,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total_items": total_items,
+                    "total_pages": total_pages,
+                },
+                "filter_options": {
+                    "classes": filter_classes,
+                    "subjects": filter_subjects,
+                },
+            }
     finally:
         conn.close()
 
