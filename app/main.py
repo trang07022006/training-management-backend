@@ -30,6 +30,7 @@ from app.routes.schedule_routes import schedule_bp
 from app.routes.classroom_routes import classroom_bp
 from app.routes.student_lifecycle_routes import student_lifecycle_bp
 from app.routes.attendance_routes import attendance_bp
+from app.routes.absence_request_routes import absence_request_bp
 
 
 from app.database.ensure_business_roles import ensure_business_roles
@@ -66,6 +67,7 @@ app.register_blueprint(schedule_bp)
 app.register_blueprint(classroom_bp)
 app.register_blueprint(student_lifecycle_bp)
 app.register_blueprint(attendance_bp)
+app.register_blueprint(absence_request_bp)
 
 @app.route("/api/health", methods=["GET"])
 def health():

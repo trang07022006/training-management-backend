@@ -51,6 +51,7 @@ MIGRATIONS = (
     "032_add_schedule_rbac_permissions.sql",
     "033_create_student_lifecycle_tables.sql",
     "034_create_attendance_tables.sql",
+    "035_create_absence_requests_table.sql",
 )
 
 

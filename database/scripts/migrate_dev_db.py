@@ -50,6 +50,7 @@ MIGRATIONS = [
     "032_add_schedule_rbac_permissions.sql",
     "033_create_student_lifecycle_tables.sql",
     "034_create_attendance_tables.sql",
+    "035_create_absence_requests_table.sql",
 ]
 
 
@@ -89,6 +90,8 @@ def main():
             for stmt in _statements(sql_text):
                 try:
                     cursor.execute(stmt)
+                    if cursor.with_rows:
+                        cursor.fetchall()
                 except mysql.connector.Error as err:
                     # Ignore duplicate column (1060), duplicate key/index (1061), table exists (1050), duplicate fk (1826/1022)
                     if err.errno in (1060, 1061, 1050, 1826, 1022):
