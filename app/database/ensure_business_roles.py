@@ -54,13 +54,16 @@ def ensure_business_roles() -> None:
                     ('role-id-admin', 'perm-id-lead-delete', NOW());
             """)
 
-            # 3.5 Bổ sung Permissions và Mapping cho phân hệ Thời khóa biểu (SCRUM-228)
+            # 3.5 Bổ sung Permissions và Mapping cho phân hệ Thời khóa biểu (SCRUM-228) và Bài tập (SCRUM-269)
             cursor.execute("""
                 INSERT INTO permissions (id, code, name, description, created_at, updated_at)
                 VALUES 
                     ('perm-id-schedule-view', 'schedule.view', 'Xem thời khóa biểu', 'Xem thời khóa biểu và lịch giảng dạy/học tập toàn trường', NOW(), NOW()),
                     ('perm-id-schedule-manage', 'schedule.manage', 'Quản lý thời khóa biểu', 'Tạo, sửa, hủy và điều chỉnh lịch học, thời khóa biểu', NOW(), NOW()),
-                    ('perm-id-schedule-personal-view', 'schedule.personal_view', 'Xem lịch cá nhân', 'Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên', NOW(), NOW())
+                    ('perm-id-schedule-personal-view', 'schedule.personal_view', 'Xem lịch cá nhân', 'Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên', NOW(), NOW()),
+                    ('perm-id-assignment-view', 'assignment.view', 'Xem bài tập', 'Xem danh sách bài tập và bài nộp', NOW(), NOW()),
+                    ('perm-id-assignment-grade', 'assignment.grade', 'Chấm và yêu cầu làm lại bài', 'Chấm bài và gửi yêu cầu làm lại bài tập', NOW(), NOW()),
+                    ('perm-id-assignment-submit', 'assignment.submit', 'Nộp bài tập', 'Nộp bài và nộp lại bài tập', NOW(), NOW())
                 ON DUPLICATE KEY UPDATE 
                     name = VALUES(name),
                     description = VALUES(description),
@@ -71,11 +74,19 @@ def ensure_business_roles() -> None:
                 INSERT IGNORE INTO role_permissions (role_id, permission_id, created_at)
                 VALUES 
                     ('role-id-admin', 'perm-id-schedule-view', NOW()),
+                    ('role-id-admin', 'perm-id-assignment-view', NOW()),
+                    ('role-id-admin', 'perm-id-assignment-grade', NOW()),
                     ('role-id-training-manager', 'perm-id-schedule-view', NOW()),
                     ('role-id-training-manager', 'perm-id-schedule-manage', NOW()),
+                    ('role-id-training-manager', 'perm-id-assignment-view', NOW()),
+                    ('role-id-training-manager', 'perm-id-assignment-grade', NOW()),
                     ('role-id-trainer', 'perm-id-schedule-view', NOW()),
                     ('role-id-trainer', 'perm-id-schedule-personal-view', NOW()),
-                    ('role-id-trainee', 'perm-id-schedule-personal-view', NOW());
+                    ('role-id-trainer', 'perm-id-assignment-view', NOW()),
+                    ('role-id-trainer', 'perm-id-assignment-grade', NOW()),
+                    ('role-id-trainee', 'perm-id-schedule-personal-view', NOW()),
+                    ('role-id-trainee', 'perm-id-assignment-view', NOW()),
+                    ('role-id-trainee', 'perm-id-assignment-submit', NOW());
             """)
             cursor.execute("""
                 DELETE FROM role_permissions 
@@ -331,6 +342,85 @@ def ensure_business_roles() -> None:
                     INDEX idx_csi_class_subject (class_subject_id),
                     INDEX idx_csi_instructor (instructor_id),
                     INDEX idx_csi_role_type (role_type)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            # 14. SCRUM-269: Bảng assignments, assignment_submissions, submission_rework_requests, submission_versions
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS assignments (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    class_id VARCHAR(36) NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT NULL,
+                    due_date DATETIME NULL,
+                    max_score DECIMAL(5,2) NOT NULL DEFAULT 10.00,
+                    status VARCHAR(50) NOT NULL DEFAULT 'published',
+                    created_by VARCHAR(36) NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    INDEX idx_assignments_class (class_id),
+                    INDEX idx_assignments_created_by (created_by),
+                    INDEX idx_assignments_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS assignment_submissions (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    assignment_id VARCHAR(36) NOT NULL,
+                    student_id VARCHAR(36) NOT NULL,
+                    status VARCHAR(50) NOT NULL DEFAULT 'submitted',
+                    score DECIMAL(5,2) NULL,
+                    feedback TEXT NULL,
+                    graded_by VARCHAR(36) NULL,
+                    graded_at DATETIME NULL,
+                    rework_count INT UNSIGNED NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_assignment_student (assignment_id, student_id),
+                    INDEX idx_submissions_assignment (assignment_id),
+                    INDEX idx_submissions_student (student_id),
+                    INDEX idx_submissions_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS submission_rework_requests (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    submission_id VARCHAR(36) NOT NULL,
+                    submission_version_id VARCHAR(36) NULL,
+                    request_number INT UNSIGNED NOT NULL,
+                    comment TEXT NOT NULL,
+                    new_deadline DATETIME NOT NULL,
+                    requested_by VARCHAR(36) NOT NULL,
+                    status VARCHAR(50) NOT NULL DEFAULT 'open',
+                    created_at DATETIME NOT NULL,
+                    fulfilled_at DATETIME NULL,
+                    fulfilled_version_id VARCHAR(36) NULL,
+                    UNIQUE KEY uq_sub_req_num (submission_id, request_number),
+                    INDEX idx_rework_sub_status (submission_id, status),
+                    INDEX idx_rework_requested_by (requested_by),
+                    INDEX idx_rework_new_deadline (new_deadline)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS submission_versions (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    submission_id VARCHAR(36) NOT NULL,
+                    version_number INT UNSIGNED NOT NULL,
+                    submission_type VARCHAR(50) NOT NULL DEFAULT 'text',
+                    content TEXT NULL,
+                    file_url VARCHAR(500) NULL,
+                    file_name VARCHAR(255) NULL,
+                    file_size INT UNSIGNED NULL,
+                    repo_url VARCHAR(500) NULL,
+                    submitted_at DATETIME NOT NULL,
+                    rework_request_id VARCHAR(36) NULL,
+                    UNIQUE KEY uq_sub_version (submission_id, version_number),
+                    INDEX idx_sub_versions_submission (submission_id),
+                    INDEX idx_sub_versions_rework (rework_request_id),
+                    INDEX idx_sub_versions_submitted_at (submitted_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             """)
 
