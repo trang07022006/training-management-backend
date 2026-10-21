@@ -322,9 +322,11 @@ def get_class_attendance_summary(
         if valid_sessions_count > 0:
             attendance_rate_raw = (attended_count / valid_sessions_count) * 100.0
             attendance_rate = round(attendance_rate_raw, 2)
+            attendance_rate_formatted = f"{attendance_rate:.2f}".rstrip("0").rstrip(".") + "%"
         else:
             attendance_rate_raw = None
             attendance_rate = None
+            attendance_rate_formatted = "—"
 
         student_records.append({
             "student_id": s_id,
@@ -344,6 +346,7 @@ def get_class_attendance_summary(
                 "total_absent": total_absent,
                 "attendance_rate": attendance_rate,
                 "attendance_rate_raw": attendance_rate_raw,
+                "attendance_rate_formatted": attendance_rate_formatted,
                 "unrecorded_ended_count": unrecorded_ended_count,
             },
             "_session_statuses": session_statuses,
@@ -433,6 +436,7 @@ def get_class_attendance_summary(
                 "valid_sessions_count": st["summary"]["valid_sessions_count"],
                 "total_absent": st["summary"]["total_absent"],
                 "attendance_rate": st["summary"]["attendance_rate"],
+                "attendance_rate_formatted": st["summary"]["attendance_rate_formatted"],
                 "unrecorded_ended_count": st["summary"]["unrecorded_ended_count"],
             },
             "session_statuses": st["_session_statuses"],

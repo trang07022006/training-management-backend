@@ -467,6 +467,7 @@ class Scrum256AttendanceSummaryTests(unittest.TestCase):
         self.assertEqual(summary["total_absent"], 3)
         self.assertEqual(summary["valid_sessions_count"], 10)
         self.assertEqual(summary["attendance_rate"], 70.0)
+        self.assertEqual(summary["attendance_rate_formatted"], "70%")
         self.assertEqual(summary["unrecorded_ended_count"], 1)
 
         # Kiểm tra cell tương lai có cờ is_pre_approved
@@ -489,6 +490,7 @@ class Scrum256AttendanceSummaryTests(unittest.TestCase):
         self.assertEqual(summary["valid_sessions_count"], 0)
         self.assertEqual(summary["total_absent"], 0)
         self.assertIsNone(summary["attendance_rate"])
+        self.assertEqual(summary["attendance_rate_formatted"], "—")
 
     # =========================================================================
     # AC3: SẮP XẾP TỶ LỆ CHUYÊN CẦN TĂNG DẦN
