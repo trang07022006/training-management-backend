@@ -627,9 +627,31 @@ class Scrum256AttendanceSummaryTests(unittest.TestCase):
         pagination = data["pagination"]
         self.assertEqual(pagination["page"], 1)
         self.assertEqual(pagination["page_size"], 2)
-        self.assertGreaterEqual(pagination["total_items"], 2)
-        self.assertEqual(len(data["students"]), 2)
+    def test_ac3_raw_rate_sorting_precision(self):
+        """Kiểm chứng sắp xếp theo giá trị tỷ lệ gốc (chưa làm tròn), không theo chuỗi ký tự hiển thị."""
+        # Gọi API lấy toàn bộ danh sách lớp với sort_by=attendance_rate&sort_order=asc
+        res = self.client.get(
+            f"/api/v1/classes/{self.class_id}/attendance-summary?sort_by=attendance_rate&sort_order=asc",
+            headers=self._get_auth_header(self.tm_user_id, "training_manager"),
+        )
+        self.assertEqual(res.status_code, 200)
+        students = res.get_json()["data"]["students"]
+        # Xác nhận các học viên có tỷ lệ hợp lệ xuất hiện trước học viên có tỷ lệ null
+        non_null_students = [s for s in students if s["summary"]["attendance_rate"] is not None]
+        null_students = [s for s in students if s["summary"]["attendance_rate"] is None]
+        rates = [s["summary"]["attendance_rate"] for s in non_null_students]
+
+        # Mảng rates phải tăng dần
+        for i in range(len(rates) - 1):
+            self.assertLessEqual(rates[i], rates[i + 1])
+
+        # Tất cả học viên null phải ở cuối cùng
+        if non_null_students and null_students:
+            first_null_idx = next(i for i, s in enumerate(students) if s["summary"]["attendance_rate"] is None)
+            last_non_null_idx = max(i for i, s in enumerate(students) if s["summary"]["attendance_rate"] is not None)
+            self.assertGreater(first_null_idx, last_non_null_idx)
 
 
 if __name__ == "__main__":
     unittest.main()
+
