@@ -78,12 +78,12 @@ class SubmissionVersion:
     submission_id: str
     version_number: int
     submission_type: str
-    content: str | None
-    file_url: str | None
-    file_name: str | None
-    file_size: int | None
-    repo_url: str | None
     submitted_at: datetime
+    content: str | None = None
+    file_url: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
+    repo_url: str | None = None
     rework_request_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
