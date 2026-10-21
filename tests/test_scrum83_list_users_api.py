@@ -210,6 +210,52 @@ class Scrum83ListUsersApiTests(unittest.TestCase):
         self.assertNotIn("password_hash", json_str)
         self.assertNotIn("password", json_str)
 
+    @patch("app.repositories.user_repository.get_user_by_id")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
+    @patch("app.services.authorization_service.user_role_repository.get_roles_by_user_id")
+    @patch("app.services.authorization_service.role_permission_repository.get_permission_codes_by_role_id")
+    def test_07_get_single_user_success(
+        self, mock_rp_codes, mock_ur_roles, mock_perm_repo, mock_get_session, mock_get_user
+    ):
+        mock_get_session.return_value = self.session
+        mock_perm_repo.return_value = Permission(id="p-uv", code="user.view", name="Xem user")
+        mock_ur_roles.return_value = [Role(id="r-admin", code="admin", name="Admin")]
+        mock_rp_codes.return_value = ["user.view"]
+
+        mock_get_user.return_value = self.mock_users[0]
+
+        token = self._create_token()
+        res = self.client.get("/api/users/u-admin-001", headers={"Authorization": f"Bearer {token}"})
+
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["data"]["email"], self.mock_users[0].email)
+        self.assertEqual(body["data"]["name"], self.mock_users[0].name)
+
+    @patch("app.repositories.user_repository.get_user_by_id")
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.authorization_service.permission_repository.get_permission_by_code")
+    @patch("app.services.authorization_service.user_role_repository.get_roles_by_user_id")
+    @patch("app.services.authorization_service.role_permission_repository.get_permission_codes_by_role_id")
+    def test_08_get_single_user_not_found(
+        self, mock_rp_codes, mock_ur_roles, mock_perm_repo, mock_get_session, mock_get_user
+    ):
+        mock_get_session.return_value = self.session
+        mock_perm_repo.return_value = Permission(id="p-uv", code="user.view", name="Xem user")
+        mock_ur_roles.return_value = [Role(id="r-admin", code="admin", name="Admin")]
+        mock_rp_codes.return_value = ["user.view"]
+
+        mock_get_user.return_value = None
+
+        token = self._create_token()
+        res = self.client.get("/api/users/non-existent-id", headers={"Authorization": f"Bearer {token}"})
+
+        self.assertEqual(res.status_code, 404)
+        body = res.get_json()
+        self.assertEqual(body["code"], "USER_NOT_FOUND")
+
 
 if __name__ == "__main__":
     unittest.main()

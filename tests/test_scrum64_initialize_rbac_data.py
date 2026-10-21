@@ -47,13 +47,13 @@ class Scrum64InitializeRbacDataTests(unittest.TestCase):
 
         result_1 = rbac_service.sync_initial_rbac_data()
         self.assertEqual(result_1["roles_created"], 4)
-        self.assertEqual(result_1["permissions_created"], 6)
+        self.assertEqual(result_1["permissions_created"], len(rbac_service.INITIAL_PERMISSIONS))
 
         # Lần 2: Giả lập tất cả đã tồn tại trong DB -> không tạo mới (idempotent)
         mock_role_repo.get_role_by_code.side_effect = lambda code: Role(id=f"r-{code}", code=code, name=code)
         mock_perm_repo.get_permission_by_code.side_effect = lambda code: Permission(id=f"p-{code}", code=code, name=code)
         mock_rp_repo.get_permission_codes_by_role_id.side_effect = lambda rid: [
-            "user.view", "user.manage", "course.view", "course.manage", "session.view", "session.revoke"
+            p.code for p in rbac_service.INITIAL_PERMISSIONS
         ]
 
         result_2 = rbac_service.sync_initial_rbac_data()

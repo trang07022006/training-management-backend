@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
 PHONE_REGEX = re.compile(r"^\+?[0-9]{9,15}$")
-VALID_ROLES = {"admin", "trainer", "trainee", "user"}
+VALID_ROLES = {
+    "admin",
+    "trainer",
+    "trainee",
+    "user",
+    "consultant",
+    "training_manager",
+}
 VALID_STATUSES = {"active", "inactive", "locked"}
 
 
@@ -164,13 +171,18 @@ def create_user_service(
         logger.warning(f"Could not assign initial role {selected_role} to user {user_id}: {e}")
 
     # Gửi email thông tin tài khoản cho người dùng mới qua email_service
+
+    # Gửi email thông tin tài khoản cho người dùng mới
     try:
         from flask import current_app
         from app.services import email_service
+
         is_testing = bool(current_app and current_app.config.get("TESTING"))
-        is_mocked = hasattr(email_service.send_account_creation_email, "assert_called") or hasattr(
-            email_service.send_account_creation_email, "mock"
+        is_mocked = (
+            hasattr(email_service.send_account_creation_email, "assert_called")
+            or hasattr(email_service.send_account_creation_email, "mock")
         )
+
         if not is_testing or is_mocked:
             email_service.send_account_creation_email(
                 to_email=normalized_email,
@@ -178,9 +190,14 @@ def create_user_service(
                 raw_password=password,
             )
     except Exception as mail_err:
-        logger.warning("Không thể gửi email tạo tài khoản tới %s: %s", normalized_email, mail_err)
+        logger.warning(
+            "Không thể gửi email tạo tài khoản tới %s: %s",
+            normalized_email,
+            mail_err,
+        )
 
     return created_user
+
 
 
 def update_user_service(user_id: str, updates: dict) -> User:
@@ -365,6 +382,9 @@ def get_user_profile_service(user_id: str) -> dict:
 
     profile_data = user.to_profile_dict()
     profile_data["role"] = display_role
+    profile_data["avatar_url"] = (
+        "/api/v1/users/profile/avatar" if user.avatar_path else None
+    )
 
     return profile_data
 
