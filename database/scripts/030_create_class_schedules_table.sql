@@ -1,0 +1,25 @@
+-- SCRUM-224: Bảng thời khóa biểu / buổi học của lớp học
+CREATE TABLE IF NOT EXISTS class_schedules (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    class_id VARCHAR(36) NOT NULL,
+    class_subject_id VARCHAR(36) NULL,
+    subject_id VARCHAR(36) NULL,
+    subject_session_id VARCHAR(36) NULL,
+    session_number INT NOT NULL,
+    topic VARCHAR(255) NOT NULL,
+    learning_date DATE NOT NULL,
+    shift VARCHAR(50) NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    room_id VARCHAR(36) NULL,
+    instructor_id VARCHAR(36) NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'scheduled',
+    cancellation_reason TEXT NULL,
+    attendance_checked BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_schedules_class_id (class_id),
+    INDEX idx_schedules_date (learning_date),
+    INDEX idx_schedules_room_time (room_id, learning_date, start_time, end_time),
+    INDEX idx_schedules_instructor_time (instructor_id, learning_date, start_time, end_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

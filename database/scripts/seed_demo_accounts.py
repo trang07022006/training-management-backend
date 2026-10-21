@@ -23,7 +23,7 @@ if sys.stdout.encoding != "utf-8":
         pass
 
 from app.database.connection import get_db_connection
-from app.services.rbac_service import sync_initial_rbac_data
+from app.services.rbac_service import sync_business_rbac_data, sync_initial_rbac_data
 
 # Mật khẩu demo chuẩn hóa tuân thủ chính sách: >= 8 ký tự, có chữ và số
 DEMO_PASSWORD_DEFAULT = "Demo@123456"
@@ -223,7 +223,8 @@ def main():
 
         print("Đang đồng bộ dữ liệu RBAC (Roles, Permissions, Mappings)...")
         rbac_result = sync_initial_rbac_data()
-        print(f"✓ RBAC sync: {rbac_result}")
+        business_rbac_result = sync_business_rbac_data()
+        print(f"✓ RBAC sync: {rbac_result}, business: {business_rbac_result}")
 
         print("Đang seed tài khoản demo...")
         seed_demo_users(conn)
