@@ -216,6 +216,11 @@ def get_class_attendance_summary(
     all_attendances = attendance_summary_repository.get_class_attendances(class_id)
     att_map = {(r["schedule_id"], r["student_id"]): r for r in all_attendances}
 
+    # Đánh giá cảnh báo vắng vượt ngưỡng SCRUM-257 (AC2)
+    from app.services import absence_alert_service
+    absence_alerts = absence_alert_service.evaluate_class_absence_alerts(class_id, persist=True)
+    alerts_by_student = {a["student_id"]: a for a in absence_alerts}
+
     # 6. Tính toán ma trận và các cột tổng (AC1, AC2) cho toàn bộ học viên
     student_records: list[dict[str, Any]] = []
 
@@ -362,6 +367,16 @@ def get_class_attendance_summary(
                 "attendance_rate_formatted": attendance_rate_formatted,
                 "unrecorded_ended_count": unrecorded_ended_count,
             },
+            "absence_alert": alerts_by_student.get(s_id, {
+                "is_flagged": False,
+                "insufficient_data": (len(schedules) == 0),
+                "status": "inactive",
+                "absent_sessions": total_absent,
+                "total_sessions": len(schedules),
+                "absence_rate": 0.0,
+                "threshold": 20.0,
+                "tooltip": "Chưa đủ dữ liệu đánh giá" if len(schedules) == 0 else "Chưa vượt ngưỡng",
+            }),
             "_session_statuses": session_statuses,
         })
 
@@ -452,6 +467,7 @@ def get_class_attendance_summary(
                 "attendance_rate_formatted": st["summary"]["attendance_rate_formatted"],
                 "unrecorded_ended_count": st["summary"]["unrecorded_ended_count"],
             },
+            "absence_alert": st.get("absence_alert"),
             "session_statuses": st["_session_statuses"],
         })
 
@@ -465,6 +481,11 @@ def get_class_attendance_summary(
             "expected_start_date": class_info.get("expected_start_date_str"),
             "learning_mode": class_info.get("learning_mode"),
             "status": class_info.get("status"),
+        },
+        "absence_alert_summary": {
+            "flagged_count": sum(1 for a in absence_alerts if a.get("is_flagged")),
+            "threshold": absence_alerts[0]["threshold"] if absence_alerts else 20.0,
+            "threshold_formatted": f"{(absence_alerts[0]['threshold'] if absence_alerts else 20.0):.2f}".rstrip("0").rstrip(".") + "%",
         },
         "sessions": session_columns,
         "students": result_students,
@@ -485,5 +506,6 @@ def get_class_attendance_summary(
             "eligible_condition": "Chỉ tính trên các buổi học đã kết thúc và có kết quả điểm danh hợp lệ của học viên.",
             "unrecorded_notice": "Buổi học đã kết thúc nhưng chưa điểm danh không tham gia mẫu số D.",
             "future_notice": "Buổi học trong tương lai hoặc buổi bị hủy không làm thay đổi tỷ lệ chuyên cần.",
+            "absence_alert_rule": "Cảnh báo vắng vượt ngưỡng bật khi A / N × 100 > ngưỡng (A là số buổi vắng đã kết thúc, N là tổng buổi xếp lịch hợp lệ của lớp).",
         },
     }

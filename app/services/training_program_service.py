@@ -674,6 +674,13 @@ def update_program_absence_threshold_service(
     if not updated:
         raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
 
+    # Tự động đánh giá lại cờ cảnh báo cho các lớp thuộc chương trình
+    try:
+        from app.services import absence_alert_service
+        absence_alert_service.recalculate_alerts_for_program(cleaned_id)
+    except Exception as err:
+        logger.warning("Không thể đánh giá lại cảnh báo vắng khi cập nhật ngưỡng chương trình %s: %s", cleaned_id, err)
+
     return updated.to_dict()
 
 

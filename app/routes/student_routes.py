@@ -257,3 +257,32 @@ def update_student_profile_endpoint(student_id: str):
             "code": "INTERNAL_ERROR",
             "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
         }), 500
+
+
+@student_bp.get("/v1/students/<student_id>/absence-alerts")
+@student_bp.get("/students/<student_id>/absence-alerts")
+@permission_required(["course.view", "attendance.view"])
+def get_student_absence_alerts_endpoint(student_id: str):
+    """
+    API xem danh sách cảnh báo vắng vượt ngưỡng đang hoạt động của học viên (SCRUM-257 - AC2).
+    - Hiển thị trên hồ sơ học viên (Student Profile)
+    - Trả về danh sách cảnh báo theo từng lớp đang vượt ngưỡng
+    - Tự động lọc bỏ các cảnh báo đã tắt
+    """
+    from app.services import absence_alert_service
+    try:
+        alerts = absence_alert_service.get_student_profile_absence_alerts_service(
+            student_id=student_id,
+            current_user_id=getattr(g, "user_id", None),
+        )
+        return jsonify({
+            "status": "success",
+            "data": alerts,
+        }), 200
+    except Exception as err:
+        logger.exception("Lỗi khi đọc cảnh báo vắng của học viên %s: %s", student_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
