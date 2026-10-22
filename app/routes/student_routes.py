@@ -31,6 +31,16 @@ def list_students_endpoint():
         page: Số trang (mặc định 1)
         page_size: Kích thước trang (mặc định 20)
     """
+    user_id = getattr(g, "user_id", None) or get_jwt_identity()
+    from app.services import authorization_service
+    roles = authorization_service.get_user_role_codes(user_id) if user_id else []
+    if "trainee" in roles and not any(r in roles for r in ["admin", "training_manager", "trainer", "teacher"]):
+        return jsonify({
+            "status": "error",
+            "code": "FORBIDDEN",
+            "message": "Học viên không có quyền xem danh sách toàn bộ học viên.",
+        }), 403
+
     search = request.args.get("search", default=None)
     try:
         page = int(request.args.get("page", 1))
@@ -182,6 +192,19 @@ def get_student_detail_endpoint(student_id: str):
     API xem chi tiết hồ sơ học viên (SCRUM-216 - Sub-task 216-01 & 216-02).
     - Bao gồm: thông tin cá nhân, trình độ đầu vào, ghi chú, lớp đang học và lịch sử lớp.
     """
+    user_id = getattr(g, "user_id", None) or get_jwt_identity()
+    from app.services import authorization_service
+    from app.repositories import student_repository
+    roles = authorization_service.get_user_role_codes(user_id) if user_id else []
+    if "trainee" in roles and not any(r in roles for r in ["admin", "training_manager", "trainer", "teacher"]):
+        my_student = student_repository.get_student_by_user_id(user_id)
+        if not my_student or str(my_student.id) != str(student_id):
+            return jsonify({
+                "status": "error",
+                "code": "FORBIDDEN",
+                "message": "Bạn không có quyền truy cập hồ sơ của học viên khác.",
+            }), 403
+
     try:
         data = student_service.get_student_detail_service(student_id)
         return jsonify({
@@ -252,6 +275,48 @@ def update_student_profile_endpoint(student_id: str):
         }), 500
     except Exception as err:
         logger.exception("Lỗi không mong muốn khi cập nhật hồ sơ học viên %s: %s", student_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+@student_bp.get("/v1/students/<student_id>/absence-alerts")
+@student_bp.get("/students/<student_id>/absence-alerts")
+@permission_required(["course.view", "attendance.view"])
+def get_student_absence_alerts_endpoint(student_id: str):
+    """
+    API xem danh sách cảnh báo vắng vượt ngưỡng đang hoạt động của học viên (SCRUM-257 - AC2).
+    - Hiển thị trên hồ sơ học viên (Student Profile)
+    - Trả về danh sách cảnh báo theo từng lớp đang vượt ngưỡng
+    - Tự động lọc bỏ các cảnh báo đã tắt
+    """
+    user_id = getattr(g, "user_id", None) or get_jwt_identity()
+    from app.services import authorization_service
+    from app.repositories import student_repository
+    roles = authorization_service.get_user_role_codes(user_id) if user_id else []
+    if "trainee" in roles and not any(r in roles for r in ["admin", "training_manager", "trainer", "teacher"]):
+        my_student = student_repository.get_student_by_user_id(user_id)
+        if not my_student or str(my_student.id) != str(student_id):
+            return jsonify({
+                "status": "error",
+                "code": "FORBIDDEN",
+                "message": "Bạn không có quyền truy cập cảnh báo của học viên khác.",
+            }), 403
+
+    from app.services import absence_alert_service
+    try:
+        alerts = absence_alert_service.get_student_profile_absence_alerts_service(
+            student_id=student_id,
+            current_user_id=user_id,
+        )
+        return jsonify({
+            "status": "success",
+            "data": alerts,
+        }), 200
+    except Exception as err:
+        logger.exception("Lỗi khi đọc cảnh báo vắng của học viên %s: %s", student_id, err)
         return jsonify({
             "status": "error",
             "code": "INTERNAL_ERROR",

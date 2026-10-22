@@ -26,6 +26,7 @@ class TrainingProgram:
     description: str | None = None
     duration_semesters: int | None = None
     standard_tuition_fee: int | None = None
+    absence_alert_threshold: float = 20.0
     status: str = PROGRAM_STATUS_DRAFT
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -39,6 +40,7 @@ class TrainingProgram:
             "description": self.description,
             "duration_semesters": self.duration_semesters,
             "standard_tuition_fee": self.standard_tuition_fee,
+            "absence_alert_threshold": float(self.absence_alert_threshold) if self.absence_alert_threshold is not None else 20.0,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

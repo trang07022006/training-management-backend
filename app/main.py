@@ -28,6 +28,9 @@ from app.routes.enrollment_routes import enrollment_bp
 from app.routes.holiday_routes import holiday_bp
 from app.routes.schedule_routes import schedule_bp
 from app.routes.classroom_routes import classroom_bp
+from app.routes.assignment_routes import assignment_bp
+from app.routes.absence_alert_routes import absence_alert_bp
+from app.routes.attendance_history_routes import attendance_history_bp
 from app.routes.student_lifecycle_routes import student_lifecycle_bp
 from app.routes.attendance_routes import attendance_bp
 from app.routes.absence_request_routes import absence_request_bp
@@ -65,6 +68,9 @@ app.register_blueprint(enrollment_bp)
 app.register_blueprint(holiday_bp)
 app.register_blueprint(schedule_bp)
 app.register_blueprint(classroom_bp)
+app.register_blueprint(assignment_bp)
+app.register_blueprint(absence_alert_bp)
+app.register_blueprint(attendance_history_bp)
 app.register_blueprint(student_lifecycle_bp)
 app.register_blueprint(attendance_bp)
 app.register_blueprint(absence_request_bp)

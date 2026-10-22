@@ -337,3 +337,70 @@ def get_instructor_candidates_endpoint():
             "message": "Không thể tải danh sách giảng viên. Vui lòng thử lại sau.",
         }), 500
 
+
+@class_bp.get("/v1/classes/<class_id>/attendance-summary")
+@class_bp.get("/classes/<class_id>/attendance-summary")
+@permission_required(["attendance.view", "attendance.take", "course.view"])
+def get_class_attendance_summary_endpoint(class_id: str):
+    """
+    API Bảng chuyên cần tổng hợp theo lớp học (SCRUM-256).
+    """
+    from flask import g
+    from app.services import attendance_summary_service, authorization_service
+    from app.services.attendance_summary_service import AttendanceServiceError
+
+    user_id = getattr(g, "user_id", None)
+    try:
+        roles = authorization_service.get_user_role_codes(user_id) if user_id else []
+        page = request.args.get("page", default=1, type=int)
+        page_size = request.args.get("page_size", default=None, type=int)
+        if page_size is None:
+            page_size = request.args.get("limit", default=20, type=int)
+
+        search_query = request.args.get("search", default=None, type=str)
+        if search_query is None:
+            search_query = request.args.get("q", default=None, type=str)
+
+        sort_by = request.args.get("sort_by", default="student_code", type=str)
+        sort_order = request.args.get("sort_order", default="asc", type=str)
+        subject_id = request.args.get("subject_id", default=None, type=str)
+
+        data = attendance_summary_service.get_class_attendance_summary(
+            class_id=class_id,
+            current_user_id=user_id,
+            current_user_roles=roles,
+            page=page,
+            page_size=page_size,
+            search_query=search_query,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            subject_id=subject_id,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "CLASS_ATTENDANCE_SUMMARY_SUCCESS",
+            "message": "Truy xuất bảng chuyên cần tổng hợp của lớp thành công.",
+            "data": data,
+        }), 200
+    except AttendanceServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+            "data": getattr(err, "data", None),
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi truy xuất bảng chuyên cần lớp %s: %s", class_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi truy vấn bảng chuyên cần tổng hợp.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không xác định khi tải bảng chuyên cần tổng hợp lớp %s: %s", class_id, err)
+        return jsonify({
+            "status": "error",
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi tải bảng chuyên cần tổng hợp.",
+        }), 500
+

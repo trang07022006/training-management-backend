@@ -51,6 +51,7 @@ MIGRATIONS = [
     "033_create_student_lifecycle_tables.sql",
     "034_create_attendance_tables.sql",
     "035_create_absence_requests_table.sql",
+    "036_create_assignments_and_rework_tables.sql",
 ]
 
 

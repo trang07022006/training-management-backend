@@ -1440,7 +1440,7 @@ def get_student_schedule_by_student_id_service(
 
 
 def list_my_notifications_service(user_id: str | None) -> list[dict]:
-    """Lấy danh sách thông báo thay đổi TKB của chính người dùng đăng nhập (SCRUM-226)."""
+    """Lấy danh sách thông báo của chính người dùng đăng nhập (SCRUM-226 & SCRUM-257)."""
     if not user_id:
         return []
     conn = get_db_connection()
@@ -1450,11 +1450,20 @@ def list_my_notifications_service(user_id: str | None) -> list[dict]:
                 """
                 SELECT id, schedule_id, class_id, recipient_type, recipient_id,
                        recipient_name, recipient_email, change_type, title, message, created_at
-                FROM schedule_notifications
-                WHERE recipient_id = %s
+                FROM (
+                    SELECT id, schedule_id, class_id, recipient_type, recipient_id,
+                           recipient_name, recipient_email, change_type, title, message, created_at
+                    FROM schedule_notifications
+                    WHERE recipient_id = %s
+                    UNION ALL
+                    SELECT id, NULL AS schedule_id, class_id, recipient_role AS recipient_type, recipient_id,
+                           '' AS recipient_name, '' AS recipient_email, 'absence_alert' AS change_type, title, message, created_at
+                    FROM absence_alert_notifications
+                    WHERE recipient_id = %s
+                ) notifs
                 ORDER BY created_at DESC
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
             rows = cursor.fetchall() or []
             for r in rows:

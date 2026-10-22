@@ -66,10 +66,27 @@ def enroll_students_endpoint(class_id: str):
 def get_class_roster_endpoint(class_id: str):
     """
     API Xem danh sách học viên trong lớp (Roster) - SCRUM-218.
-    Phân quyền: Quản lý đào tạo (course.view / course.manage).
+    Bảo mật: Học viên (trainee) chỉ được xem lớp mình đã ghi danh, và response chỉ trả về STT + Họ tên.
     """
+    from flask import g
+    from app.services import authorization_service
+    from app.repositories import student_repository, enrollment_repository
+
+    user_id = getattr(g, "user_id", None) or get_jwt_identity()
+    roles = authorization_service.get_user_role_codes(user_id) if user_id else []
+    is_trainee = "trainee" in roles and not any(r in roles for r in ["admin", "training_manager", "trainer", "teacher"])
+
+    if is_trainee:
+        my_student = student_repository.get_student_by_user_id(user_id)
+        if not my_student or not enrollment_repository.is_student_enrolled_in_class(class_id, my_student.id):
+            return jsonify({
+                "status": "error",
+                "code": "FORBIDDEN_CLASS_ACCESS",
+                "message": "Học viên chỉ được xem danh sách lớp mà mình đã ghi danh.",
+            }), 403
+
     try:
-        result = enrollment_service.get_class_roster_service(class_id)
+        result = enrollment_service.get_class_roster_service(class_id, for_trainee=is_trainee)
         return jsonify({
             "status": "success",
             "data": result,

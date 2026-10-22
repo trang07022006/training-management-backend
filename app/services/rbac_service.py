@@ -28,6 +28,9 @@ INITIAL_PERMISSIONS = [
     Permission(id="perm-id-schedule-view", code="schedule.view", name="Xem thời khóa biểu", description="Xem thời khóa biểu và lịch giảng dạy/học tập toàn trường"),
     Permission(id="perm-id-schedule-manage", code="schedule.manage", name="Quản lý thời khóa biểu", description="Tạo, sửa, hủy và điều chỉnh lịch học, thời khóa biểu"),
     Permission(id="perm-id-schedule-personal-view", code="schedule.personal_view", name="Xem lịch cá nhân", description="Xem thời khóa biểu cá nhân của học viên hoặc lịch giảng dạy của giảng viên"),
+    Permission(id="perm-id-assignment-view", code="assignment.view", name="Xem bài tập", description="Xem danh sách bài tập và bài nộp"),
+    Permission(id="perm-id-assignment-grade", code="assignment.grade", name="Chấm và yêu cầu làm lại bài", description="Chấm bài và gửi yêu cầu làm lại bài tập"),
+    Permission(id="perm-id-assignment-submit", code="assignment.submit", name="Nộp bài tập", description="Nộp bài và nộp lại bài tập"),
 ]
 
 # Danh mục mapping quyền cho từng vai trò
@@ -36,15 +39,18 @@ INITIAL_ROLE_PERMISSIONS_MAP = {
         "user.view", "user.manage", "course.view", "course.manage",
         "session.view", "session.revoke",
         "schedule.view",
+        "assignment.view", "assignment.grade",
     ],
     "trainer": [
         "course.view", "course.manage", "session.view",
         "schedule.view", "schedule.personal_view",
         "attendance.view", "attendance.take",
+        "assignment.view", "assignment.grade",
     ],
     "trainee": [
         "course.view", "session.view",
         "schedule.personal_view",
+        "assignment.view", "assignment.submit",
     ],
     "user": ["session.view"],
 }
@@ -73,13 +79,16 @@ BUSINESS_ROLE_PERMISSIONS_MAP = {
         "student.lifecycle_manage",
         "attendance.view", "attendance.take", "attendance.manage",
         "absence.view", "absence.review",
+        "assignment.view", "assignment.grade",
     ],
     "trainer": [
         "attendance.view", "attendance.take",
         "absence.view", "absence.review",
+        "assignment.view", "assignment.grade",
     ],
     "trainee": [
         "absence.request",
+        "assignment.view", "assignment.submit",
     ],
     "consultant": ["course.view", "course.manage", "session.view"],
     "admin": ["lead.delete"],

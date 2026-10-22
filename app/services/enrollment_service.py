@@ -153,13 +153,36 @@ def enroll_students_service(class_id: str, payload: dict, actor_user_id: str) ->
     }
 
 
-def get_class_roster_service(class_id: str) -> dict:
-    """Lấy danh sách học viên trong lớp (Class Roster) kèm thông tin chi tiết."""
+def get_class_roster_service(class_id: str, for_trainee: bool = False) -> dict:
+    """
+    Lấy danh sách học viên trong lớp (Class Roster).
+    Nếu for_trainee=True: Áp dụng strict allowlist (chỉ STT order_index và full_name), bảo vệ toàn bộ dữ liệu cá nhân.
+    """
     class_obj = class_repository.get_class_by_id(class_id)
     if not class_obj:
         raise ClassNotFoundError()
 
     enrollments = enrollment_repository.get_enrollments_by_class_id(class_id)
+
+    if for_trainee:
+        items = [
+            {
+                "order_index": idx + 1,
+                "full_name": e.full_name or "—",
+            }
+            for idx, e in enumerate(enrollments)
+        ]
+        return {
+            "class": {
+                "id": class_obj.id,
+                "class_code": class_obj.class_code,
+                "max_capacity": class_obj.max_capacity,
+                "enrolled_count": len(enrollments),
+            },
+            "items": items,
+            "total": len(items),
+        }
+
     return {
         "class": class_obj.to_dict(),
         "items": [e.to_dict() for e in enrollments],

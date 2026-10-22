@@ -1,3 +1,4 @@
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -38,6 +39,7 @@ def _database_cursor(write: bool = False):
 def _row_to_model(row: dict) -> TrainingProgram:
     """Chuyển đổi dictionary row từ MySQL thành đối tượng TrainingProgram."""
     duration = row.get("duration_semesters")
+    threshold = row.get("absence_alert_threshold")
     return TrainingProgram(
         id=str(row["id"]),
         code=str(row["code"]),
@@ -45,6 +47,7 @@ def _row_to_model(row: dict) -> TrainingProgram:
         description=row.get("description"),
         duration_semesters=int(duration) if duration is not None else None,
         standard_tuition_fee=int(row["standard_tuition_fee"]) if row.get("standard_tuition_fee") is not None else None,
+        absence_alert_threshold=float(threshold) if threshold is not None else 20.0,
         status=str(row.get("status") or PROGRAM_STATUS_DRAFT),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
@@ -67,11 +70,12 @@ def insert_training_program(program: TrainingProgram) -> TrainingProgram:
             description,
             duration_semesters,
             standard_tuition_fee,
+            absence_alert_threshold,
             status,
             created_at,
             updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     values = (
         program.id,
@@ -80,6 +84,7 @@ def insert_training_program(program: TrainingProgram) -> TrainingProgram:
         program.description,
         program.duration_semesters,
         program.standard_tuition_fee,
+        program.absence_alert_threshold if program.absence_alert_threshold is not None else 20.0,
         program.status,
         _to_mysql_datetime(created_at),
         _to_mysql_datetime(updated_at),
@@ -95,6 +100,7 @@ def insert_training_program(program: TrainingProgram) -> TrainingProgram:
         description=program.description,
         duration_semesters=program.duration_semesters,
         standard_tuition_fee=program.standard_tuition_fee,
+        absence_alert_threshold=program.absence_alert_threshold if program.absence_alert_threshold is not None else 20.0,
         status=program.status,
         created_at=created_at,
         updated_at=updated_at,
@@ -114,6 +120,7 @@ def get_training_program_by_id(program_id: str) -> TrainingProgram | None:
             description,
             duration_semesters,
             standard_tuition_fee,
+            absence_alert_threshold,
             status,
             created_at,
             updated_at
@@ -143,6 +150,7 @@ def get_training_program_by_code(code: str) -> TrainingProgram | None:
             description,
             duration_semesters,
             standard_tuition_fee,
+            absence_alert_threshold,
             status,
             created_at,
             updated_at
@@ -209,6 +217,7 @@ def get_all_training_programs(
             description,
             duration_semesters,
             standard_tuition_fee,
+            absence_alert_threshold,
             status,
             created_at,
             updated_at
@@ -292,6 +301,7 @@ ALLOWED_UPDATE_FIELDS = {
     "description",
     "duration_semesters",
     "standard_tuition_fee",
+    "absence_alert_threshold",
     "status",
 }
 
@@ -312,6 +322,7 @@ def update_training_program(program: TrainingProgram) -> TrainingProgram:
             description = %s,
             duration_semesters = %s,
             standard_tuition_fee = %s,
+            absence_alert_threshold = %s,
             status = %s,
             updated_at = %s
         WHERE id = %s
@@ -322,6 +333,7 @@ def update_training_program(program: TrainingProgram) -> TrainingProgram:
         program.description,
         program.duration_semesters,
         program.standard_tuition_fee,
+        program.absence_alert_threshold if program.absence_alert_threshold is not None else 20.0,
         program.status,
         _to_mysql_datetime(updated_at),
         program.id,
@@ -398,4 +410,66 @@ def get_public_active_training_programs() -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def update_program_absence_threshold(
+    program_id: str,
+    threshold: float,
+    changed_by: str,
+    reason: str | None = None,
+) -> TrainingProgram | None:
+    """
+    Cập nhật ngưỡng cảnh báo vắng (absence_alert_threshold) và ghi vết audit (AC1).
+    """
+    now = datetime.now(timezone.utc)
+    current_prog = get_training_program_by_id(program_id)
+    if not current_prog:
+        return None
+
+    old_threshold = current_prog.absence_alert_threshold
+    audit_id = str(uuid.uuid4())
+
+    sql_update = """
+        UPDATE training_programs
+        SET absence_alert_threshold = %s,
+            updated_at = %s
+        WHERE id = %s
+    """
+    sql_audit = """
+        INSERT INTO program_absence_threshold_audits (
+            id, program_id, old_threshold, new_threshold, changed_by, changed_at, reason
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """
+
+    with _database_cursor(write=True) as cursor:
+        cursor.execute(sql_update, (threshold, _to_mysql_datetime(now), program_id))
+        cursor.execute(
+            sql_audit,
+            (audit_id, program_id, old_threshold, threshold, changed_by, _to_mysql_datetime(now), reason),
+        )
+
+    return get_training_program_by_id(program_id)
+
+
+def get_program_threshold_audits(program_id: str) -> list[dict[str, Any]]:
+    """Lấy danh sách lịch sử điều chỉnh ngưỡng cảnh báo vắng của chương trình."""
+    sql = """
+        SELECT a.id, a.program_id, a.old_threshold, a.new_threshold,
+               a.changed_by, a.changed_at, a.reason, u.name AS changed_by_name, u.email AS changed_by_email
+        FROM program_absence_threshold_audits a
+        LEFT JOIN users u ON a.changed_by = u.id
+        WHERE a.program_id = %s
+        ORDER BY a.changed_at DESC
+    """
+    with _database_cursor() as cursor:
+        cursor.execute(sql, (program_id,))
+        rows = cursor.fetchall() or []
+        for r in rows:
+            if r.get("changed_at") and hasattr(r["changed_at"], "isoformat"):
+                r["changed_at"] = r["changed_at"].isoformat()
+            if r.get("old_threshold") is not None:
+                r["old_threshold"] = float(r["old_threshold"])
+            if r.get("new_threshold") is not None:
+                r["new_threshold"] = float(r["new_threshold"])
+        return rows
 
