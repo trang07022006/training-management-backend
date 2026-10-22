@@ -13,6 +13,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import logging
 from typing import Any, Optional
+import uuid
 
 from app.database.connection import get_db_connection
 from app.repositories import absence_alert_repository, attendance_summary_repository, training_program_repository
@@ -204,6 +205,24 @@ def evaluate_class_absence_alerts(class_id: str, persist: bool = True) -> list[d
             eval_item["newly_triggered"] = saved["newly_triggered"]
             eval_item["newly_resolved"] = saved["newly_resolved"]
 
+            # SCRUM-257 AC3: Khi cờ chuyển sang bật -> tạo thông báo cho Giảng viên & Quản lý đào tạo
+            if saved["newly_triggered"]:
+                dispatch_absence_alert_notifications(
+                    alert_id=saved["id"],
+                    alert_round=saved["alert_round"],
+                    class_id=class_id,
+                    class_code=class_info.get("class_code") or class_id,
+                    student_id=s_id,
+                    student_code=stud.get("student_code") or "",
+                    student_name=stud.get("full_name") or "Học viên",
+                    program_id=program_id,
+                    program_name=class_info.get("program_name") or "",
+                    absent_sessions=A,
+                    total_sessions=N,
+                    absence_rate=absence_rate,
+                    threshold=threshold,
+                )
+
         results.append(eval_item)
 
     return results
@@ -269,3 +288,107 @@ def recalculate_alerts_for_program(program_id: str) -> int:
         return evaluated_count
     finally:
         conn.close()
+
+
+def dispatch_absence_alert_notifications(
+    alert_id: str,
+    alert_round: int,
+    class_id: str,
+    class_code: str,
+    student_id: str,
+    student_code: str,
+    student_name: str,
+    program_id: str,
+    program_name: str,
+    absent_sessions: int,
+    total_sessions: int,
+    absence_rate: float,
+    threshold: float,
+) -> int:
+    """
+    Phát thông báo khi cờ cảnh báo vắng của học viên được bật (SCRUM-257 - AC3).
+    - Người nhận: Giảng viên phụ trách lớp và Quản lý đào tạo (được deduplicate).
+    - Nội dung: Tỷ lệ vắng, số buổi vắng/tổng số buổi, ngưỡng, link đến bảng chuyên cần lớp.
+    - Chống trùng: Dựa trên unique constraint (alert_id, alert_round, recipient_id).
+    - Cách ly lỗi: Một người nhận lỗi không ảnh hưởng tới người khác.
+    """
+    recipients = absence_alert_repository.get_alert_recipients_for_class(class_id, program_id)
+    if not recipients:
+        logger.info(
+            "Không tìm thấy người nhận hợp lệ (giảng viên/quản lý đào tạo) cho cảnh báo lớp %s",
+            class_code,
+        )
+        return 0
+
+    threshold_display = f"{threshold:.2f}".rstrip("0").rstrip(".")
+    rate_display = f"{absence_rate:.2f}".rstrip("0").rstrip(".")
+
+    title = f"Cảnh báo vắng vượt ngưỡng: Học viên {student_name} ({class_code})"
+    message = (
+        f"Học viên {student_name} (Mã: {student_code}) có tỷ lệ vắng {rate_display}% "
+        f"({absent_sessions}/{total_sessions} buổi), vượt ngưỡng {threshold_display}% "
+        f"của lớp {class_code}."
+    )
+    if program_name:
+        message += f" Chương trình: {program_name}."
+
+    sent_count = 0
+    now_str = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    for r in recipients:
+        r_id = r["id"]
+        r_role = r.get("recipient_role", "training_manager")
+        notif_item = {
+            "id": str(uuid.uuid4()),
+            "alert_id": alert_id,
+            "alert_round": alert_round,
+            "recipient_id": r_id,
+            "recipient_role": r_role,
+            "title": title,
+            "message": message,
+            "class_id": class_id,
+            "student_id": student_id,
+            "created_at": now_str,
+        }
+        try:
+            inserted = absence_alert_repository.insert_absence_alert_notification(notif_item)
+            if inserted:
+                sent_count += 1
+                logger.info(
+                    "Đã ghi nhận thông báo cảnh báo vắng vượt ngưỡng cho %s (%s) round %d",
+                    r_id,
+                    r_role,
+                    alert_round,
+                )
+        except Exception as e:
+            logger.exception(
+                "Lỗi khi gửi thông báo cảnh báo vắng cho người nhận %s: %s",
+                r_id,
+                e,
+            )
+
+    return sent_count
+
+
+def list_my_absence_alert_notifications_service(
+    user_id: str, unread_only: bool = False
+) -> list[dict[str, Any]]:
+    """
+    Lấy danh sách thông báo cảnh báo vắng của chính người dùng đăng nhập (SCRUM-257 AC3).
+    """
+    if not user_id:
+        return []
+    return absence_alert_repository.get_absence_alert_notifications_by_recipient(
+        recipient_id=user_id, unread_only=unread_only
+    )
+
+
+def mark_absence_alert_notification_read_service(notif_id: str, user_id: str) -> bool:
+    """
+    Đánh dấu đã đọc thông báo cảnh báo vắng (SCRUM-257 AC3).
+    """
+    if not notif_id or not user_id:
+        return False
+    return absence_alert_repository.mark_absence_alert_notification_as_read(
+        notif_id=notif_id, user_id=user_id
+    )
