@@ -160,6 +160,33 @@ def get_student_by_id(student_id: str) -> Student | None:
         connection.close()
 
 
+def get_student_by_user_id(user_id: str) -> Student | None:
+    """Lấy thông tin học viên theo user_id tài khoản liên kết."""
+    if not user_id:
+        return None
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            sql = """
+                SELECT 
+                    s.id, s.student_code, s.user_id, s.lead_id,
+                    s.full_name, s.phone, s.email, s.program_id,
+                    s.status, s.entry_level, s.notes, s.created_at, s.updated_at,
+                    tp.code AS program_code, tp.name AS program_name
+                FROM students s
+                LEFT JOIN training_programs tp ON s.program_id = tp.id
+                WHERE s.user_id = %s
+                LIMIT 1
+            """
+            cursor.execute(sql, (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return _row_to_student(row)
+    finally:
+        connection.close()
+
+
 def get_student_by_lead_id(lead_id: str) -> Student | None:
     """Lấy thông tin học viên theo lead_id (dùng để kiểm tra duplicate conversion)."""
     connection = get_db_connection()
