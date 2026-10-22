@@ -266,6 +266,57 @@ def validate_program_tuition_fee(raw_fee: Any) -> int | None:
     return raw_fee
 
 
+def validate_absence_alert_threshold(raw_val: Any) -> float:
+    """
+    Kiểm tra và chuẩn hóa ngưỡng cảnh báo vắng (SCRUM-257 - AC1).
+    - Giá trị từ 0 đến 100.
+    - Cho phép tối đa 2 chữ số thập phân.
+    - Không chấp nhận bool, NaN, Infinity, chuỗi không phải số, ngoài [0, 100].
+    """
+    if raw_val is None:
+        raise TrainingProgramValidationError(
+            "Ngưỡng cảnh báo vắng không được để trống.",
+            code="INVALID_ABSENCE_THRESHOLD",
+        )
+    if isinstance(raw_val, bool):
+        raise TrainingProgramValidationError(
+            "Ngưỡng cảnh báo vắng phải là một số từ 0 đến 100.",
+            code="INVALID_ABSENCE_THRESHOLD",
+        )
+    if not isinstance(raw_val, (int, float, str)):
+        raise TrainingProgramValidationError(
+            "Ngưỡng cảnh báo vắng không hợp lệ.",
+            code="INVALID_ABSENCE_THRESHOLD",
+        )
+    try:
+        val = float(raw_val)
+    except (ValueError, TypeError):
+        raise TrainingProgramValidationError(
+            "Ngưỡng cảnh báo vắng phải là một số hợp lệ.",
+            code="INVALID_ABSENCE_THRESHOLD",
+        )
+    if math.isnan(val) or math.isinf(val):
+        raise TrainingProgramValidationError(
+            "Ngưỡng cảnh báo vắng không được là NaN hoặc vô hạn.",
+            code="INVALID_ABSENCE_THRESHOLD",
+        )
+    if val < 0.0 or val > 100.0:
+        raise TrainingProgramValidationError(
+            "Ngưỡng cảnh báo vắng phải nằm trong khoảng từ 0% đến 100%.",
+            code="INVALID_ABSENCE_THRESHOLD",
+        )
+    # Kiểm tra tối đa 2 chữ số thập phân
+    str_val = str(raw_val).strip()
+    if "." in str_val:
+        dec_part = str_val.split(".")[1].rstrip("0")
+        if len(dec_part) > 2:
+            raise TrainingProgramValidationError(
+                "Ngưỡng cảnh báo vắng chỉ được phép có tối đa 2 chữ số thập phân.",
+                code="INVALID_ABSENCE_THRESHOLD",
+            )
+    return round(val, 2)
+
+
 def validate_program_status(raw_status: Any, default: str = PROGRAM_STATUS_DRAFT) -> str:
     """Kiểm tra và chuẩn hóa trạng thái chương trình (status)."""
     if raw_status is None:
@@ -327,6 +378,11 @@ def create_training_program_service(data: dict) -> dict:
     cleaned_desc = validate_program_description(data.get("description"))
     cleaned_duration = validate_program_duration(data.get("duration_semesters"))
     cleaned_tuition_fee = validate_program_tuition_fee(data.get("standard_tuition_fee"))
+    raw_thresh = data.get("absence_alert_threshold")
+    if raw_thresh is not None:
+        cleaned_threshold = validate_absence_alert_threshold(raw_thresh)
+    else:
+        cleaned_threshold = 20.0
     cleaned_status = validate_program_status(data.get("status"), default=PROGRAM_STATUS_DRAFT)
 
     # Kiểm tra trùng mã code ở tầng service
@@ -344,6 +400,7 @@ def create_training_program_service(data: dict) -> dict:
         description=cleaned_desc,
         duration_semesters=cleaned_duration,
         standard_tuition_fee=cleaned_tuition_fee,
+        absence_alert_threshold=cleaned_threshold,
         status=cleaned_status,
         created_at=now,
         updated_at=now,
@@ -405,6 +462,11 @@ def update_training_program_service(program_id: str, data: dict) -> dict:
     cleaned_desc = validate_program_description(data.get("description"))
     cleaned_duration = validate_program_duration(data.get("duration_semesters"))
     cleaned_tuition_fee = validate_program_tuition_fee(data.get("standard_tuition_fee"))
+    raw_thresh = data.get("absence_alert_threshold")
+    if raw_thresh is not None:
+        cleaned_threshold = validate_absence_alert_threshold(raw_thresh)
+    else:
+        cleaned_threshold = existing.absence_alert_threshold if existing.absence_alert_threshold is not None else 20.0
     cleaned_status = validate_program_status(data.get("status"), default=PROGRAM_STATUS_DRAFT)
 
     if cleaned_code != existing.code:
@@ -419,6 +481,7 @@ def update_training_program_service(program_id: str, data: dict) -> dict:
         description=cleaned_desc,
         duration_semesters=cleaned_duration,
         standard_tuition_fee=cleaned_tuition_fee,
+        absence_alert_threshold=cleaned_threshold,
         status=cleaned_status,
         created_at=existing.created_at,
         updated_at=now,
@@ -501,6 +564,9 @@ def patch_training_program_service(program_id: str, data: dict) -> dict:
     if "standard_tuition_fee" in data:
         fields_to_update["standard_tuition_fee"] = validate_program_tuition_fee(data["standard_tuition_fee"])
 
+    if "absence_alert_threshold" in data:
+        fields_to_update["absence_alert_threshold"] = validate_absence_alert_threshold(data["absence_alert_threshold"])
+
     if "status" in data:
         fields_to_update["status"] = validate_patch_status(data["status"])
 
@@ -579,3 +645,57 @@ def delete_training_program_service(program_id: str) -> dict:
     return {"id": cleaned_id}
 
 
+def update_program_absence_threshold_service(
+    program_id: str,
+    threshold_raw: Any,
+    changed_by: str,
+    reason: str | None = None,
+) -> dict:
+    """
+    Cập nhật riêng ngưỡng cảnh báo vắng và ghi log audit (SCRUM-257 - AC1).
+    """
+    if not isinstance(program_id, str) or not program_id.strip():
+        raise TrainingProgramValidationError("Mã định danh chương trình đào tạo không hợp lệ.", code="INVALID_PARAMS")
+    cleaned_id = program_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise TrainingProgramValidationError("Mã định danh chương trình đào tạo không đúng định dạng UUID.", code="INVALID_PARAMS")
+
+    existing = training_program_repository.get_training_program_by_id(cleaned_id)
+    if existing is None:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    cleaned_threshold = validate_absence_alert_threshold(threshold_raw)
+    updated = training_program_repository.update_program_absence_threshold(
+        program_id=cleaned_id,
+        threshold=cleaned_threshold,
+        changed_by=changed_by,
+        reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
+    )
+    if not updated:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    return updated.to_dict()
+
+
+def get_program_absence_threshold_service(program_id: str) -> dict:
+    """
+    Lấy thông tin cấu hình ngưỡng và lịch sử audit của chương trình (SCRUM-257 - AC1).
+    """
+    if not isinstance(program_id, str) or not program_id.strip():
+        raise TrainingProgramValidationError("Mã định danh chương trình đào tạo không hợp lệ.", code="INVALID_PARAMS")
+    cleaned_id = program_id.strip()
+    if not is_valid_uuid(cleaned_id):
+        raise TrainingProgramValidationError("Mã định danh chương trình đào tạo không đúng định dạng UUID.", code="INVALID_PARAMS")
+
+    existing = training_program_repository.get_training_program_by_id(cleaned_id)
+    if existing is None:
+        raise TrainingProgramNotFoundError("Không tìm thấy chương trình đào tạo.")
+
+    audits = training_program_repository.get_program_threshold_audits(cleaned_id)
+    return {
+        "program_id": existing.id,
+        "program_code": existing.code,
+        "program_name": existing.name,
+        "absence_alert_threshold": existing.absence_alert_threshold if existing.absence_alert_threshold is not None else 20.0,
+        "audits": audits,
+    }

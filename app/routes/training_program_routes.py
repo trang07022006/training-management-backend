@@ -14,7 +14,7 @@ Endpoints:
 """
 
 import logging
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
 from mysql.connector import Error as MySQLError
 
 from app.services import training_program_service
@@ -285,3 +285,101 @@ def delete_training_program(program_id: str):
         }), 500
 
 
+@training_program_bp.get("/v1/training-programs/<program_id>/absence-alert-threshold")
+@training_program_bp.get("/training-programs/<program_id>/absence-alert-threshold")
+@permission_required("course.view")
+def get_program_absence_threshold(program_id: str):
+    """
+    API lấy cấu hình ngưỡng cảnh báo vắng và lịch sử audit của chương trình (SCRUM-257 - AC1).
+    - Yêu cầu quyền 'course.view'
+    - Trả về 200 OK kèm ngưỡng hiện hành và danh sách audit
+    - Trả về 400 nếu program_id không đúng định dạng UUID
+    - Trả về 404 nếu không tìm thấy chương trình
+    """
+    try:
+        data = training_program_service.get_program_absence_threshold_service(program_id)
+        return jsonify({
+            "status": "success",
+            "data": data,
+        }), 200
+    except TrainingProgramServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy cấu hình ngưỡng cảnh báo vắng: %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi lấy cấu hình ngưỡng cảnh báo vắng.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi lấy cấu hình ngưỡng cảnh báo vắng: %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
+
+
+@training_program_bp.put("/v1/training-programs/<program_id>/absence-alert-threshold")
+@training_program_bp.put("/training-programs/<program_id>/absence-alert-threshold")
+@permission_required("course.manage")
+def update_program_absence_threshold(program_id: str):
+    """
+    API cập nhật ngưỡng cảnh báo vắng cho chương trình đào tạo (SCRUM-257 - AC1).
+    - Yêu cầu xác thực đăng nhập và quyền 'course.manage'
+    - Request body: {"threshold": float, "reason": optional str}
+      (hỗ trợ cả field "absence_alert_threshold")
+    - Trả về 200 OK khi thành công kèm thông tin chương trình đã cập nhật
+    - Trả về 400 nếu dữ liệu không hợp lệ (ngoài [0, 100], quá 2 chữ số thập phân, âm, ...)
+    - Trả về 404 nếu không tìm thấy chương trình đào tạo
+    """
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu phải là định dạng JSON hợp lệ.",
+        }), 400
+
+    raw_threshold = data.get("threshold")
+    if raw_threshold is None:
+        raw_threshold = data.get("absence_alert_threshold")
+
+    if raw_threshold is None:
+        return jsonify({
+            "code": "INVALID_PARAMS",
+            "message": "Trường 'threshold' hoặc 'absence_alert_threshold' là bắt buộc.",
+        }), 400
+
+    reason = data.get("reason")
+    changed_by = getattr(g, "user_id", None) or "system"
+
+    try:
+        updated = training_program_service.update_program_absence_threshold_service(
+            program_id=program_id,
+            threshold_raw=raw_threshold,
+            changed_by=changed_by,
+            reason=reason,
+        )
+        return jsonify({
+            "status": "success",
+            "message": "Cập nhật ngưỡng cảnh báo vắng thành công.",
+            "data": updated,
+        }), 200
+    except TrainingProgramServiceError as err:
+        return jsonify({
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi cập nhật ngưỡng cảnh báo vắng: %s", err)
+        return jsonify({
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi cập nhật ngưỡng cảnh báo vắng.",
+        }), 500
+    except Exception as err:
+        logger.exception("Lỗi không mong muốn khi cập nhật ngưỡng cảnh báo vắng: %s", err)
+        return jsonify({
+            "code": "INTERNAL_ERROR",
+            "message": "Đã xảy ra lỗi hệ thống khi xử lý yêu cầu.",
+        }), 500
