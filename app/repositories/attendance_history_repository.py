@@ -490,7 +490,7 @@ def get_student_attendance_history(
             warning_status = "at_limit"
             warning_level = "warning"
             warning_message = (
-                f"Bạn đã vắng {A}/{N} buổi, bằng mức tối đa cho phép theo ngưỡng {threshold_display}%. "
+                f"Bạn đã vắng {A}/{N} buổi, bằng ngưỡng {threshold_display}%. "
                 f"Vắng thêm 1 buổi sẽ vượt ngưỡng."
             )
         elif A >= 1 and (K - A) <= 1:
