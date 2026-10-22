@@ -222,3 +222,122 @@ def get_my_submission_endpoint(assignment_id: str):
             "code": "DATABASE_ERROR",
             "message": "Lỗi cơ sở dữ liệu khi tải bài nộp của bạn.",
         }), 500
+
+
+@assignment_bp.get("/v1/classes/<class_id>/assignments")
+@permission_required("assignment.view")
+def list_class_assignments_endpoint(class_id: str):
+    """Lấy danh sách các bài tập của một lớp học."""
+    roles = _get_current_roles()
+    try:
+        assignments = assignment_service.list_class_assignments_service(
+            class_id=class_id,
+            user_id=g.user_id,
+            user_roles=roles,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "ASSIGNMENTS_LIST",
+            "message": "Lấy danh sách bài tập thành công.",
+            "data": assignments,
+        }), 200
+    except AssignmentServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi lấy danh sách bài tập: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi tải danh sách bài tập.",
+        }), 500
+
+
+@assignment_bp.post("/v1/classes/<class_id>/assignments")
+@permission_required("assignment.grade")
+def create_assignment_endpoint(class_id: str):
+    """Giảng viên giao bài tập mới cho lớp học."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu không hợp lệ.",
+        }), 400
+
+    roles = _get_current_roles()
+    is_admin_or_mgr = any(r in ("admin", "training_manager") for r in roles)
+
+    try:
+        created = assignment_service.create_assignment_service(
+            class_id=class_id,
+            instructor_user_id=g.user_id,
+            payload=payload,
+            is_admin_or_mgr=is_admin_or_mgr,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "ASSIGNMENT_CREATED",
+            "message": "Giao bài tập mới thành công.",
+            "data": created,
+        }), 201
+    except AssignmentServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi tạo bài tập mới: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi giao bài tập mới.",
+        }), 500
+
+
+@assignment_bp.post("/v1/submissions/<submission_id>/grade")
+@permission_required("assignment.grade")
+def grade_submission_endpoint(submission_id: str):
+    """Giảng viên đánh giá, chấm điểm và xác nhận bài nộp của học viên."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu không hợp lệ.",
+        }), 400
+
+    roles = _get_current_roles()
+    is_admin_or_mgr = any(r in ("admin", "training_manager") for r in roles)
+
+    try:
+        graded = assignment_service.grade_submission_service(
+            submission_id=submission_id,
+            instructor_user_id=g.user_id,
+            payload=payload,
+            is_admin_or_mgr=is_admin_or_mgr,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "SUBMISSION_GRADED",
+            "message": "Đánh giá và xác nhận bài tập thành công.",
+            "data": graded,
+        }), 200
+    except AssignmentServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi chấm điểm bài nộp: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi đánh giá bài nộp.",
+        }), 500
+

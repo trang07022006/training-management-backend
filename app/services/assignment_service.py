@@ -428,3 +428,179 @@ def get_my_submission_service(
         )
 
     return submission.to_dict()
+
+
+def create_assignment_service(
+    class_id: str,
+    instructor_user_id: str,
+    payload: dict[str, Any],
+    is_admin_or_mgr: bool = False,
+) -> dict[str, Any]:
+    """Giảng viên giao bài tập mới cho lớp học."""
+    # 1. Validation tiêu đề
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise AssignmentServiceError(
+            code="TITLE_REQUIRED",
+            message="Tiêu đề bài tập là bắt buộc và không được để trống.",
+            status_code=400,
+        )
+    title = title.strip()
+    if len(title) > 255:
+        raise AssignmentServiceError(
+            code="TITLE_TOO_LONG",
+            message="Tiêu đề bài tập không được vượt quá 255 ký tự.",
+            status_code=400,
+        )
+
+    # 2. Description
+    description = payload.get("description")
+    if description is not None:
+        description = str(description).strip()
+
+    # 3. Due date
+    raw_due_date = payload.get("due_date")
+    due_date_dt = None
+    if raw_due_date:
+        try:
+            due_date_dt = _parse_iso_datetime(raw_due_date)
+        except Exception:
+            raise AssignmentServiceError(
+                code="INVALID_DUE_DATE",
+                message="Định dạng hạn nộp bài tập không hợp lệ (ISO 8601).",
+                status_code=400,
+            )
+
+    # 4. Max score
+    raw_max_score = payload.get("max_score", 10.0)
+    try:
+        max_score = float(raw_max_score)
+        if max_score <= 0 or max_score > 100:
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise AssignmentServiceError(
+            code="INVALID_MAX_SCORE",
+            message="Thang điểm bài tập phải là số lớn hơn 0 và nhỏ hơn hoặc bằng 100.",
+            status_code=400,
+        )
+
+    # 5. Kiểm tra phân công giảng viên
+    if not is_admin_or_mgr:
+        if not assignment_repository.is_instructor_assigned_to_class(instructor_user_id, class_id):
+            raise AssignmentServiceError(
+                code="FORBIDDEN_CLASS",
+                message="Bạn không phụ trách giảng dạy lớp học này để giao bài tập.",
+                status_code=403,
+            )
+
+    now_utc = datetime.now(timezone.utc)
+    new_assignment = Assignment(
+        id=f"asg-{uuid.uuid4().hex[:12]}",
+        class_id=class_id,
+        title=title,
+        description=description,
+        due_date=due_date_dt,
+        max_score=max_score,
+        status="active",
+        created_by=instructor_user_id,
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+
+    created = assignment_repository.create_assignment(new_assignment)
+    return created.to_dict()
+
+
+def list_class_assignments_service(
+    class_id: str,
+    user_id: str,
+    user_roles: list[str],
+) -> list[dict[str, Any]]:
+    """Lấy danh sách các bài tập của một lớp học."""
+    is_admin_or_mgr = any(r in ("admin", "training_manager") for r in user_roles)
+    if "trainer" in user_roles and not is_admin_or_mgr:
+        if not assignment_repository.is_instructor_assigned_to_class(user_id, class_id):
+            raise AssignmentServiceError(
+                code="FORBIDDEN_CLASS",
+                message="Bạn không phụ trách giảng dạy lớp học này.",
+                status_code=403,
+            )
+    elif "trainee" in user_roles and not is_admin_or_mgr:
+        student = assignment_repository.get_student_by_user_id(user_id)
+        if not student or not assignment_repository.is_student_enrolled_in_class(student["id"], class_id):
+            raise AssignmentServiceError(
+                code="FORBIDDEN_CLASS",
+                message="Bạn không theo học lớp học này.",
+                status_code=403,
+            )
+
+    assignments = assignment_repository.list_assignments_by_class(class_id)
+    return [a.to_dict() for a in assignments]
+
+
+def grade_submission_service(
+    submission_id: str,
+    instructor_user_id: str,
+    payload: dict[str, Any],
+    is_admin_or_mgr: bool = False,
+) -> dict[str, Any]:
+    """Giảng viên đánh giá, chấm điểm và xác nhận bài nộp của học viên."""
+    submission = assignment_repository.get_submission_by_id(submission_id)
+    if not submission:
+        raise AssignmentServiceError(
+            code="SUBMISSION_NOT_FOUND",
+            message="Không tìm thấy bài nộp.",
+            status_code=404,
+        )
+
+    # Kiểm tra phân công giảng dạy
+    assignment = assignment_repository.get_assignment_by_id(submission.assignment_id)
+    if not is_admin_or_mgr:
+        if not assignment or not assignment_repository.is_instructor_assigned_to_class(
+            instructor_user_id, assignment.class_id
+        ):
+            raise AssignmentServiceError(
+                code="FORBIDDEN_CLASS",
+                message="Bạn không phụ trách lớp học của bài nộp này.",
+                status_code=403,
+            )
+        max_score = assignment.max_score
+    else:
+        max_score = assignment.max_score if assignment else 10.0
+
+    raw_score = payload.get("score")
+    if raw_score is None:
+        raise AssignmentServiceError(
+            code="SCORE_REQUIRED",
+            message="Điểm số đánh giá là bắt buộc.",
+            status_code=400,
+        )
+    try:
+        score = float(raw_score)
+        if score < 0 or score > max_score:
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise AssignmentServiceError(
+            code="INVALID_SCORE",
+            message=f"Điểm số phải là số từ 0 đến thang điểm tối đa ({max_score}).",
+            status_code=400,
+        )
+
+    feedback = payload.get("feedback")
+    if feedback is not None:
+        feedback = str(feedback).strip()
+        if len(feedback) > 2000:
+            raise AssignmentServiceError(
+                code="FEEDBACK_TOO_LONG",
+                message="Nhận xét đánh giá không được vượt quá 2000 ký tự.",
+                status_code=400,
+            )
+
+    updated = assignment_repository.grade_submission(
+        submission_id=submission_id,
+        score=score,
+        feedback=feedback,
+        graded_by=instructor_user_id,
+    )
+    return updated.to_dict() if updated else {}
+

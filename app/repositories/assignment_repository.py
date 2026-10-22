@@ -603,3 +603,78 @@ def create_submission(submission: AssignmentSubmission, initial_version: Submiss
     finally:
         if should_close and conn:
             conn.close()
+
+
+def list_assignments_by_class(class_id: str, connection=None) -> list[Assignment]:
+    should_close = False
+    conn = connection
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    try:
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute(
+                """
+                SELECT a.*, c.class_code, u.name AS creator_name
+                FROM assignments a
+                JOIN classes c ON a.class_id = c.id
+                LEFT JOIN users u ON a.created_by = u.id
+                WHERE a.class_id = %s
+                ORDER BY a.created_at DESC
+                """,
+                (class_id,),
+            )
+            rows = cursor.fetchall()
+            return [
+                Assignment(
+                    id=r["id"],
+                    class_id=r["class_id"],
+                    title=r["title"],
+                    description=r.get("description"),
+                    due_date=r.get("due_date"),
+                    max_score=float(r.get("max_score") or 10.0),
+                    status=r["status"],
+                    created_by=r["created_by"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                    class_code=r.get("class_code"),
+                    creator_name=r.get("creator_name"),
+                )
+                for r in rows
+            ]
+    finally:
+        if should_close and conn:
+            conn.close()
+
+
+def grade_submission(
+    submission_id: str,
+    score: float,
+    feedback: str | None,
+    graded_by: str,
+    connection=None,
+) -> AssignmentSubmission | None:
+    should_close = False
+    conn = connection
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+
+    now_utc = datetime.now(timezone.utc)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE assignment_submissions
+                SET score = %s, feedback = %s, graded_by = %s, graded_at = %s, status = 'graded', updated_at = %s
+                WHERE id = %s
+                """,
+                (score, feedback, graded_by, now_utc, now_utc, submission_id),
+            )
+            if should_close:
+                conn.commit()
+        return get_submission_by_id(submission_id, conn)
+    finally:
+        if should_close and conn:
+            conn.close()
