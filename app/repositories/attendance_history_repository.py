@@ -137,12 +137,13 @@ def get_student_enrolled_classes(student_id: str) -> list[dict[str, Any]]:
         with conn.cursor(dictionary=True) as cursor:
             cursor.execute(
                 """
-                SELECT DISTINCT
+                SELECT 
                     c.id AS class_id,
                     c.class_code,
                     c.learning_mode,
                     c.status AS class_status,
                     ce.status AS enrollment_status,
+                    ce.created_at,
                     tp.id AS program_id,
                     tp.name AS program_name,
                     tp.code AS program_code,
@@ -157,12 +158,18 @@ def get_student_enrolled_classes(student_id: str) -> list[dict[str, Any]]:
                 (student_id,),
             )
             rows = cursor.fetchall() or []
+            seen_class_ids = set()
+            unique_rows = []
             for r in rows:
-                if r.get("absence_alert_threshold") is not None:
-                    r["absence_alert_threshold"] = float(r["absence_alert_threshold"])
-                else:
-                    r["absence_alert_threshold"] = 20.0
-            return rows
+                cid = r.get("class_id")
+                if cid and cid not in seen_class_ids:
+                    seen_class_ids.add(cid)
+                    if r.get("absence_alert_threshold") is not None:
+                        r["absence_alert_threshold"] = float(r["absence_alert_threshold"])
+                    else:
+                        r["absence_alert_threshold"] = 20.0
+                    unique_rows.append(r)
+            return unique_rows
     finally:
         conn.close()
 
