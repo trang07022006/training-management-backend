@@ -102,6 +102,7 @@ def login():
         "refresh_token": tokens["refresh_token"],
         "token_type": "Bearer",
         "access_expires_at": access_payload["exp"],
+        "must_change_password": bool(user.must_change_password),
         "user": {
             "id": user.id,
             "email": user.email,
@@ -109,6 +110,7 @@ def login():
             "role": display_role,
             "roles": user_roles,
             "permissions": effective_permissions,
+            "must_change_password": bool(user.must_change_password),
         },
         "session_id": session.session_id,
         "idle_expires_at": session.idle_expires_at.isoformat(),

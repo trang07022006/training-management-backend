@@ -1,0 +1,777 @@
+"""
+Bộ kiểm thử tích hợp & đơn vị cho SCRUM-215: LEAD TO STUDENT (Sub-task 215-01).
+Kiểm tra API POST /api/v1/leads/<id>/convert-to-student.
+"""
+
+from datetime import datetime, timedelta, timezone
+import unittest
+from unittest.mock import patch
+import uuid
+
+from flask import Flask
+from flask_jwt_extended import JWTManager, create_access_token
+
+from app.config.jwt_handlers import register_jwt_handlers
+from app.database.connection import get_db_connection
+from app.database.ensure_business_roles import ensure_business_roles
+from app.models.lead import (
+    LEAD_SOURCE_PUBLIC_FORM,
+    LEAD_STATUS_NEW,
+    LEAD_STATUS_WON,
+    Lead,
+)
+from app.models.login_session import LoginSession
+from app.repositories import (
+    lead_repository,
+    student_repository,
+    user_repository,
+    user_role_repository,
+)
+from app.routes.lead_routes import lead_bp
+
+
+class Scrum215LeadToStudentApiTests(unittest.TestCase):
+    """Bộ kiểm thử cho SCRUM-215: Chuyển dữ liệu Lead sang hồ sơ học viên."""
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_business_roles()
+
+    def setUp(self):
+        self.app = Flask(__name__)
+        self.app.config.update(
+            TESTING=True,
+            JWT_SECRET_KEY="test-secret-key-scrum215-at-least-32-bytes-long",
+            JWT_ACCESS_TOKEN_EXPIRES=timedelta(minutes=15),
+            SESSION_IDLE_TIMEOUT=timedelta(minutes=30),
+        )
+        self.jwt = JWTManager(self.app)
+        register_jwt_handlers(self.jwt)
+        self.app.register_blueprint(lead_bp)
+
+        self.client = self.app.test_client()
+        self.now = datetime.now(timezone.utc)
+
+        self.admin_user_id = "34068d8d-b2ec-4ce4-977a-28ac1b9b70de"
+        self.authorized_session = LoginSession(
+            session_id="session-authorized-215",
+            user_id=self.admin_user_id,
+            refresh_jti="ref-auth-215",
+            created_at=self.now,
+            last_activity_at=self.now,
+            idle_expires_at=self.now + timedelta(hours=8),
+            absolute_expires_at=self.now + timedelta(hours=8),
+        )
+
+        with self.app.app_context():
+            self.access_token = create_access_token(
+                identity=self.admin_user_id,
+                additional_claims={"sid": self.authorized_session.session_id},
+            )
+        self.auth_headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        # Lưu lại danh sách ID cần dọn dẹp sau test
+        self.created_lead_ids: list[str] = []
+        self.created_student_ids: list[str] = []
+        self.created_user_ids: list[str] = []
+
+    def tearDown(self):
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                for student_id in self.created_student_ids:
+                    cursor.execute("DELETE FROM students WHERE id = %s", (student_id,))
+                for lead_id in self.created_lead_ids:
+                    cursor.execute("DELETE FROM students WHERE lead_id = %s", (lead_id,))
+                    cursor.execute("DELETE FROM leads WHERE id = %s", (lead_id,))
+                for user_id in self.created_user_ids:
+                    cursor.execute("DELETE FROM students WHERE user_id = %s", (user_id,))
+                    cursor.execute("DELETE FROM user_roles WHERE user_id = %s", (user_id,))
+                    cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _create_test_lead(self, status: str = LEAD_STATUS_WON) -> Lead:
+        lead_id = str(uuid.uuid4())
+        lead = Lead(
+            id=lead_id,
+            full_name="Nguyễn Văn Chốt Học",
+            phone="0988776655",
+            email=f"chot.{uuid.uuid4().hex[:6]}@example.com",
+            interested_program_id=None,
+            message="Đã đồng ý nhập học khóa Lập trình",
+            source=LEAD_SOURCE_PUBLIC_FORM,
+            status=status,
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        created = lead_repository.insert_lead(lead)
+        self.created_lead_ids.append(created.id)
+        return created
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_01_convert_won_lead_success(self, mock_get_session):
+        """TC215-01: Chuyển Lead đã chốt thành hồ sơ học viên thành công."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        data = response.get_json()
+        self.assertEqual(data["code"], "CONVERT_SUCCESS")
+        self.assertIn("data", data)
+        student_data = data["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        self.assertEqual(student_data["lead_id"], lead.id)
+        self.assertEqual(student_data["full_name"], lead.full_name)
+        self.assertEqual(student_data["phone"], lead.phone)
+        self.assertEqual(student_data["email"], lead.email)
+        self.assertIsNotNone(student_data["student_code"])
+
+        # Kiểm tra trong DB thật
+        persisted = student_repository.get_student_by_id(student_data["id"])
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.lead_id, lead.id)
+        self.assertEqual(persisted.full_name, lead.full_name)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_02_student_data_reused_from_lead(self, mock_get_session):
+        """TC215-02: Dữ liệu Lead có sẵn được chuyển sang, không bắt user nhập lại."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        # Kiểm tra reuse chính xác các trường
+        self.assertEqual(student_data["full_name"], lead.full_name)
+        self.assertEqual(student_data["phone"], lead.phone)
+        self.assertEqual(student_data["email"], lead.email)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_03_non_won_lead_cannot_be_converted(self, mock_get_session):
+        """TC215-03: Lead chưa Chốt (ví dụ new) không thể chuyển đổi thành học viên."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_NEW)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertEqual(data["code"], "LEAD_NOT_WON")
+        self.assertIn("Chỉ có thể chuyển đổi Lead có trạng thái Chốt", data["message"])
+
+        # Không tạo record trong students
+        student = student_repository.get_student_by_lead_id(lead.id)
+        self.assertIsNone(student)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_04_duplicate_conversion_prevented(self, mock_get_session):
+        """TC215-04: Ngăn chặn chuyển đổi trùng lặp cùng một Lead."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Lần 1: Thành công
+        res1 = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res1.status_code, 201)
+        self.created_student_ids.append(res1.get_json()["data"]["student"]["id"])
+
+        # Lần 2: Thử convert lại -> Bị chặn
+        res2 = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res2.status_code, 400)
+        data2 = res2.get_json()
+        self.assertEqual(data2["code"], "LEAD_ALREADY_CONVERTED")
+        self.assertIn("đã được chuyển thành hồ sơ học viên trước đó", data2["message"])
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_nonexistent_lead_returns_404(self, mock_get_session):
+        """TC215-404: Chuyển đổi Lead không tồn tại trả về lỗi 404."""
+        mock_get_session.return_value = self.authorized_session
+        random_id = str(uuid.uuid4())
+
+        response = self.client.post(
+            f"/api/v1/leads/{random_id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 404)
+        data = response.get_json()
+        self.assertEqual(data["code"], "LEAD_NOT_FOUND")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_05_convert_won_lead_generates_student_code_automatically(self, mock_get_session):
+        """TC215-05: Convert một Lead đã Chốt -> Student được tạo với student_code tự động."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        data = response.get_json()
+        student_data = data["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        student_code = student_data.get("student_code")
+        self.assertIsNotNone(student_code)
+        self.assertTrue(len(student_code) > 0)
+        self.assertTrue(
+            student_code.startswith("STU"),
+            f"Expected code to start with STU, got {student_code}",
+        )
+        self.assertEqual(len(student_code), 9)  # STU + 6 digits = 9 chars
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_06_convert_second_lead_generates_different_code(self, mock_get_session):
+        """TC215-06: Convert Lead thứ hai -> student_code khác Student thứ nhất."""
+        mock_get_session.return_value = self.authorized_session
+        lead1 = self._create_test_lead(status=LEAD_STATUS_WON)
+        lead2 = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        res1 = self.client.post(
+            f"/api/v1/leads/{lead1.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res1.status_code, 201)
+        code1 = res1.get_json()["data"]["student"]["student_code"]
+        self.created_student_ids.append(res1.get_json()["data"]["student"]["id"])
+
+        res2 = self.client.post(
+            f"/api/v1/leads/{lead2.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res2.status_code, 201)
+        code2 = res2.get_json()["data"]["student"]["student_code"]
+        self.created_student_ids.append(res2.get_json()["data"]["student"]["id"])
+
+        self.assertNotEqual(code1, code2, "Hai học viên chuyển đổi liên tiếp không được trùng mã!")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_07_request_without_student_code_still_auto_generates(self, mock_get_session):
+        """TC215-07: Không nhập student_code từ UI/request -> backend vẫn tự sinh student_code."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Gửi request không có body hoặc cố ý gửi custom code giả định
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+            json={"student_code": "FORCED_MANUAL_CODE_NOT_ALLOWED"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        # Mã sinh ra phải do hệ thống tự sinh theo prefix STU, không dùng custom code từ client
+        self.assertNotEqual(student_data["student_code"], "FORCED_MANUAL_CODE_NOT_ALLOWED")
+        self.assertTrue(student_data["student_code"].startswith("STU"))
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_08_reload_query_student_preserves_student_code(self, mock_get_session):
+        """TC215-08: Reload/query Student -> student_code vẫn tồn tại đúng trong DB."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        original_code = student_data["student_code"]
+
+        # Query lại bằng ID
+        persisted_by_id = student_repository.get_student_by_id(student_data["id"])
+        self.assertIsNotNone(persisted_by_id)
+        self.assertEqual(persisted_by_id.student_code, original_code)
+
+        # Query lại bằng mã học viên
+        persisted_by_code = student_repository.get_student_by_code(original_code)
+        self.assertIsNotNone(persisted_by_code)
+        self.assertEqual(persisted_by_code.id, student_data["id"])
+
+    def test_tc215_09_uniqueness_enforced_cannot_create_two_students_same_code(self):
+        """TC215-09: Kiểm tra uniqueness -> không thể tạo hai Student có cùng student_code trong DB."""
+        from app.models.student import Student
+
+        unique_code = f"STU_TEST_{uuid.uuid4().hex[:6]}"
+        s1 = Student(
+            id=str(uuid.uuid4()),
+            student_code=unique_code,
+            full_name="Học Viên Duy Nhất 1",
+            phone="0911000001",
+            status="enrolled",
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        student_repository.create_student(s1)
+        self.created_student_ids.append(s1.id)
+
+        # Thử tạo Student thứ 2 với cùng student_code
+        s2 = Student(
+            id=str(uuid.uuid4()),
+            student_code=unique_code,
+            full_name="Học Viên Trùng Mã 2",
+            phone="0911000002",
+            status="enrolled",
+            created_at=self.now,
+            updated_at=self.now,
+        )
+        with self.assertRaises(Exception):
+            student_repository.create_student(s2)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_10_convert_won_lead_creates_student_account(self, mock_send_email, mock_get_session):
+        """TC215-10: Convert Lead đã Chốt -> Student account được tạo trong users table."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        data = response.get_json()["data"]
+        student_data = data["student"]
+        self.created_student_ids.append(student_data["id"])
+
+        user_id = student_data.get("user_id") or data.get("user_id")
+        self.assertIsNotNone(user_id)
+        self.created_user_ids.append(user_id)
+
+        # Kiểm tra user trong database thật
+        user = user_repository.get_user_by_id(user_id)
+        self.assertIsNotNone(user)
+        self.assertEqual(user.email, lead.email.strip().lower())
+        self.assertEqual(user.name, lead.full_name)
+        self.assertEqual(user.status, "active")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_11_student_user_linkage_verified(self, mock_send_email, mock_get_session):
+        """TC215-11: Kiểm tra linkage -> User liên kết đúng Student hai chiều."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        user_id = student_data["user_id"]
+        self.created_user_ids.append(user_id)
+
+        # Kiểm tra liên kết từ phía Student
+        persisted_student = student_repository.get_student_by_id(student_data["id"])
+        self.assertIsNotNone(persisted_student)
+        self.assertEqual(persisted_student.user_id, user_id)
+        self.assertEqual(persisted_student.lead_id, lead.id)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_12_student_account_assigned_trainee_role(self, mock_send_email, mock_get_session):
+        """TC215-12: Kiểm tra role -> đúng role học viên (trainee) hiện có."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        user_id = student_data["user_id"]
+        self.created_user_ids.append(user_id)
+
+        user = user_repository.get_user_by_id(user_id)
+        self.assertEqual(user.role, "trainee")
+
+        # Kiểm tra bảng mapping user_roles
+        assigned_roles = user_role_repository.get_roles_by_user_id(user_id)
+        role_codes = [r.code for r in assigned_roles]
+        self.assertIn("trainee", role_codes)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_13_password_is_hashed_and_not_stored_plaintext(self, mock_send_email, mock_get_session):
+        """TC215-13: Kiểm tra password storage -> tuyệt đối không lưu plaintext."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        user_id = student_data["user_id"]
+        self.created_user_ids.append(user_id)
+
+        user = user_repository.get_user_by_id(user_id)
+        # Password hash phải được băm an toàn theo chuẩn werkzeug
+        self.assertTrue(
+            user.password_hash.startswith("scrypt:") or user.password_hash.startswith("pbkdf2:"),
+            f"Password hash không đúng định dạng werkzeug: {user.password_hash}",
+        )
+        self.assertGreater(len(user.password_hash), 30)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_14_no_duplicate_account_on_reconversion_or_existing_email(self, mock_send_email, mock_get_session):
+        """TC215-14: Thử convert lặp -> không tạo duplicate account trong bảng users."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Lần 1: Thành công
+        res1 = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res1.status_code, 201)
+        user_id1 = res1.get_json()["data"]["student"]["user_id"]
+        self.created_student_ids.append(res1.get_json()["data"]["student"]["id"])
+        self.created_user_ids.append(user_id1)
+
+        # Lần 2: Thử convert lại cùng Lead -> Bị chặn, không tạo thêm user
+        res2 = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res2.status_code, 400)
+
+        # Đếm số user có email này trong database (chỉ được là 1)
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM users WHERE email = %s", (lead.email.strip().lower(),))
+                count = cursor.fetchone()[0]
+                self.assertEqual(count, 1)
+        finally:
+            conn.close()
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_15_email_service_called_with_credentials(self, mock_send_email, mock_get_session):
+        """TC215-15: Kiểm tra email flow -> email service được gọi đúng tham số."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        self.created_user_ids.append(student_data["user_id"])
+
+        # Kiểm tra mock_send_email được gọi 1 lần
+        mock_send_email.assert_called_once()
+        _, kwargs = mock_send_email.call_args
+        self.assertEqual(kwargs.get("to_email"), lead.email.strip().lower())
+        self.assertEqual(kwargs.get("name"), lead.full_name)
+        self.assertIsNotNone(kwargs.get("raw_password"))
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_16_email_failure_does_not_rollback_student_and_user(self, mock_send_email, mock_get_session):
+        """TC215-16: Lỗi gửi email (SMTP failure) không làm rollback Student và User."""
+        from app.services.email_service import EmailDeliveryError
+
+        mock_get_session.return_value = self.authorized_session
+        mock_send_email.side_effect = EmailDeliveryError("SMTP connection timed out")
+
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+
+        # Chuyển đổi vẫn thành công 201, trả email_sent = False
+        self.assertEqual(response.status_code, 201)
+        data = response.get_json()["data"]
+        student_data = data["student"]
+        self.created_student_ids.append(student_data["id"])
+        self.created_user_ids.append(student_data["user_id"])
+        self.assertFalse(data.get("email_sent"))
+
+        # Student và User vẫn tồn tại bình thường trong DB
+        persisted_student = student_repository.get_student_by_id(student_data["id"])
+        self.assertIsNotNone(persisted_student)
+        persisted_user = user_repository.get_user_by_id(student_data["user_id"])
+        self.assertIsNotNone(persisted_user)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_17_convert_success_transitions_lead_to_converted(self, mock_send_email, mock_get_session):
+        """TC215-17: Convert thành công -> Lead chuyển sang trạng thái Đã nhập học (converted)."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        response = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(response.status_code, 201)
+        student_data = response.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # Kiểm tra Lead trong DB đã chuyển sang trạng thái 'converted' (Đã nhập học)
+        reloaded_lead = lead_repository.get_lead_by_id(lead.id)
+        self.assertIsNotNone(reloaded_lead)
+        self.assertEqual(reloaded_lead.status, "converted")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_18_update_enrolled_lead_info_rejected(self, mock_send_email, mock_get_session):
+        """TC215-18: Thử cập nhật thông tin Lead đã nhập học qua API -> backend từ chối với LEAD_IMMUTABLE."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Chuyển đổi thành học viên
+        conv_res = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(conv_res.status_code, 201)
+        student_data = conv_res.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # Thử sửa thông tin Lead đã nhập học
+        update_res = self.client.put(
+            f"/api/v1/leads/{lead.id}",
+            headers=self.auth_headers,
+            json={
+                "full_name": "Tên Đã Đổi Cố Ý",
+                "phone": "0988776655",
+                "email": lead.email,
+                "source": "direct",
+                "message": "Cố ý sửa thông tin học viên",
+            },
+        )
+        self.assertEqual(update_res.status_code, 400)
+        data = update_res.get_json()
+        self.assertEqual(data["code"], "LEAD_IMMUTABLE")
+        self.assertIn("Khách hàng đã nhập học, không thể chỉnh sửa thông tin.", data["message"])
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_19_update_enrolled_lead_status_rejected(self, mock_send_email, mock_get_session):
+        """TC215-19: Thử cập nhật trạng thái Lead đã nhập học qua API -> backend từ chối với LEAD_IMMUTABLE."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Chuyển đổi thành học viên
+        conv_res = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(conv_res.status_code, 201)
+        student_data = conv_res.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # Thử đổi trạng thái Lead đã nhập học về 'new'
+        patch_res = self.client.patch(
+            f"/api/v1/leads/{lead.id}",
+            headers=self.auth_headers,
+            json={"status": "new"},
+        )
+        self.assertEqual(patch_res.status_code, 400)
+        data = patch_res.get_json()
+        self.assertEqual(data["code"], "LEAD_IMMUTABLE")
+        self.assertIn("Khách hàng đã nhập học, không thể thay đổi trạng thái.", data["message"])
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_20_second_conversion_rejected(self, mock_send_email, mock_get_session):
+        """TC215-20: Thử convert lần hai Lead đã nhập học -> bị chặn."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Chuyển đổi lần 1
+        res1 = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res1.status_code, 201)
+        student_data = res1.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # Chuyển đổi lần 2
+        res2 = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(res2.status_code, 400)
+        data = res2.get_json()
+        self.assertEqual(data["code"], "LEAD_ALREADY_CONVERTED")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_21_pipeline_query_unaffected_and_assignment_blocked(self, mock_send_email, mock_get_session):
+        """TC215-21: Thử phân công lại Lead đã nhập học -> bị chặn; và query pipeline giữ đúng count."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Chuyển đổi thành học viên
+        conv_res = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(conv_res.status_code, 201)
+        student_data = conv_res.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # Thử đổi phân công
+        assign_res = self.client.patch(
+            f"/api/v1/leads/{lead.id}/assignment",
+            headers=self.auth_headers,
+            json={"user_id": None},
+        )
+        self.assertEqual(assign_res.status_code, 400)
+        self.assertEqual(assign_res.get_json()["code"], "LEAD_IMMUTABLE")
+
+        # Kiểm tra query theo status='won' không còn chứa lead này (bảo toàn count cột Chốt)
+        won_leads, _ = lead_repository.list_leads(status="won")
+        won_ids = [l.id for l in won_leads]
+        self.assertNotIn(lead.id, won_ids)
+
+        # Kiểm tra query theo status='converted' chứa lead này
+        conv_leads, _ = lead_repository.list_leads(status="converted")
+        conv_ids = [l.id for l in conv_leads]
+        self.assertIn(lead.id, conv_ids)
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    @patch("app.services.email_service.send_account_creation_email")
+    def test_tc215_22_reload_lead_persists_converted_and_immutable(self, mock_send_email, mock_get_session):
+        """TC215-22: Reload Lead từ DB -> vẫn giữ nguyên trạng thái Đã nhập học và immutable."""
+        from app.services import lead_service
+        from app.services.lead_service import LeadServiceError
+
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # Chuyển đổi
+        conv_res = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(conv_res.status_code, 201)
+        student_data = conv_res.get_json()["data"]["student"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # Reload lại từ DB thật
+        reloaded = lead_repository.get_lead_by_id(lead.id)
+        self.assertIsNotNone(reloaded)
+        self.assertEqual(reloaded.status, "converted")
+
+        # Gọi trực tiếp qua service tầng nghiệp vụ -> Ném LeadServiceError LEAD_IMMUTABLE
+        with self.assertRaises(LeadServiceError) as ctx:
+            lead_service.update_lead_info_service(lead.id, {"full_name": "Tên Mới", "phone": "0988776655"})
+        self.assertEqual(ctx.exception.code, "LEAD_IMMUTABLE")
+
+    @patch("app.utils.rbac_auth.get_session_by_id")
+    def test_tc215_24_lead_detail_exposes_converted_student_and_persists_after_reload(self, mock_get_session):
+        """TC215-24: Lead detail API trả về student_code & student info cho Lead đã nhập học, persist sau reload."""
+        mock_get_session.return_value = self.authorized_session
+        lead = self._create_test_lead(status=LEAD_STATUS_WON)
+
+        # 1. Trước khi convert: Lead detail không có student info
+        detail_before = self.client.get(
+            f"/api/v1/leads/{lead.id}",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(detail_before.status_code, 200)
+        data_before = detail_before.get_json()["data"]
+        self.assertIsNone(data_before.get("student_code"))
+        self.assertIsNone(data_before.get("student"))
+
+        # Endpoint /student trả về 404
+        stu_before = self.client.get(
+            f"/api/v1/leads/{lead.id}/student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(stu_before.status_code, 404)
+        self.assertEqual(stu_before.get_json()["code"], "STUDENT_NOT_FOUND")
+
+        # 2. Chuyển đổi Lead sang Student
+        conv_res = self.client.post(
+            f"/api/v1/leads/{lead.id}/convert-to-student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(conv_res.status_code, 201)
+        student_data = conv_res.get_json()["data"]["student"]
+        generated_code = student_data["student_code"]
+        self.created_student_ids.append(student_data["id"])
+        if student_data.get("user_id"):
+            self.created_user_ids.append(student_data["user_id"])
+
+        # 3. Sau khi convert (giả lập reload / F5): Gọi GET /api/v1/leads/<id>
+        detail_after = self.client.get(
+            f"/api/v1/leads/{lead.id}",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(detail_after.status_code, 200)
+        data_after = detail_after.get_json()["data"]
+        self.assertEqual(data_after.get("student_code"), generated_code)
+        self.assertIsNotNone(data_after.get("student"))
+        self.assertEqual(data_after["student"]["student_code"], generated_code)
+        self.assertEqual(data_after["student"]["account_status"], "Đã tạo")
+        self.assertEqual(data_after["student"]["account_email"], lead.email)
+
+        # 4. Kiểm tra endpoint GET /api/v1/leads/<id>/student
+        stu_after = self.client.get(
+            f"/api/v1/leads/{lead.id}/student",
+            headers=self.auth_headers,
+        )
+        self.assertEqual(stu_after.status_code, 200)
+        stu_resp_data = stu_after.get_json()["data"]
+        self.assertEqual(stu_resp_data["student_code"], generated_code)
+        self.assertEqual(stu_resp_data["account_status"], "Đã tạo")
+        self.assertEqual(stu_resp_data["account_email"], lead.email)
+
+
+
