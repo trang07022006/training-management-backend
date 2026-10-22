@@ -341,3 +341,43 @@ def grade_submission_endpoint(submission_id: str):
             "message": "Lỗi cơ sở dữ liệu khi đánh giá bài nộp.",
         }), 500
 
+
+@assignment_bp.post("/v1/assignments/<assignment_id>/submit")
+@permission_required("assignment.submit")
+def submit_assignment_endpoint(assignment_id: str):
+    """Học viên nộp bài tập lần đầu."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "status": "error",
+            "code": "INVALID_JSON",
+            "message": "Dữ liệu yêu cầu không hợp lệ.",
+        }), 400
+
+    try:
+        created = assignment_service.submit_assignment_service(
+            assignment_id=assignment_id,
+            student_user_id=g.user_id,
+            payload=payload,
+        )
+        return jsonify({
+            "status": "success",
+            "code": "ASSIGNMENT_SUBMITTED",
+            "message": "Nộp bài tập thành công.",
+            "data": created,
+        }), 201
+    except AssignmentServiceError as err:
+        return jsonify({
+            "status": "error",
+            "code": err.code,
+            "message": err.message,
+        }), err.status_code
+    except MySQLError as err:
+        logger.error("Lỗi cơ sở dữ liệu khi nộp bài tập: %s", err)
+        return jsonify({
+            "status": "error",
+            "code": "DATABASE_ERROR",
+            "message": "Lỗi cơ sở dữ liệu khi nộp bài tập.",
+        }), 500
+
+

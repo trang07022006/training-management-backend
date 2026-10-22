@@ -358,6 +358,86 @@ class Scrum269AssignmentGradingTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(resp.get_json()["code"], "FORBIDDEN_CLASS")
 
+    def test_tc269_47_student_submit_assignment_success(self):
+        """Học viên thuộc lớp nộp bài tập lần đầu thành công."""
+        asg2_id = str(uuid.uuid4())
+        assignment_repository.create_assignment(
+            Assignment(
+                id=asg2_id,
+                class_id=self.class_id,
+                title="Bài tập 2: Frontend React",
+                description="Nộp repo GitHub",
+                due_date=self.now + timedelta(days=7),
+                max_score=10.0,
+                status="published",
+                created_by=self.assigned_trainer_id,
+                created_at=self.now,
+                updated_at=self.now,
+            ),
+            self.conn,
+        )
+        self.conn.commit()
+
+        payload = {
+            "submission_type": "repo_url",
+            "repo_url": "https://github.com/student/frontend-project",
+            "content": "Đã hoàn thành các màn hình giao diện theo yêu cầu",
+        }
+        resp = self.client.post(
+            f"/api/v1/assignments/{asg2_id}/submit",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.student_token}"},
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.get_json()["data"]
+        self.assertEqual(data["assignment_id"], asg2_id)
+        self.assertEqual(data["status"], "submitted")
+        self.assertEqual(data["rework_count"], 0)
+        self.assertEqual(len(data["versions"]), 1)
+
+    def test_tc269_48_student_submit_empty_content_rejected(self):
+        """Học viên nộp bài không có nội dung bị từ chối 400."""
+        asg_empty_id = str(uuid.uuid4())
+        assignment_repository.create_assignment(
+            Assignment(
+                id=asg_empty_id,
+                class_id=self.class_id,
+                title="Bài tập Test Empty",
+                description="Mô tả bài tập",
+                due_date=self.now + timedelta(days=7),
+                max_score=10.0,
+                status="published",
+                created_by=self.assigned_trainer_id,
+                created_at=self.now,
+                updated_at=self.now,
+            ),
+            self.conn,
+        )
+        self.conn.commit()
+
+        resp = self.client.post(
+            f"/api/v1/assignments/{asg_empty_id}/submit",
+            json={"content": "   "},
+            headers={"Authorization": f"Bearer {self.student_token}"},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json()["code"], "EMPTY_SUBMISSION_CONTENT")
+
+    def test_tc269_49_student_submit_already_submitted_rejected(self):
+        """Học viên nộp lại vào endpoint nộp lần đầu khi đã có bài nộp bị chặn (409)."""
+        payload = {
+            "submission_type": "repo_url",
+            "repo_url": "https://github.com/student/duplicate",
+        }
+        resp = self.client.post(
+            f"/api/v1/assignments/{self.assignment_id}/submit",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.student_token}"},
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.get_json()["code"], "SUBMISSION_ALREADY_EXISTS")
+
 
 if __name__ == "__main__":
     unittest.main()
+

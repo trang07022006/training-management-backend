@@ -604,3 +604,116 @@ def grade_submission_service(
     )
     return updated.to_dict() if updated else {}
 
+
+def submit_assignment_service(
+    assignment_id: str,
+    student_user_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Học viên nộp bài tập lần đầu cho bài tập của lớp."""
+    # 1. Xác định hồ sơ học viên
+    student = assignment_repository.get_student_by_user_id(student_user_id)
+    if not student:
+        raise AssignmentServiceError(
+            code="STUDENT_PROFILE_NOT_FOUND",
+            message="Không tìm thấy hồ sơ học viên liên kết với tài khoản này.",
+            status_code=403,
+        )
+
+    # 2. Kiểm tra bài tập tồn tại
+    assignment = assignment_repository.get_assignment_by_id(assignment_id)
+    if not assignment:
+        raise AssignmentServiceError(
+            code="ASSIGNMENT_NOT_FOUND",
+            message="Không tìm thấy bài tập.",
+            status_code=404,
+        )
+
+    # 3. Kiểm tra học viên có thuộc lớp học này
+    if not assignment_repository.is_student_enrolled_in_class(student["id"], assignment.class_id):
+        raise AssignmentServiceError(
+            code="FORBIDDEN_CLASS",
+            message="Bạn không thuộc danh sách học viên của lớp học này.",
+            status_code=403,
+        )
+
+    # 4. Kiểm tra bài nộp đã tồn tại chưa
+    existing = assignment_repository.get_submission_by_assignment_and_student(
+        assignment_id, student["id"]
+    )
+    if existing:
+        raise AssignmentServiceError(
+            code="SUBMISSION_ALREADY_EXISTS",
+            message="Bạn đã nộp bài cho bài tập này. Vui lòng sử dụng tính năng nộp lại nếu giảng viên yêu cầu.",
+            status_code=409,
+        )
+
+    # 5. Validation nội dung nộp
+    content = payload.get("content")
+    file_url = payload.get("file_url")
+    file_name = payload.get("file_name")
+    file_size = payload.get("file_size")
+    repo_url = payload.get("repo_url")
+    submission_type = payload.get("submission_type") or "text"
+
+    has_content = any([
+        isinstance(content, str) and content.strip(),
+        isinstance(file_url, str) and file_url.strip(),
+        isinstance(repo_url, str) and repo_url.strip(),
+    ])
+    if not has_content:
+        raise AssignmentServiceError(
+            code="EMPTY_SUBMISSION_CONTENT",
+            message="Vui lòng cung cấp nội dung, tệp đính kèm hoặc liên kết nộp bài.",
+            status_code=400,
+        )
+
+    # 6. Kiểm tra hạn nộp bài
+    now_utc = datetime.now(timezone.utc)
+    if assignment.due_date:
+        due_dt = assignment.due_date
+        if due_dt.tzinfo is None:
+            due_dt = due_dt.replace(tzinfo=timezone.utc)
+        if now_utc > due_dt:
+            raise AssignmentServiceError(
+                code="SUBMISSION_OVERDUE",
+                message="Đã quá thời hạn nộp bài tập.",
+                status_code=400,
+            )
+
+    sub_id = f"sub-{uuid.uuid4().hex[:12]}"
+    version_id = f"v-{uuid.uuid4().hex[:12]}"
+
+    new_sub = AssignmentSubmission(
+        id=sub_id,
+        assignment_id=assignment_id,
+        student_id=student["id"],
+        status=SUBMISSION_STATUS_SUBMITTED,
+        score=None,
+        feedback=None,
+        graded_by=None,
+        graded_at=None,
+        rework_count=0,
+        created_at=now_utc,
+        updated_at=now_utc,
+    )
+
+    initial_version = SubmissionVersion(
+        id=version_id,
+        submission_id=sub_id,
+        version_number=1,
+        submission_type=submission_type,
+        content=content.strip() if isinstance(content, str) and content.strip() else None,
+        file_url=file_url.strip() if isinstance(file_url, str) and file_url.strip() else None,
+        file_name=file_name.strip() if isinstance(file_name, str) and file_name.strip() else None,
+        file_size=int(file_size) if file_size is not None else None,
+        repo_url=repo_url.strip() if isinstance(repo_url, str) and repo_url.strip() else None,
+        submitted_at=now_utc,
+        rework_request_id=None,
+    )
+
+    created = assignment_repository.create_submission(new_sub, initial_version)
+    updated = assignment_repository.get_submission_by_id(created.id)
+    return updated.to_dict() if updated else {}
+
+
